@@ -35,6 +35,12 @@ targets:
     platform: iOS
     sources:
       - Sources/FlextunnelApp
+    dependencies:
+      # Static-library XCFramework with both the device and Simulator arm64
+      # slices (built by ../flextunnel/build-ios.sh). Xcode links whichever slice
+      # matches the selected destination. embed:false — static libs aren't embedded.
+      - framework: vendor/libflextunnel.xcframework
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.flextunnel
@@ -46,16 +52,15 @@ targets:
         MARKETING_VERSION: "0.0.1"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_OBJC_BRIDGING_HEADER: Sources/FlextunnelApp/Bridging-Header.h
-        # Static Rust lib + its system dependencies (same set ezvpn links).
-        LIBRARY_SEARCH_PATHS:
-          - $(inherited)
-          - $(SRCROOT)/vendor
+        # flextunnel.h (for the bridging header) is staged alongside the
+        # XCFramework in vendor/. The Rust lib itself comes from the XCFramework
+        # dependency above; here we only add its system dependencies (same set
+        # ezvpn links).
         HEADER_SEARCH_PATHS:
           - $(inherited)
           - $(SRCROOT)/vendor
         OTHER_LDFLAGS:
           - $(inherited)
-          - -lflextunnel
           - -lresolv
           - -lc++
           - -framework
