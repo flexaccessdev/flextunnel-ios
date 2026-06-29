@@ -1,0 +1,4 @@
+- strict no backward compatibility
+- run cargo clippy and test after rust code changes
+- no cargo fmt
+- make change on sibling project ../flextunnel, which is the library used by this project, if needed 
