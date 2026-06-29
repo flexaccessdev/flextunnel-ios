@@ -14,7 +14,7 @@ struct ContentView: View {
                 Section("Server") {
                     TextField("Server node id", text: $serverNodeID)
                         .autocorrectionDisabled().textInputAutocapitalization(.never)
-                    TextField("Auth token", text: $authToken)
+                    SecureField("Auth token", text: $authToken)
                         .autocorrectionDisabled().textInputAutocapitalization(.never)
                     TextField("Relay URLs (comma-separated, optional)", text: $relayURLs)
                         .autocorrectionDisabled().textInputAutocapitalization(.never)
