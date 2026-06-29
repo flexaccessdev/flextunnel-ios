@@ -7,11 +7,12 @@ struct ContentView: View {
     @State private var authToken = ""
     @State private var relayURLs = ""
     @State private var socksPortText = "18080"
+    @State private var browserModel: BrowserModel?
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Server") {
+                Section("Setup") {
                     TextField("Server node id", text: $serverNodeID)
                         .autocorrectionDisabled().textInputAutocapitalization(.never)
                     SecureField("Auth token", text: $authToken)
@@ -34,53 +35,40 @@ struct ContentView: View {
                     }
                 }
 
-                Section("Status") {
-                    LabeledContent("State", value: proxy.status)
-                    if let socksPort = proxy.socksPort {
-                        LabeledContent("SOCKS", value: "127.0.0.1:\(socksPort)")
-                    }
-                    if proxy.socksPort != nil {
-                        LabeledContent("Health") {
-                            Label(proxy.healthy ? "alive" : "down",
-                                  systemImage: proxy.healthy
-                                      ? "checkmark.circle.fill" : "xmark.circle.fill")
-                                .foregroundStyle(proxy.healthy ? .green : .red)
-                        }
-                    }
-                    if let err = proxy.lastError {
-                        Text(err).foregroundStyle(.red).font(.footnote)
-                    }
-                }
-
                 Section {
                     Button("Start proxy") {
                         proxy.start(currentSettings())
                     }
                     .disabled(!canStartProxy)
 
-                    Button("Stop", role: .destructive) {
-                        proxy.stop()
-                    }
-                    .disabled(proxy.socksPort == nil)
-                }
-
-                if let socksPort = proxy.socksPort, proxy.healthy {
-                    Section("Browse (through SOCKS5)") {
-                        NavigationLink("Open browser") {
-                            BrowserView(model: BrowserModel(socksPort: socksPort), proxy: proxy)
-                                .navigationTitle("Browser")
-                                .navigationBarTitleDisplayMode(.inline)
-                        }
-                    }
-                } else {
-                    Section("Browse (through SOCKS5)") {
-                        Label("Start a healthy proxy to browse", systemImage: "lock.shield")
-                            .foregroundStyle(.secondary)
+                    if let err = proxy.lastError {
+                        Text(err)
+                            .foregroundStyle(.red)
+                            .font(.footnote)
                     }
                 }
             }
             .navigationTitle("flextunnel")
             .scrollDismissesKeyboard(.interactively)
+            .fullScreenCover(isPresented: browserIsPresented) {
+                if let browserModel {
+                    BrowserView(model: browserModel, proxy: proxy)
+                        .interactiveDismissDisabled(proxy.socksPort != nil)
+                }
+            }
+            .onChange(of: proxy.healthy) { syncBrowserPresentation() }
+            .onChange(of: proxy.socksPort) { syncBrowserPresentation() }
+            .onAppear { syncBrowserPresentation() }
+        }
+    }
+
+    private var browserIsPresented: Binding<Bool> {
+        Binding {
+            browserModel != nil
+        } set: { isPresented in
+            if !isPresented, proxy.socksPort == nil {
+                browserModel = nil
+            }
         }
     }
 
@@ -128,6 +116,18 @@ struct ContentView: View {
         s.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+    }
+
+    private func syncBrowserPresentation() {
+        guard let socksPort = proxy.socksPort, proxy.healthy else {
+            browserModel?.stopAll()
+            browserModel = nil
+            return
+        }
+
+        if browserModel?.socksPort != socksPort {
+            browserModel = BrowserModel(socksPort: socksPort)
+        }
     }
 }
 
