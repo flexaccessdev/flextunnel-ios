@@ -213,7 +213,6 @@ private struct BrowserHomeView: View {
         SearchEngine(title: "Google", url: "https://www.google.com/", color: Color(red: 0.26, green: 0.52, blue: 0.96)),
         SearchEngine(title: "DuckDuckGo", url: "https://duckduckgo.com/", color: Color(red: 0.87, green: 0.40, blue: 0.16)),
         SearchEngine(title: "Bing", url: "https://www.bing.com/", color: Color(red: 0.0, green: 0.46, blue: 0.49)),
-        SearchEngine(title: "Wikipedia", url: "https://www.wikipedia.org/", color: Color(.darkGray)),
     ]
 
     private let columns = [GridItem(.adaptive(minimum: 72, maximum: 96), spacing: 20)]
