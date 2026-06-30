@@ -63,6 +63,18 @@ struct DownloadPrompt: Identifiable, Equatable {
     }
 }
 
+/// A terminal download notification shown briefly by the browser chrome, with
+/// an explicit success/failure flag so styling doesn't depend on the message.
+struct DownloadToast: Equatable {
+    let message: String
+    let isFailure: Bool
+
+    static func succeeded(_ message: String) -> DownloadToast {
+        DownloadToast(message: message, isFailure: false)
+    }
+    static let failed = DownloadToast(message: "Download failed", isFailure: true)
+}
+
 /// Firefox-style download manager. Files the WebView can't display are routed
 /// here (iOS 26's `WebPage` has no download delegate), fetched through the same
 /// in-app SOCKS5 proxy the tabs use, and tracked in `items` with live progress.
@@ -77,9 +89,9 @@ final class BrowserDownloadManager: NSObject, URLSessionDownloadDelegate {
     private(set) var items: [DownloadItem] = []
     /// A download awaiting user confirmation; drives the confirmation dialog.
     var pendingPrompt: DownloadPrompt?
-    /// Transient confirmation for terminal events ("Downloaded …" / "Download
-    /// failed"), shown briefly by the browser chrome.
-    var toast: String?
+    /// Transient confirmation for terminal events, shown briefly by the browser
+    /// chrome.
+    var toast: DownloadToast?
 
     private let socksPort: UInt16
     private let websiteDataStore: WKWebsiteDataStore
@@ -237,12 +249,12 @@ final class BrowserDownloadManager: NSObject, URLSessionDownloadDelegate {
             guard let item = item(for: downloadTask.taskIdentifier) else { return }
             guard let dest else {
                 item.state = .failed("Could not save the file.")
-                toast = "Download failed"
+                toast = .failed
                 return
             }
             item.filename = dest.lastPathComponent
             item.state = .finished(dest)
-            toast = "Downloaded \(item.filename)"
+            toast = .succeeded("Downloaded \(item.filename)")
         }
     }
 
@@ -261,7 +273,7 @@ final class BrowserDownloadManager: NSObject, URLSessionDownloadDelegate {
             if case .finished = item.state { return }
             log.error("download failed: \(error.localizedDescription, privacy: .private)")
             item.state = .failed(error.localizedDescription)
-            toast = "Download failed"
+            toast = .failed
         }
     }
 

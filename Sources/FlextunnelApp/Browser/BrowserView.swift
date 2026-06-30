@@ -74,7 +74,7 @@ struct BrowserView: View {
                     .padding(.bottom, 76)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             } else if let toast = model.downloads.toast {
-                DownloadStatusToast(text: toast)
+                DownloadStatusToast(toast: toast)
                     .padding(.bottom, 76)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -179,17 +179,15 @@ private struct BookmarkSavedToast: View {
 
 /// Transient confirmation shown when a download finishes or fails.
 private struct DownloadStatusToast: View {
-    let text: String
-
-    private var failed: Bool { text == "Download failed" }
+    let toast: DownloadToast
 
     var body: some View {
-        Label(text, systemImage: failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+        Label(toast.message, systemImage: toast.isFailure ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
             .font(.subheadline.weight(.medium))
             .foregroundStyle(.white)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(failed ? Color.red : Color.green, in: Capsule())
+            .background(toast.isFailure ? Color.red : Color.green, in: Capsule())
             .shadow(radius: 6, y: 2)
     }
 }
