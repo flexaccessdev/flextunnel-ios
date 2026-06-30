@@ -761,6 +761,10 @@ private struct BottomActionBar: View {
     let onDisconnect: () -> Void
     @State private var showingLibrary = false
     @State private var shareItem: ShareItem?
+    @State private var bookmarkDraft: BookmarkDraft?
+    /// A draft requested from inside the share popout, applied once it dismisses
+    /// so we never present two sheets at once.
+    @State private var pendingShareDraft: BookmarkDraft?
 
     /// Wraps the URL being shared so it can drive `.sheet(item:)`.
     private struct ShareItem: Identifiable {
@@ -813,7 +817,7 @@ private struct BottomActionBar: View {
                         }
                     } else {
                         Button {
-                            model.library.addBookmark(
+                            bookmarkDraft = BookmarkDraft(
                                 name: tab?.displayTitle ?? (url.host() ?? url.absoluteString),
                                 url: url)
                         } label: {
@@ -858,20 +862,36 @@ private struct BottomActionBar: View {
             BookmarksHistoryView(model: model)
         }
         .sheet(item: $shareItem) { item in
-            BrowserShareSheet(url: item.url, activities: [bookmarkActivity(for: item.url)])
+            BrowserShareSheet(
+                url: item.url,
+                activities: [bookmarkActivity(for: item.url)],
+                onDismiss: {
+                    shareItem = nil
+                    // Present the editor only after the popout has gone, so the
+                    // two sheets never overlap.
+                    if let draft = pendingShareDraft {
+                        pendingShareDraft = nil
+                        DispatchQueue.main.async { bookmarkDraft = draft }
+                    }
+                })
                 .ignoresSafeArea()
+        }
+        .sheet(item: $bookmarkDraft) { draft in
+            BookmarkEditView(draft: draft) { name, url in
+                model.library.addBookmark(name: name, url: url)
+            }
         }
     }
 
-    /// Builds the share-sheet bookmark action, toggling between add and remove
-    /// based on whether the URL is already bookmarked.
+    /// Builds the share-popout bookmark action. Removal happens immediately;
+    /// adding stashes a draft so the editor opens once the popout dismisses.
     private func bookmarkActivity(for url: URL) -> BookmarkActivity {
         let library = model.library
         if library.isBookmarked(url) {
             return BookmarkActivity(mode: .remove) { library.removeBookmark(url: url) }
         }
         let name = model.selectedTab?.displayTitle ?? (url.host() ?? url.absoluteString)
-        return BookmarkActivity(mode: .add) { library.addBookmark(name: name, url: url) }
+        return BookmarkActivity(mode: .add) { pendingShareDraft = BookmarkDraft(name: name, url: url) }
     }
 
     private var tabCountIcon: some View {

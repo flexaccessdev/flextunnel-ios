@@ -7,9 +7,14 @@ import UIKit
 struct BrowserShareSheet: UIViewControllerRepresentable {
     let url: URL
     let activities: [UIActivity]
+    /// Called once the popout is dismissed (after any activity completes), so
+    /// the presenter can reset its binding and follow up with another sheet.
+    var onDismiss: () -> Void = {}
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [url], applicationActivities: activities)
+        let controller = UIActivityViewController(activityItems: [url], applicationActivities: activities)
+        controller.completionWithItemsHandler = { _, _, _, _ in onDismiss() }
+        return controller
     }
 
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
