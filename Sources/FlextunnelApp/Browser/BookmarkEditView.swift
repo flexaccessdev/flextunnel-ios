@@ -53,15 +53,23 @@ struct BookmarkEditView: View {
         }
     }
 
-    /// Resolves the edited text to a URL, prepending `https://` when no scheme
-    /// is present so a bare host stays valid.
+    /// Resolves the edited text to a navigable web URL, prepending `https://`
+    /// when no scheme is present. Only http/https URLs with a non-empty host are
+    /// accepted, so hostless input like `https://` is rejected.
     private var normalizedURL: URL? {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        if let url = URL(string: trimmed), url.scheme != nil {
-            return url
+
+        let candidate: URL?
+        if let url = URL(string: trimmed), let scheme = url.scheme?.lowercased() {
+            guard scheme == "http" || scheme == "https" else { return nil }
+            candidate = url
+        } else {
+            candidate = URL(string: "https://\(trimmed)")
         }
-        return URL(string: "https://\(trimmed)")
+
+        guard let candidate, let host = candidate.host(), !host.isEmpty else { return nil }
+        return candidate
     }
 
     private var canSave: Bool {

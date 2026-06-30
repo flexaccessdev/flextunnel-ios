@@ -296,7 +296,19 @@ final class BrowserDownloadManager: NSObject, URLSessionDownloadDelegate {
         } else {
             domainMatches = host == domain
         }
-        return domainMatches && url.path.hasPrefix(cookie.path)
+        return domainMatches && Self.path(url.path, matchesCookiePath: cookie.path)
+    }
+
+    /// RFC 6265 §5.1.4 path-match: the cookie-path is a prefix of the request
+    /// path *at a path boundary*, so `/foo` matches `/foo` and `/foo/bar` but
+    /// not `/foobar`.
+    private static func path(_ requestPath: String, matchesCookiePath cookiePath: String) -> Bool {
+        if cookiePath.isEmpty || cookiePath == "/" { return true }
+        if requestPath == cookiePath { return true }
+        guard requestPath.hasPrefix(cookiePath) else { return false }
+        if cookiePath.hasSuffix("/") { return true }
+        let boundary = requestPath.index(requestPath.startIndex, offsetBy: cookiePath.count)
+        return requestPath[boundary] == "/"
     }
 
     // MARK: - Files
@@ -342,6 +354,11 @@ final class BrowserDownloadManager: NSObject, URLSessionDownloadDelegate {
         let raw = suggested?.isEmpty == false ? suggested! : fallback
         let cleaned = raw.replacingOccurrences(of: "/", with: "_")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty || cleaned == "/" ? "download" : cleaned
+        // Reject reserved/path-resolving names so `appendingPathComponent` can't
+        // land on the directory itself or its parent (`.`/`..`).
+        if cleaned.isEmpty || cleaned == "." || cleaned == ".." || cleaned == "/" {
+            return "download"
+        }
+        return cleaned
     }
 }
