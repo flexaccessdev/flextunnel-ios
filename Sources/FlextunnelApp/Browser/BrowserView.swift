@@ -35,6 +35,7 @@ struct BrowserView: View {
             TunnelStatusPopover(
                 proxy: proxy,
                 boundPort: model.socksPort,
+                onDismiss: { showingTunnelStatus = false },
                 onStopAndReconfigure: stopAndDismiss)
                 .presentationCompactAdaptation(.sheet)
         }
@@ -239,37 +240,56 @@ private struct BottomToolbarView: View {
 private struct TunnelStatusPopover: View {
     @ObservedObject var proxy: ProxyController
     let boundPort: UInt16
+    let onDismiss: () -> Void
     let onStopAndReconfigure: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Label(healthTitle, systemImage: healthIcon)
-                .font(.headline)
-                .foregroundStyle(healthColor)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 12) {
+                    Label(healthTitle, systemImage: healthIcon)
+                        .font(.headline)
+                        .foregroundStyle(healthColor)
 
-            LabeledContent("State", value: proxy.status)
-            LabeledContent("SOCKS", value: "127.0.0.1:\(proxy.socksPort ?? boundPort)")
-            LabeledContent("Health") {
-                Label(proxy.healthy ? "alive" : "down", systemImage: healthIcon)
-                    .foregroundStyle(healthColor)
+                    Spacer(minLength: 0)
+
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(width: 32, height: 32)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Dismiss status")
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    DetailRow("State", proxy.status)
+                    DetailRow("Health", proxy.healthy ? "alive" : "down", valueColor: healthColor)
+                    DetailRow("Browser proxy", "SOCKS5 only")
+                    DetailRow("Bound SOCKS", "127.0.0.1:\(proxy.socksPort ?? boundPort)")
+
+                    if let summary = proxy.connectionSummary {
+                        DetailRow("Requested port", "\(summary.requestedSocksPort)")
+                        DetailRow("Server node id", summary.serverNodeID, monospace: true)
+                        DetailRow("Relay URLs", relayURLsText(summary.relayURLs))
+                        DetailRow("DNS discovery", summary.dnsServer ?? "default")
+                    }
+                }
+
+                if let error = proxy.lastError {
+                    DetailRow("Last error", error, valueColor: .red)
+                }
+
+                Divider()
+
+                Button(role: .destructive, action: onStopAndReconfigure) {
+                    Label("Stop and Reconfigure", systemImage: "stop.circle")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
-
-            if let error = proxy.lastError {
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Divider()
-
-            Button(role: .destructive, action: onStopAndReconfigure) {
-                Label("Stop and Reconfigure", systemImage: "stop.circle")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            .padding()
         }
-        .padding()
-        .frame(minWidth: 280, idealWidth: 320)
+        .frame(minWidth: 300, idealWidth: 340, maxHeight: 520)
     }
 
     private var healthTitle: String {
@@ -282,5 +302,38 @@ private struct TunnelStatusPopover: View {
 
     private var healthColor: Color {
         proxy.healthy ? .green : .red
+    }
+
+    private func relayURLsText(_ relayURLs: [String]) -> String {
+        relayURLs.isEmpty ? "iroh defaults" : relayURLs.joined(separator: "\n")
+    }
+}
+
+private struct DetailRow: View {
+    let title: String
+    let value: String
+    let valueColor: Color?
+    let monospace: Bool
+
+    init(_ title: String, _ value: String, valueColor: Color? = nil, monospace: Bool = false) {
+        self.title = title
+        self.value = value
+        self.valueColor = valueColor
+        self.monospace = monospace
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text(value)
+                .font(monospace ? .system(.footnote, design: .monospaced) : .footnote)
+                .foregroundStyle(valueColor ?? .primary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

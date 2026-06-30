@@ -13,6 +13,8 @@ final class ProxyController: ObservableObject {
     @Published var socksPort: UInt16?
     /// Latest healthcheck result: true while the serve loop is alive.
     @Published var healthy: Bool = false
+    /// Non-secret settings for the currently running proxy, safe to show in UI.
+    @Published private(set) var connectionSummary: ConnectionSummary?
 
     private var handle: OpaquePointer?
     private var healthTimer: Timer?
@@ -23,6 +25,13 @@ final class ProxyController: ObservableObject {
         var authToken: String
         var socksPort: UInt16
         var relayURLs: [String]
+    }
+
+    struct ConnectionSummary {
+        var serverNodeID: String
+        var requestedSocksPort: UInt16
+        var relayURLs: [String]
+        var dnsServer: String?
     }
 
     init() {
@@ -74,6 +83,11 @@ final class ProxyController: ObservableObject {
             return
         }
 
+        connectionSummary = ConnectionSummary(
+            serverNodeID: s.serverNodeID,
+            requestedSocksPort: s.socksPort,
+            relayURLs: s.relayURLs,
+            dnsServer: nil)
         socksPort = UInt16(port)
         healthy = true
         status = "running on 127.0.0.1:\(port)"
@@ -89,6 +103,7 @@ final class ProxyController: ObservableObject {
         }
         socksPort = nil
         healthy = false
+        connectionSummary = nil
         if status != "error" { status = "idle" }
     }
 

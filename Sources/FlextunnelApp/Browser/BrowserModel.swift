@@ -6,8 +6,6 @@ import Observation
 @MainActor
 @Observable
 final class BrowserModel {
-    private static let homeURL = URL(string: "https://example.com")!
-
     let socksPort: UInt16
     private(set) var tabs: [BrowserTab]
     var selectedID: BrowserTab.ID
@@ -18,7 +16,6 @@ final class BrowserModel {
         let first = BrowserTab.make(socksPort: socksPort)
         self.tabs = [first]
         self.selectedID = first.id
-        first.load(Self.homeURL)
     }
 
     var selectedTab: BrowserTab {
@@ -35,7 +32,6 @@ final class BrowserModel {
         let tab = BrowserTab.make(socksPort: socksPort)
         tabs.append(tab)
         selectedID = tab.id
-        tab.load(Self.homeURL)
     }
 
     /// Closes a tab, never dropping below one. Reselects a neighbor if the closed
