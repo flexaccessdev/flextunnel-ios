@@ -26,18 +26,24 @@ struct BrowserView: View {
             Divider()
 
             if let tab = model.selectedTab {
-                if let failure = tab.loadFailure {
-                    BrowserLoadFailureView(
-                        failure: failure,
-                        onRetry: { tab.retryFailedLoad() })
-                } else if tab.isHome {
+                if tab.isHome {
                     BrowserHomeView(
                         proxyAvailable: proxyAvailable,
                         onOpen: { model.navigate($0) })
                 } else {
+                    // Keep the WebView mounted and layer the failure screen over
+                    // it, so retrying toggles an overlay instead of tearing down
+                    // and recreating the web view (which flickers).
                     WebView(tab.page)
                         .webViewBackForwardNavigationGestures(.enabled)
                         .overlay(alignment: .top) { progressBar(for: tab.page) }
+                        .overlay {
+                            if let failure = tab.loadFailure {
+                                BrowserLoadFailureView(
+                                    failure: failure,
+                                    onRetry: { tab.retryFailedLoad() })
+                            }
+                        }
                 }
             } else {
                 EmptyBrowserView(
