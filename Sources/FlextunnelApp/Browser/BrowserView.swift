@@ -2,10 +2,10 @@ import SwiftUI
 import UIKit
 import WebKit
 
-/// Full-screen browser chrome over the proxied `WebPage`s, laid out like Firefox
-/// iOS / Onion Browser: a top address bar (tunnel status, URL field, reload/stop),
-/// the web view with a thin progress bar, and a bottom action toolbar
-/// (back/forward, share, bookmark, tab tray, overflow menu).
+/// Full-screen browser chrome over proxied `WebPage`s. The location surface
+/// follows Firefox iOS: site identity/search, URL text, and stop/reload as the
+/// trailing page action. Tunnel status is this app's custom action outside that
+/// standard browser surface.
 struct BrowserView: View {
     @State var model: BrowserModel
     @ObservedObject var proxy: ProxyController
@@ -17,17 +17,44 @@ struct BrowserView: View {
         VStack(spacing: 0) {
             AddressBarView(
                 model: model,
+                proxy: proxy,
                 proxyAvailable: proxyAvailable,
                 tunnelStatusIcon: tunnelStatusIcon,
                 tunnelStatusColor: tunnelStatusColor,
-                showingTunnelStatus: $showingTunnelStatus)
+                showingTunnelStatus: $showingTunnelStatus,
+                onStopAndReconfigure: stopAndDismiss)
             Divider()
 
-            let tab = model.selectedTab
-            WebView(tab.page)
-                .webViewBackForwardNavigationGestures(.enabled)
-                .overlay(alignment: .top) { progressBar(for: tab.page) }
-                .overlay(alignment: .bottom) { errorBanner(for: tab) }
+            if let tab = model.selectedTab {
+                if tab.isHome {
+                    BrowserHomeView(
+                        proxyAvailable: proxyAvailable,
+                        onOpen: { model.navigate($0) })
+                } else {
+                    // Keep the WebView mounted and layer the failure screen over
+                    // it, so retrying toggles an overlay instead of tearing down
+                    // and recreating the web view (which flickers).
+                    WebView(tab.page)
+                        .webViewBackForwardNavigationGestures(.enabled)
+                        .overlay(alignment: .top) { progressBar(for: tab.page) }
+                        .overlay {
+                            if let warning = tab.certificateWarning {
+                                BrowserCertificateWarningView(
+                                    warning: warning,
+                                    onProceed: { tab.resolveCertificateWarning(allow: true) },
+                                    onGoBack: { tab.resolveCertificateWarning(allow: false) })
+                            } else if let failure = tab.loadFailure {
+                                BrowserLoadFailureView(
+                                    failure: failure,
+                                    onRetry: { tab.retryFailedLoad() })
+                            }
+                        }
+                }
+            } else {
+                EmptyBrowserView(
+                    proxyAvailable: proxyAvailable,
+                    onNewTab: { model.addTab() })
+            }
 
             Divider()
             BottomActionBar(
@@ -35,14 +62,6 @@ struct BrowserView: View {
                 proxyAvailable: proxyAvailable,
                 showingTabTray: $showingTabTray,
                 onDisconnect: stopAndDismiss)
-        }
-        .popover(isPresented: $showingTunnelStatus) {
-            TunnelStatusPopover(
-                proxy: proxy,
-                boundPort: model.socksPort,
-                onDismiss: { showingTunnelStatus = false },
-                onStopAndReconfigure: stopAndDismiss)
-                .presentationCompactAdaptation(.sheet)
         }
         .fullScreenCover(isPresented: $showingTabTray) {
             TabTrayView(model: model)
@@ -58,12 +77,12 @@ struct BrowserView: View {
 
     private var tunnelStatusIcon: String {
         if proxyAvailable {
-            return "checkmark.shield.fill"
+            return "bolt.horizontal.circle.fill"
         }
         if proxy.socksPort != nil || proxy.status == "error" {
-            return "exclamationmark.shield.fill"
+            return "bolt.horizontal.circle.fill"
         }
-        return "shield.slash.fill"
+        return "bolt.horizontal.circle"
     }
 
     private var tunnelStatusColor: Color {
@@ -103,85 +122,634 @@ struct BrowserView: View {
         }
     }
 
-    @ViewBuilder
-    private func errorBanner(for tab: BrowserTab) -> some View {
-        if let error = tab.lastError {
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                Text(error).font(.footnote).lineLimit(2)
-                Spacer(minLength: 0)
-                Button {
-                    tab.lastError = nil
-                } label: {
-                    Image(systemName: "xmark")
+}
+
+/// Placeholder shown for a fresh tab that hasn't navigated yet — a wordmark and
+/// a grid of search engines, mirroring Firefox iOS's default new-tab page so
+/// startup isn't a blank web view. Tapping a tile loads it through the tunnel.
+private struct BrowserHomeView: View {
+    let proxyAvailable: Bool
+    let onOpen: (String) -> Void
+
+    /// Search engines offered as a starting point. Favicons aren't bundled here,
+    /// so each tile uses a monogram in the engine's brand color.
+    private struct SearchEngine: Identifiable {
+        let id = UUID()
+        let title: String
+        let url: String
+        let color: Color
+        var monogram: String { String(title.prefix(1)) }
+    }
+
+    private let engines = [
+        SearchEngine(title: "Google", url: "https://www.google.com/", color: Color(red: 0.26, green: 0.52, blue: 0.96)),
+        SearchEngine(title: "DuckDuckGo", url: "https://duckduckgo.com/", color: Color(red: 0.87, green: 0.40, blue: 0.16)),
+        SearchEngine(title: "Bing", url: "https://www.bing.com/", color: Color(red: 0.0, green: 0.46, blue: 0.49)),
+        SearchEngine(title: "Wikipedia", url: "https://www.wikipedia.org/", color: Color(.darkGray)),
+    ]
+
+    private let columns = [GridItem(.adaptive(minimum: 72, maximum: 96), spacing: 20)]
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 32) {
+                VStack(spacing: 12) {
+                    Image(systemName: "bolt.horizontal.circle.fill")
+                        .font(.system(size: 52, weight: .regular))
+                        .foregroundStyle(.tint)
+
+                    Text("flextunnel")
+                        .font(.largeTitle.weight(.semibold))
+
+                    Text("Search or enter an address to browse through your tunnel.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 320)
                 }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("SEARCH ENGINES")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    LazyVGrid(columns: columns, spacing: 20) {
+                        ForEach(engines) { engine in
+                            Button {
+                                onOpen(engine.url)
+                            } label: {
+                                engineTile(engine)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!proxyAvailable)
+                        }
+                    }
+                }
+                .frame(maxWidth: 420)
             }
-            .padding(10)
-            .background(.red.opacity(0.9), in: RoundedRectangle(cornerRadius: 10))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .padding(.bottom, 8)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 48)
+            .frame(maxWidth: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+    }
+
+    private func engineTile(_ engine: SearchEngine) -> some View {
+        VStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(engine.color)
+                .frame(width: 60, height: 60)
+                .overlay {
+                    Text(engine.monogram)
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(.white)
+                }
+
+            Text(engine.title)
+                .font(.caption)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
         }
     }
 }
 
-/// Top chrome: tunnel status icon, the editable address field, and reload/stop.
+private struct EmptyBrowserView: View {
+    let proxyAvailable: Bool
+    let onNewTab: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "square.on.square")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(.secondary)
+
+            Text("No Tabs")
+                .font(.title3.weight(.semibold))
+
+            Button(action: onNewTab) {
+                Label("New Tab", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!proxyAvailable)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+    }
+}
+
+private struct BrowserLoadFailureView: View {
+    let failure: BrowserLoadFailure
+    let onRetry: () -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 42, weight: .light))
+                .foregroundStyle(.secondary)
+
+            Text("Problem Loading Page")
+                .font(.title3.weight(.semibold))
+
+            Text(failure.message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .lineLimit(3)
+                .frame(maxWidth: 320)
+
+            if failure.reason != failure.message {
+                Text(failure.reason)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(4)
+                    .frame(maxWidth: 320)
+            }
+
+            Text(failure.url.host() ?? failure.url.absoluteString)
+                .font(.footnote.monospaced())
+                .foregroundStyle(.tertiary)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
+
+            Button(action: onRetry) {
+                Label("Try Again", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.borderedProminent)
+            .padding(.top, 4)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+    }
+}
+
+/// Full-screen interstitial for an untrusted TLS certificate — Chrome-style:
+/// states the connection isn't private, shows the specific reason and host, and
+/// offers going back or proceeding anyway (which trusts the host for the
+/// session). Replaces a modal alert so it reads like the load-failure page.
+private struct BrowserCertificateWarningView: View {
+    let warning: BrowserCertificateWarning
+    let onProceed: () -> Void
+    let onGoBack: () -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "exclamationmark.shield.fill")
+                .font(.system(size: 42, weight: .light))
+                .foregroundStyle(.red)
+
+            Text("Your connection is not private")
+                .font(.title3.weight(.semibold))
+                .multilineTextAlignment(.center)
+
+            Text(warning.reason)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .lineLimit(4)
+                .frame(maxWidth: 320)
+
+            Text(warning.displayHost)
+                .font(.footnote.monospaced())
+                .foregroundStyle(.tertiary)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
+
+            VStack(spacing: 10) {
+                Button(action: onGoBack) {
+                    Text("Go Back").frame(maxWidth: 280)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button(role: .destructive, action: onProceed) {
+                    Text("Continue Anyway").frame(maxWidth: 280)
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.top, 4)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+    }
+}
+
+/// Top chrome: app-specific tunnel status plus Firefox-style location surface.
 private struct AddressBarView: View {
     @Bindable var model: BrowserModel
+    let proxy: ProxyController
     let proxyAvailable: Bool
     let tunnelStatusIcon: String
     let tunnelStatusColor: Color
     @Binding var showingTunnelStatus: Bool
+    let onStopAndReconfigure: () -> Void
     @State private var editText = ""
+    @State private var showingSiteSecurity = false
     @FocusState private var addressFocused: Bool
 
     var body: some View {
         let tab = model.selectedTab
-        HStack(spacing: 10) {
-            Button {
-                showingTunnelStatus = true
-            } label: {
-                Image(systemName: tunnelStatusIcon)
-                    .foregroundStyle(tunnelStatusColor)
-                    .imageScale(.large)
-            }
-            .accessibilityLabel("Tunnel status")
+        HStack(spacing: 8) {
+            HStack(spacing: 0) {
+                leadingLocationButton(for: tab)
 
-            TextField("Search or enter address", text: $editText)
-                .textFieldStyle(.roundedBorder)
-                .keyboardType(.URL)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .submitLabel(.go)
-                .focused($addressFocused)
-                .onSubmit {
-                    guard proxyAvailable else { return }
-                    model.navigate(editText)
-                    addressFocused = false
+                ZStack(alignment: .leading) {
+                    TextField("Search or enter address", text: $editText)
+                        .textFieldStyle(.plain)
+                        .keyboardType(.webSearch)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .submitLabel(.go)
+                        .focused($addressFocused)
+                        .opacity(addressFocused ? 1 : 0)
+                        .allowsHitTesting(addressFocused)
+                        .onSubmit {
+                            guard proxyAvailable else { return }
+                            model.navigate(editText)
+                            addressFocused = false
+                        }
+                        .disabled(!proxyAvailable)
+
+                    if !addressFocused {
+                        Button {
+                            beginEditing(tab)
+                        } label: {
+                            AddressDisplayText(tab: tab)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!proxyAvailable)
+                    }
                 }
-                .disabled(!proxyAvailable)
+                .frame(maxWidth: .infinity, minHeight: 44)
 
-            Button {
-                if tab.page.isLoading { tab.stop() } else { tab.reload() }
-            } label: {
-                Image(systemName: tab.page.isLoading ? "xmark" : "arrow.clockwise")
-                    .imageScale(.large)
+                trailingLocationButton(for: tab)
             }
-            .disabled(!proxyAvailable)
-            .accessibilityLabel(tab.page.isLoading ? "Stop loading" : "Reload")
+            .frame(height: 44)
+            .padding(.leading, 2)
+            .padding(.trailing, 4)
+            .background {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(Color(.secondarySystemBackground))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(Color(.separator).opacity(0.18), lineWidth: 0.5)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .popover(isPresented: $showingSiteSecurity) {
+                if let tab {
+                    SiteSecurityPopover(tab: tab)
+                        .presentationCompactAdaptation(.popover)
+                }
+            }
+
+            tunnelStatusButton
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.bar)
-        // Reflect the active tab's URL when not editing; show the raw URL while editing.
-        .onChange(of: model.selectedID) { syncAddress(tab.page.url) }
-        .onChange(of: tab.page.url) { if !addressFocused { syncAddress(tab.page.url) } }
-        .onChange(of: addressFocused) { if addressFocused { editText = tab.page.url?.absoluteString ?? editText } }
-        .onAppear { syncAddress(tab.page.url) }
+        .onChange(of: model.selectedID) { syncAddress(model.selectedTab?.addressText) }
+        .onChange(of: tab?.addressText) { if !addressFocused { syncAddress(tab?.addressText) } }
+        .onChange(of: addressFocused) { _, focused in
+            if focused {
+                editText = tab?.addressText ?? editText
+            } else {
+                syncAddress(tab?.addressText)
+            }
+        }
+        .onAppear { syncAddress(tab?.addressText) }
     }
 
-    private func syncAddress(_ url: URL?) {
-        editText = url?.absoluteString ?? ""
+    private var tunnelStatusButton: some View {
+        Button {
+            showingTunnelStatus = true
+        } label: {
+            Image(systemName: tunnelStatusIcon)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(tunnelStatusColor)
+                .frame(width: 40, height: 44)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Tunnel status")
+        .popover(isPresented: $showingTunnelStatus, arrowEdge: .top) {
+            TunnelStatusPopover(
+                proxy: proxy,
+                boundPort: model.socksPort,
+                onDismiss: { showingTunnelStatus = false },
+                onStopAndReconfigure: onStopAndReconfigure)
+                .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    @ViewBuilder
+    private func leadingLocationButton(for tab: BrowserTab?) -> some View {
+        if addressFocused || tab?.siteSecurity == nil {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 40, height: 44)
+                .accessibilityHidden(true)
+        } else if let tab {
+            Button {
+                showingSiteSecurity = true
+            } label: {
+                Image(systemName: siteSecurityIcon(for: tab.siteSecurity))
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(siteSecurityColor(for: tab.siteSecurity))
+                    .frame(width: 40, height: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(siteSecurityAccessibilityLabel(for: tab.siteSecurity))
+        }
+    }
+
+    @ViewBuilder
+    private func trailingLocationButton(for tab: BrowserTab?) -> some View {
+        if addressFocused {
+            if !editText.isEmpty {
+                Button {
+                    editText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear address")
+            }
+        } else if let tab {
+            Button {
+                if tab.page.isLoading {
+                    tab.stop()
+                } else {
+                    tab.reload()
+                }
+            } label: {
+                Image(systemName: tab.page.isLoading ? "xmark" : "arrow.clockwise")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 40, height: 44)
+            }
+            .buttonStyle(.plain)
+            .disabled(!proxyAvailable)
+            .accessibilityLabel(tab.page.isLoading ? "Stop loading" : "Reload")
+        }
+    }
+
+    private func beginEditing(_ tab: BrowserTab?) {
+        guard proxyAvailable else { return }
+        editText = tab?.addressText ?? editText
+        addressFocused = true
+    }
+
+    private func syncAddress(_ address: String?) {
+        editText = address ?? ""
+    }
+
+    private func siteSecurityIcon(for security: BrowserSiteSecurity?) -> String {
+        switch security {
+        case .secure:
+            return "lock.fill"
+        case .notSecure:
+            return "info.circle"
+        case .certificateException:
+            return "lock.slash.fill"
+        case nil:
+            return "magnifyingglass"
+        }
+    }
+
+    private func siteSecurityColor(for security: BrowserSiteSecurity?) -> Color {
+        switch security {
+        case .secure:
+            return .secondary
+        case .notSecure:
+            return .secondary
+        case .certificateException:
+            return .orange
+        case nil:
+            return .secondary
+        }
+    }
+
+    private func siteSecurityAccessibilityLabel(for security: BrowserSiteSecurity?) -> String {
+        switch security {
+        case .secure:
+            return "Secure connection"
+        case .notSecure:
+            return "Connection is not secure"
+        case .certificateException:
+            return "Certificate exception"
+        case nil:
+            return "Search or enter address"
+        }
+    }
+}
+
+@MainActor
+private struct AddressDisplayText: View {
+    let tab: BrowserTab?
+
+    var body: some View {
+        if let tab,
+           let parts = AddressDisplayParts(tab: tab) {
+            HStack(spacing: 0) {
+                if !parts.subduedPrefix.isEmpty {
+                    Text(parts.subduedPrefix)
+                        .foregroundStyle(.secondary)
+                }
+                Text(parts.primaryText)
+                    .foregroundStyle(.primary)
+            }
+            .font(.body)
+            .lineLimit(1)
+            .truncationMode(.head)
+        } else if let address = tab?.addressText, !address.isEmpty {
+            Text(address)
+                .font(.body)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.head)
+        } else {
+            Text("Search or enter address")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+}
+
+@MainActor
+private struct AddressDisplayParts {
+    let subduedPrefix: String
+    let primaryText: String
+
+    init?(tab: BrowserTab) {
+        guard let url = tab.visibleURL,
+              let host = url.host(),
+              !host.isEmpty else {
+            return nil
+        }
+
+        let displayHost = Self.displayHost(host)
+        let portSuffix = Self.portSuffix(for: url)
+        guard Self.canSplit(host: displayHost) else {
+            subduedPrefix = ""
+            primaryText = displayHost + portSuffix
+            return
+        }
+
+        let labels = displayHost.split(separator: ".").map(String.init)
+        let registrableCount = Self.registrableLabelCount(for: labels)
+        guard labels.count > registrableCount else {
+            subduedPrefix = ""
+            primaryText = displayHost + portSuffix
+            return
+        }
+
+        subduedPrefix = labels.dropLast(registrableCount).joined(separator: ".") + "."
+        primaryText = labels.suffix(registrableCount).joined(separator: ".") + portSuffix
+    }
+
+    /// Number of trailing labels making up the registrable domain (the part to
+    /// emphasize). This is a pragmatic stand-in for the Public Suffix List,
+    /// erring toward not dimming the registrant:
+    /// - a known multi-label public suffix (`example.co.uk`) → 3;
+    /// - a longer gTLD (`.com`, `.dev`, …) → 2 (the usual eTLD+1);
+    /// - an unknown 2-letter ccTLD (`co.ke`, `github.io`, …), where 2-label and
+    ///   private suffixes are common and the registrable boundary is unknowable
+    ///   without the full PSL → no split, so the whole host stays primary rather
+    ///   than risk promoting the suffix over the registrant.
+    private static func registrableLabelCount(for labels: [String]) -> Int {
+        guard labels.count >= 3 else { return 2 }
+        let lastTwo = labels.suffix(2).joined(separator: ".").lowercased()
+        if multiLabelPublicSuffixes.contains(lastTwo) { return 3 }
+        if labels[labels.count - 1].count <= 2 { return labels.count }
+        return 2
+    }
+
+    private static let multiLabelPublicSuffixes: Set<String> = [
+        "co.uk", "org.uk", "gov.uk", "ac.uk", "me.uk", "net.uk", "sch.uk",
+        "com.au", "net.au", "org.au", "edu.au", "gov.au",
+        "co.jp", "ne.jp", "or.jp", "go.jp", "ac.jp",
+        "co.nz", "net.nz", "org.nz", "govt.nz",
+        "co.in", "net.in", "org.in", "gov.in", "ac.in",
+        "co.kr", "co.za", "com.br", "com.cn", "com.mx", "com.tr",
+        "com.sg", "com.hk", "com.tw", "co.il", "com.ar",
+    ]
+
+    private static func displayHost(_ host: String) -> String {
+        host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+    }
+
+    private static func portSuffix(for url: URL) -> String {
+        guard let port = url.port else { return "" }
+        let scheme = url.scheme?.lowercased()
+        if scheme == "https", port == 443 { return "" }
+        if scheme == "http", port == 80 { return "" }
+        return ":\(port)"
+    }
+
+    private static func canSplit(host: String) -> Bool {
+        if host == "localhost" { return false }
+        if host.hasPrefix("[") && host.hasSuffix("]") { return false }
+        if host.allSatisfy({ $0.isNumber || $0 == "." }) { return false }
+        return true
+    }
+}
+
+@MainActor
+private struct SiteSecurityPopover: View {
+    let tab: BrowserTab
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: icon)
+                .font(.headline)
+                .foregroundStyle(color)
+
+            if let url = tab.visibleURL {
+                Text(hostText(for: url))
+                    .font(.footnote.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding()
+        .frame(width: 300, alignment: .leading)
+    }
+
+    private var title: String {
+        switch tab.siteSecurity {
+        case .secure:
+            return "Secure Connection"
+        case .notSecure:
+            return "Not Secure"
+        case .certificateException:
+            return "Certificate Exception"
+        case nil:
+            return "Site Information"
+        }
+    }
+
+    private var message: String {
+        switch tab.siteSecurity {
+        case .secure:
+            return "The connection uses HTTPS."
+        case .notSecure:
+            return "The connection does not use HTTPS."
+        case .certificateException:
+            return "You allowed this certificate for the current browser session."
+        case nil:
+            return "No site information is available."
+        }
+    }
+
+    private var icon: String {
+        switch tab.siteSecurity {
+        case .secure:
+            return "lock.fill"
+        case .notSecure:
+            return "info.circle"
+        case .certificateException:
+            return "lock.slash.fill"
+        case nil:
+            return "info.circle"
+        }
+    }
+
+    private var color: Color {
+        switch tab.siteSecurity {
+        case .secure:
+            return .green
+        case .notSecure:
+            return .red
+        case .certificateException:
+            return .orange
+        case nil:
+            return .secondary
+        }
+    }
+
+    private func hostText(for url: URL) -> String {
+        guard let host = url.host() else { return url.absoluteString }
+        if let port = url.port {
+            return "\(host):\(port)"
+        }
+        return host
     }
 }
 
@@ -194,15 +762,15 @@ private struct BottomActionBar: View {
 
     var body: some View {
         let tab = model.selectedTab
-        let url = tab.page.url
+        let url = tab?.page.url
         HStack {
-            Button { tab.goBack() } label: { Image(systemName: "chevron.left") }
-                .disabled(!proxyAvailable || !tab.canGoBack)
+            Button { tab?.goBack() } label: { Image(systemName: "chevron.left") }
+                .disabled(!proxyAvailable || tab?.canGoBack != true)
 
             Spacer()
 
-            Button { tab.goForward() } label: { Image(systemName: "chevron.right") }
-                .disabled(!proxyAvailable || !tab.canGoForward)
+            Button { tab?.goForward() } label: { Image(systemName: "chevron.right") }
+                .disabled(!proxyAvailable || tab?.canGoForward != true)
 
             Spacer()
 
@@ -242,12 +810,13 @@ private struct BottomActionBar: View {
                         Label("Open in Safari (bypasses tunnel)", systemImage: "safari")
                     }
                 }
-                Button {
-                    model.closeTab(tab)
-                } label: {
-                    Label("Close Tab", systemImage: "xmark.square")
+                if let tab = tab {
+                    Button {
+                        model.closeTab(tab)
+                    } label: {
+                        Label("Close Tab", systemImage: "xmark.square")
+                    }
                 }
-                .disabled(model.tabs.count <= 1)
                 Divider()
                 Button(role: .destructive, action: onDisconnect) {
                     Label("Disconnect Tunnel", systemImage: "stop.circle")
@@ -292,26 +861,27 @@ private struct TunnelStatusPopover: View {
                     Spacer(minLength: 0)
 
                     Button(action: onDismiss) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 14, weight: .semibold))
-                            .frame(width: 32, height: 32)
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.plain)
                     .accessibilityLabel("Dismiss status")
                 }
 
                 VStack(alignment: .leading, spacing: 10) {
                     DetailRow("State", proxy.status)
                     DetailRow("Health", proxy.healthy ? "alive" : "down", valueColor: healthColor)
-                    DetailRow("Browser proxy", "SOCKS5 only")
                     DetailRow("Bound SOCKS", "127.0.0.1:\(proxy.socksPort ?? boundPort)")
 
                     if let summary = proxy.connectionSummary {
-                        DetailRow("Requested port", "\(summary.requestedSocksPort)")
                         DetailRow("Server node id", summary.serverNodeID, monospace: true)
                         DetailRow("Relay URLs", relayURLsText(summary.relayURLs))
-                        DetailRow("DNS discovery", summary.dnsServer ?? "default")
+                        DetailRow("DNS discovery", summary.dnsServer ?? "iroh discovery")
                     }
+
+                    forwardedRoutesRows
                 }
 
                 if let error = proxy.lastError {
@@ -330,12 +900,31 @@ private struct TunnelStatusPopover: View {
         .frame(minWidth: 300, idealWidth: 340, maxHeight: 520)
     }
 
+    /// What the tunnel forwards: the server's split-tunnel set. An active
+    /// whitelist lists the routed domains/CIDRs; an empty set means everything
+    /// is tunneled.
+    @ViewBuilder
+    private var forwardedRoutesRows: some View {
+        if let routes = proxy.forwardedRoutes, routes.connected {
+            if routes.isWhitelistActive {
+                if !routes.domains.isEmpty {
+                    DetailRow("Forwarded domains", routes.domains.joined(separator: "\n"), monospace: true)
+                }
+                if !routes.cidrs.isEmpty {
+                    DetailRow("Forwarded CIDRs", routes.cidrs.joined(separator: "\n"), monospace: true)
+                }
+            } else {
+                DetailRow("Forwarded", "All traffic (no whitelist)")
+            }
+        }
+    }
+
     private var healthTitle: String {
         proxy.healthy ? "Tunnel is healthy" : "Tunnel is unavailable"
     }
 
     private var healthIcon: String {
-        proxy.healthy ? "checkmark.shield.fill" : "exclamationmark.shield.fill"
+        proxy.healthy ? "bolt.horizontal.circle.fill" : "bolt.horizontal.circle"
     }
 
     private var healthColor: Color {

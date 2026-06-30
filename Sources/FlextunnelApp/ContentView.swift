@@ -7,29 +7,36 @@ struct ContentView: View {
     @State private var authToken = ""
     @State private var relayURLs = ""
     @State private var socksPortText = "18080"
-    @AppStorage("tunnelDomains") private var tunnelDomains = ""
-    @AppStorage("tunnelCIDRs") private var tunnelCIDRs = ""
     @State private var browserModel: BrowserModel?
+    @State private var didLoadToken = false
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Setup") {
-                    TextField("Server node id", text: $serverNodeID)
-                        .autocorrectionDisabled().textInputAutocapitalization(.never)
-                    SecureField("Auth token", text: $authToken)
-                        .autocorrectionDisabled().textInputAutocapitalization(.never)
-                    TextField("Relay URLs (comma-separated, optional)", text: $relayURLs)
-                        .autocorrectionDisabled().textInputAutocapitalization(.never)
-                    TextField("SOCKS bind port", text: $socksPortText)
-                        .keyboardType(.numberPad)
-                        .autocorrectionDisabled()
-                        .onChange(of: socksPortText) { _, newValue in
-                            let filtered = newValue.filter { $0.isNumber }
-                            if filtered != newValue {
-                                socksPortText = filtered
+                    LabeledField("Server node id") {
+                        TextField("", text: $serverNodeID)
+                            .autocorrectionDisabled().textInputAutocapitalization(.never)
+                    }
+                    LabeledField("Auth token") {
+                        SecureField("", text: $authToken)
+                            .autocorrectionDisabled().textInputAutocapitalization(.never)
+                    }
+                    LabeledField("Relay URLs", hint: "comma-separated, optional") {
+                        TextField("", text: $relayURLs)
+                            .autocorrectionDisabled().textInputAutocapitalization(.never)
+                    }
+                    LabeledField("SOCKS bind port") {
+                        TextField("", text: $socksPortText)
+                            .keyboardType(.numberPad)
+                            .autocorrectionDisabled()
+                            .onChange(of: socksPortText) { _, newValue in
+                                let filtered = newValue.filter { $0.isNumber }
+                                if filtered != newValue {
+                                    socksPortText = filtered
+                                }
                             }
-                        }
+                    }
                     if let portValidationMessage {
                         Text(portValidationMessage)
                             .foregroundStyle(.red)
@@ -38,21 +45,20 @@ struct ContentView: View {
                 }
 
                 Section {
-                    TextField("Tunnel domains (comma-separated, optional)", text: $tunnelDomains)
-                        .autocorrectionDisabled().textInputAutocapitalization(.never)
-                    TextField("Tunnel CIDRs / IPs (comma-separated, optional)", text: $tunnelCIDRs)
-                        .autocorrectionDisabled().textInputAutocapitalization(.never)
-                } header: {
-                    Text("Split tunnel")
-                } footer: {
-                    Text("Leave empty to tunnel everything. Otherwise only matching destinations are tunneled and the rest connect directly. Domains are exact (example.com) or wildcard (*.example.com, subdomains only). Keep in sync with the server.")
-                }
-
-                Section {
                     Button("Start proxy") {
                         proxy.start(currentSettings())
+                        // Persist the token only once it has driven a clean
+                        // start, so we never save a typo'd credential.
+                        if proxy.socksPort != nil {
+                            TokenStore.save(trimmedAuthToken)
+                        }
                     }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .frame(maxWidth: .infinity)
                     .disabled(!canStartProxy)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
 
                     if let err = proxy.lastError {
                         Text(err)
@@ -71,7 +77,10 @@ struct ContentView: View {
             }
             .onChange(of: proxy.healthy) { syncBrowserPresentation() }
             .onChange(of: proxy.socksPort) { syncBrowserPresentation() }
-            .onAppear { syncBrowserPresentation() }
+            .onAppear {
+                loadStoredToken()
+                syncBrowserPresentation()
+            }
         }
     }
 
@@ -121,9 +130,7 @@ struct ContentView: View {
             serverNodeID: trimmedServerNodeID,
             authToken: trimmedAuthToken,
             socksPort: parsedSocksPort ?? 18080,
-            relayURLs: splitCSV(relayURLs),
-            domainWhitelist: splitCSV(tunnelDomains),
-            cidrWhitelist: splitCSV(tunnelCIDRs)
+            relayURLs: splitCSV(relayURLs)
         )
     }
 
@@ -131,6 +138,15 @@ struct ContentView: View {
         s.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+    }
+
+    /// Prefill the auth token from the Keychain on first appearance.
+    private func loadStoredToken() {
+        guard !didLoadToken else { return }
+        didLoadToken = true
+        if let token = TokenStore.load() {
+            authToken = token
+        }
     }
 
     private func syncBrowserPresentation() {
@@ -143,6 +159,37 @@ struct ContentView: View {
         if browserModel?.socksPort != socksPort {
             browserModel = BrowserModel(socksPort: socksPort)
         }
+    }
+}
+
+/// A form row whose label stays visible above the field even after the field
+/// has content — unlike a placeholder, which disappears once the user types.
+private struct LabeledField<Content: View>: View {
+    let title: String
+    let hint: String?
+    @ViewBuilder let content: Content
+
+    init(_ title: String, hint: String? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.hint = hint
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let hint {
+                    Text(hint)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            content
+        }
+        .padding(.vertical, 2)
     }
 }
 
