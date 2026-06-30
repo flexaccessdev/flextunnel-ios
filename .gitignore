@@ -6,6 +6,9 @@ vendor/libflextunnel.xcframework/
 vendor/libflextunnel.a
 vendor/flextunnel.h
 
+# Local-only developer signing settings.
+Developer.xcconfig
+
 # Xcode/user state.
 xcuserdata/
 *.xcworkspace/xcuserdata/

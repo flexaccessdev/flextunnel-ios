@@ -75,6 +75,33 @@ proxy. The core logs each CONNECT's address type so you can confirm it
    Tap **Start proxy**, then browse. The **Tunnel status** button shows health,
    the bound port, and the active split-tunnel set.
 
+## Archive & deploy (signed .ipa)
+
+`scripts/create-archive-ios.sh` builds a Release `.xcarchive` and exports a
+signed `.ipa` in one step. It needs an Apple Developer Team ID, which it reads
+from `Developer.xcconfig` (gitignored, per-developer) or a `--team-id` flag.
+
+1. **Set your Team ID** (once):
+
+   ```sh
+   cp Developer.xcconfig.sample Developer.xcconfig
+   # then edit Developer.xcconfig and fill in DEVELOPMENT_TEAM
+   ```
+
+2. **Generate the project** if you haven't already (`xcodegen generate`).
+
+3. **Build and export:**
+
+   ```sh
+   scripts/create-archive-ios.sh
+   ```
+
+   The archive lands in `build/flextunnel-ios.xcarchive` and the `.ipa` in
+   `build/export/`. Pass `--team-id <ID>` to override the xcconfig, or
+   `--allow-provisioning-updates` to let Xcode create/update signing assets.
+   See `scripts/create-archive-ios.sh --help` for all options (configuration,
+   output paths, and export method, which defaults to `debugging`).
+
 ## Split-tunnel whitelist
 
 iOS `WKWebsiteDataStore.proxyConfigurations` is global — every WebView request
