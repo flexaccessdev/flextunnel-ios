@@ -73,22 +73,18 @@ struct BrowserView: View {
                 BookmarkSavedToast()
                     .padding(.bottom, 76)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
-            } else if let status = model.downloads.status {
-                DownloadStatusToast(text: status)
+            } else if let toast = model.downloads.toast {
+                DownloadStatusToast(text: toast)
                     .padding(.bottom, 76)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: model.downloads.status)
-        .sheet(item: Bindable(model.downloads).readyFile) { file in
-            BrowserShareSheet(url: file.url, activities: [])
-                .ignoresSafeArea()
-        }
-        .onChange(of: model.downloads.status) {
-            // Clear a terminal status ("Download failed") after a moment.
-            guard model.downloads.status == "Download failed" else { return }
+        .animation(.easeInOut(duration: 0.25), value: model.downloads.toast)
+        .onChange(of: model.downloads.toast) {
+            // Auto-clear the terminal download toast after a moment.
+            guard let shown = model.downloads.toast else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                if model.downloads.status == "Download failed" { model.downloads.status = nil }
+                if model.downloads.toast == shown { model.downloads.toast = nil }
             }
         }
         .fullScreenCover(isPresented: $showingTabTray) {
@@ -173,28 +169,20 @@ private struct BookmarkSavedToast: View {
     }
 }
 
-/// Transient status shown while a download is in progress or after it fails.
+/// Transient confirmation shown when a download finishes or fails.
 private struct DownloadStatusToast: View {
     let text: String
 
     private var failed: Bool { text == "Download failed" }
 
     var body: some View {
-        Label {
-            Text(text)
-        } icon: {
-            if failed {
-                Image(systemName: "exclamationmark.triangle.fill")
-            } else {
-                ProgressView().controlSize(.small).tint(.white)
-            }
-        }
-        .font(.subheadline.weight(.medium))
-        .foregroundStyle(.white)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(failed ? Color.red : Color.accentColor, in: Capsule())
-        .shadow(radius: 6, y: 2)
+        Label(text, systemImage: failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(failed ? Color.red : Color.green, in: Capsule())
+            .shadow(radius: 6, y: 2)
     }
 }
 
@@ -836,6 +824,7 @@ private struct BottomActionBar: View {
     let onDisconnect: () -> Void
     let onBookmarkSaved: () -> Void
     @State private var showingLibrary = false
+    @State private var showingDownloads = false
     @State private var shareItem: ShareItem?
     @State private var bookmarkDraft: BookmarkDraft?
     /// A draft requested from inside the share popout, applied once it dismisses
@@ -859,6 +848,13 @@ private struct BottomActionBar: View {
 
             Button { tab?.goForward() } label: { Image(systemName: "chevron.right") }
                 .disabled(!proxyAvailable || tab?.canGoForward != true)
+
+            Spacer()
+
+            Button { showingDownloads = true } label: {
+                Image(systemName: downloadsActive ? "arrow.down.circle.fill" : "arrow.down.circle")
+            }
+            .accessibilityLabel("Downloads")
 
             Spacer()
 
@@ -942,6 +938,9 @@ private struct BottomActionBar: View {
         .sheet(isPresented: $showingLibrary) {
             BookmarksHistoryView(model: model)
         }
+        .sheet(isPresented: $showingDownloads) {
+            DownloadsView(model: model)
+        }
         .sheet(item: $shareItem) { item in
             BrowserShareSheet(
                 url: item.url,
@@ -974,6 +973,10 @@ private struct BottomActionBar: View {
         }
         let name = model.selectedTab?.displayTitle ?? (url.host() ?? url.absoluteString)
         return BookmarkActivity(mode: .add) { pendingShareDraft = BookmarkDraft(name: name, url: url) }
+    }
+
+    private var downloadsActive: Bool {
+        model.downloads.items.contains { if case .downloading = $0.state { return true } else { return false } }
     }
 
     private var tabCountIcon: some View {

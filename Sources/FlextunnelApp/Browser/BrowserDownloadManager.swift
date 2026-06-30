@@ -4,28 +4,57 @@ import Observation
 import WebKit
 import os.log
 
-/// Downloads files through the same in-app SOCKS5 proxy the tabs use, then hands
-/// the finished file to a share sheet so the user can save it to Files.
-///
-/// iOS 26's `WebPage` exposes no `WKDownload` delegate, so a download navigation
-/// would otherwise stall the web view. The navigation decider cancels those
-/// navigations and routes them here, where a proxied `URLSession` fetches the
-/// file independently. Cookies are copied from the shared data store so
-/// session-gated downloads still work; other credentials (HTTP auth, client
-/// certs) are not carried over.
+/// One download tracked by the manager. Progress mutates in place so the
+/// downloads list updates live.
 @MainActor
 @Observable
-final class BrowserDownloadManager {
-    /// A finished download awaiting the user's save/share action.
-    struct ReadyFile: Identifiable {
-        let id = UUID()
-        let url: URL
+final class DownloadItem: Identifiable {
+    enum State {
+        case downloading
+        case finished(URL)
+        case failed(String)
     }
 
-    /// Set when a download finishes; drives a share sheet. Cleared once shown.
-    var readyFile: ReadyFile?
-    /// Transient status text for the toast (nil when idle).
-    var status: String?
+    let id = UUID()
+    let sourceURL: URL
+    let startedAt: Date
+    var filename: String
+    var state: State = .downloading
+    var bytesWritten: Int64 = 0
+    /// Expected total; ≤ 0 when the server didn't report a length.
+    var totalBytes: Int64 = 0
+    /// Maps this item back to its `URLSessionTask`.
+    var taskIdentifier: Int?
+
+    init(filename: String, sourceURL: URL, startedAt: Date) {
+        self.filename = filename
+        self.sourceURL = sourceURL
+        self.startedAt = startedAt
+    }
+
+    /// Download progress in 0...1, or nil when the total length is unknown
+    /// (drives an indeterminate progress bar).
+    var fractionComplete: Double? {
+        guard totalBytes > 0 else { return nil }
+        return min(1, Double(bytesWritten) / Double(totalBytes))
+    }
+}
+
+/// Firefox-style download manager. Files the WebView can't display are routed
+/// here (iOS 26's `WebPage` has no download delegate), fetched through the same
+/// in-app SOCKS5 proxy the tabs use, and tracked in `items` with live progress.
+///
+/// Session-only: the list lives in memory and `tmp/downloads/` is wiped on
+/// launch, so nothing is orphaned across runs. Cookies are copied from the
+/// shared data store so session-gated downloads work; other credentials (HTTP
+/// auth, client certs) are not carried over.
+@MainActor
+@Observable
+final class BrowserDownloadManager: NSObject, URLSessionDownloadDelegate {
+    private(set) var items: [DownloadItem] = []
+    /// Transient confirmation for terminal events ("Downloaded …" / "Download
+    /// failed"), shown briefly by the browser chrome.
+    var toast: String?
 
     private let socksPort: UInt16
     private let websiteDataStore: WKWebsiteDataStore
@@ -34,6 +63,8 @@ final class BrowserDownloadManager {
     init(socksPort: UInt16, websiteDataStore: WKWebsiteDataStore) {
         self.socksPort = socksPort
         self.websiteDataStore = websiteDataStore
+        super.init()
+        Self.resetDownloadsDirectory()
     }
 
     @ObservationIgnored private lazy var session: URLSession = {
@@ -42,28 +73,108 @@ final class BrowserDownloadManager {
             host: "127.0.0.1",
             port: NWEndpoint.Port(rawValue: socksPort)!)
         config.proxyConfigurations = [ProxyConfiguration(socksv5Proxy: endpoint)]
-        return URLSession(configuration: config)
+        return URLSession(configuration: config, delegate: self, delegateQueue: .main)
     }()
 
-    func download(_ request: URLRequest, suggestedFilename: String?) async {
+    // MARK: - Starting downloads
+
+    func startDownload(_ request: URLRequest, suggestedFilename: String?) async {
         guard let url = request.url else { return }
         let filename = Self.sanitizedFilename(suggestedFilename, url: url)
-        status = "Downloading \(filename)…"
         log.info("downloading \(filename, privacy: .public) via in-app SOCKS5")
 
         var req = request
         await applyCookies(to: &req, url: url)
 
-        do {
-            let (tempURL, _) = try await session.download(for: req)
-            let dest = try moveToTemporary(tempURL, filename: filename)
-            status = nil
-            readyFile = ReadyFile(url: dest)
-        } catch {
-            log.error("download failed: \(error.localizedDescription, privacy: .private)")
-            status = "Download failed"
+        let item = DownloadItem(filename: filename, sourceURL: url, startedAt: Date())
+        let task = session.downloadTask(with: req)
+        item.taskIdentifier = task.taskIdentifier
+        items.insert(item, at: 0)
+        task.resume()
+    }
+
+    // MARK: - List management
+
+    func remove(_ item: DownloadItem) {
+        if let id = item.taskIdentifier {
+            session.getAllTasks { tasks in
+                tasks.first { $0.taskIdentifier == id }?.cancel()
+            }
+        }
+        if case .finished(let url) = item.state {
+            try? FileManager.default.removeItem(at: url)
+        }
+        items.removeAll { $0.id == item.id }
+    }
+
+    func clearAll() {
+        for item in items { remove(item) }
+    }
+
+    // MARK: - URLSessionDownloadDelegate (delegateQueue is .main)
+
+    nonisolated func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        MainActor.assumeIsolated {
+            guard let item = item(for: downloadTask.taskIdentifier) else { return }
+            item.bytesWritten = totalBytesWritten
+            item.totalBytes = totalBytesExpectedToWrite
         }
     }
+
+    nonisolated func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        // Must move the file synchronously: URLSession deletes `location` once
+        // this call returns.
+        let suggested = downloadTask.response?.suggestedFilename
+        let sourceURL = downloadTask.originalRequest?.url
+        let dest = Self.moveToDownloads(location, suggested: suggested, sourceURL: sourceURL)
+
+        MainActor.assumeIsolated {
+            guard let item = item(for: downloadTask.taskIdentifier) else { return }
+            guard let dest else {
+                item.state = .failed("Could not save the file.")
+                toast = "Download failed"
+                return
+            }
+            item.filename = dest.lastPathComponent
+            item.state = .finished(dest)
+            toast = "Downloaded \(item.filename)"
+        }
+    }
+
+    nonisolated func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        guard let error else { return }
+        let nsError = error as NSError
+        // A user-initiated cancel (from remove) isn't a failure.
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled { return }
+
+        MainActor.assumeIsolated {
+            guard let item = item(for: task.taskIdentifier) else { return }
+            if case .finished = item.state { return }
+            log.error("download failed: \(error.localizedDescription, privacy: .private)")
+            item.state = .failed(error.localizedDescription)
+            toast = "Download failed"
+        }
+    }
+
+    private func item(for taskIdentifier: Int) -> DownloadItem? {
+        items.first { $0.taskIdentifier == taskIdentifier }
+    }
+
+    // MARK: - Cookies
 
     /// Copies cookies from the shared web data store onto the outgoing request so
     /// downloads behind a login work.
@@ -93,17 +204,45 @@ final class BrowserDownloadManager {
         return domainMatches && url.path.hasPrefix(cookie.path)
     }
 
-    private func moveToTemporary(_ tempURL: URL, filename: String) throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("downloads", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let dest = dir.appendingPathComponent(filename)
-        try? FileManager.default.removeItem(at: dest)
-        try FileManager.default.moveItem(at: tempURL, to: dest)
-        return dest
+    // MARK: - Files
+
+    nonisolated private static func downloadsDirectory() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("downloads", isDirectory: true)
     }
 
-    private static func sanitizedFilename(_ suggested: String?, url: URL) -> String {
+    /// Wipes and recreates `tmp/downloads/` so files from a previous session
+    /// (e.g. after a force-quit) don't linger.
+    private static func resetDownloadsDirectory() {
+        let dir = downloadsDirectory()
+        try? FileManager.default.removeItem(at: dir)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+
+    /// Moves a just-finished temp file into `tmp/downloads/` under a unique,
+    /// extension-preserving name. Returns nil on failure.
+    nonisolated private static func moveToDownloads(_ tempURL: URL, suggested: String?, sourceURL: URL?) -> URL? {
+        let dir = downloadsDirectory()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let name = sanitizedFilename(suggested, url: sourceURL ?? tempURL)
+        var dest = dir.appendingPathComponent(name)
+        // Avoid clobbering an existing file from an earlier same-named download.
+        if FileManager.default.fileExists(atPath: dest.path) {
+            let ext = (name as NSString).pathExtension
+            let base = (name as NSString).deletingPathExtension
+            let unique = ext.isEmpty ? "\(base)-\(UUID().uuidString.prefix(8))"
+                                     : "\(base)-\(UUID().uuidString.prefix(8)).\(ext)"
+            dest = dir.appendingPathComponent(unique)
+        }
+        do {
+            try FileManager.default.moveItem(at: tempURL, to: dest)
+            return dest
+        } catch {
+            return nil
+        }
+    }
+
+    nonisolated private static func sanitizedFilename(_ suggested: String?, url: URL) -> String {
         let fallback = url.lastPathComponent
         let raw = suggested?.isEmpty == false ? suggested! : fallback
         let cleaned = raw.replacingOccurrences(of: "/", with: "_")

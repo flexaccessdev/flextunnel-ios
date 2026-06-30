@@ -80,7 +80,7 @@ final class BrowserTab: Identifiable {
             await tab?.requestCertificateWarning(warning) ?? false
         }
         navigationDecider.downloadHandler = { request, suggestedFilename in
-            Task { await downloads.download(request, suggestedFilename: suggestedFilename) }
+            Task { await downloads.startDownload(request, suggestedFilename: suggestedFilename) }
         }
         tab.observationTask = Task { [weak tab] in await tab?.observeNavigations() }
         return tab
