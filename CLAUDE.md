@@ -1,3 +1,4 @@
 - strict no backward compatibility
 - make change on sibling project ../flextunnel, which is the library used by this project, if needed 
 - target iOS 26 unless the webkit is downgraded to WKWebView
+- regenerate the project from project.yml after code changes
