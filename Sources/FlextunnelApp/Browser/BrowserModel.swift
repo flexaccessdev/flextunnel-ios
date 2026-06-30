@@ -13,7 +13,9 @@ final class BrowserModel {
     private(set) var tabs: [BrowserTab]
     var selectedID: BrowserTab.ID?
     var proxyIsAvailable = true
-    private let websiteDataStore = WKWebsiteDataStore.nonPersistent()
+    // Persistent (default) store so cookies, logins, and cache survive across
+    // launches like a mainstream browser. (Downloads stay session-only by design.)
+    private let websiteDataStore = WKWebsiteDataStore.default()
     private let certificateTrustStore = BrowserCertificateTrustStore()
 
     init(socksPort: UInt16, library: BrowserLibrary) {

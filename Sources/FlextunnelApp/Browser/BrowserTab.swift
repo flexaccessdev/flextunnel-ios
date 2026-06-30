@@ -54,7 +54,8 @@ final class BrowserTab: Identifiable {
     }
 
     /// Build a tab whose `WebPage` is proxied through the loopback SOCKS5 listener.
-    /// The shared non-persistent data store keeps all tabs in one ephemeral session.
+    /// All tabs share the persistent default data store, so cookies and logins
+    /// carry across tabs and survive relaunch.
     static func make(
         socksPort: UInt16,
         websiteDataStore: WKWebsiteDataStore,
