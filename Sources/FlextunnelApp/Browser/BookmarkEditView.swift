@@ -60,15 +60,25 @@ struct BookmarkEditView: View {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
+        // Detect an explicit scheme by the "://" separator, not via
+        // `URL(string:).scheme`: a bare "host:port" like "intranet:8443" parses
+        // its host as the scheme and would be wrongly rejected.
+        let lower = trimmed.lowercased()
         let candidate: URL?
-        if let url = URL(string: trimmed), let scheme = url.scheme?.lowercased() {
-            guard scheme == "http" || scheme == "https" else { return nil }
-            candidate = url
+        if lower.hasPrefix("http://") || lower.hasPrefix("https://") {
+            candidate = URL(string: trimmed)
+        } else if lower.contains("://") {
+            // A real non-web scheme (ftp://, file://, …) — not navigable here.
+            return nil
         } else {
+            // Scheme-less: bare host, host:port, or host/path — default to https.
             candidate = URL(string: "https://\(trimmed)")
         }
 
-        guard let candidate, let host = candidate.host(), !host.isEmpty else { return nil }
+        guard let candidate,
+              let scheme = candidate.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = candidate.host(), !host.isEmpty else { return nil }
         return candidate
     }
 

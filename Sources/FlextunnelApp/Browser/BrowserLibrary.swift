@@ -39,8 +39,9 @@ struct HistoryEntry: Identifiable, Codable, Equatable {
 /// - written with Data Protection `…UntilFirstUserAuthentication` (encrypted at
 ///   rest, readable after the first unlock so it survives backgrounding);
 /// - excluded from iCloud / device backups.
-/// (WebKit's own data store is non-persistent, so this is our own lightweight
-/// record of visited pages, independent of it.)
+/// (WebKit's shared default data store persists browser session data like
+/// cookies and logins; BrowserLibrary persists the app's own bookmark and
+/// history JSON records.)
 @MainActor
 @Observable
 final class BrowserLibrary {
