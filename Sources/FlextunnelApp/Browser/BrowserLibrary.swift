@@ -32,17 +32,15 @@ struct HistoryEntry: Identifiable, Codable, Equatable {
 }
 
 /// Owns the user's bookmarks and browsing history and persists both as JSON
-/// files in the app container, matching how mainstream browsers store history.
+/// files in the app container, the way mainstream browsers store this data.
 ///
-/// Because history (and bookmarked URLs) is sensitive in a tunnel browser, the
-/// files follow the protections mainstream iOS browsers rely on rather than the
-/// weaker UserDefaults plist:
+/// The files use the standard at-rest protections mainstream iOS browsers apply
+/// to their history store, rather than the weaker UserDefaults plist:
 /// - written with Data Protection `…UntilFirstUserAuthentication` (encrypted at
 ///   rest, readable after the first unlock so it survives backgrounding);
-/// - excluded from iCloud / device backups, so the record never leaves the
-///   device — like the auth token in `TokenStore`.
-/// (WebKit's own data store stays non-persistent; this is our own lightweight
-/// record, independent of it.)
+/// - excluded from iCloud / device backups.
+/// (WebKit's own data store is non-persistent, so this is our own lightweight
+/// record of visited pages, independent of it.)
 @MainActor
 @Observable
 final class BrowserLibrary {
@@ -169,8 +167,8 @@ final class BrowserLibrary {
         try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
-    /// Removes browsing data left in UserDefaults by earlier builds so the
-    /// sensitive record doesn't linger in the weaker, backup-eligible store.
+    /// Removes browsing data left in UserDefaults by earlier builds so it
+    /// doesn't linger in the weaker, backup-eligible store.
     private static func purgeLegacyUserDefaults() {
         UserDefaults.standard.removeObject(forKey: "bookmarks")
         UserDefaults.standard.removeObject(forKey: "history")
