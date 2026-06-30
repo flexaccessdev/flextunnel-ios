@@ -12,6 +12,8 @@ struct BrowserView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showingTunnelStatus = false
     @State private var showingTabTray = false
+    @State private var showBookmarkSaved = false
+    @State private var showingFind = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,6 +38,7 @@ struct BrowserView: View {
                     // and recreating the web view (which flickers).
                     WebView(tab.page)
                         .webViewBackForwardNavigationGestures(.enabled)
+                        .findNavigator(isPresented: $showingFind)
                         .overlay(alignment: .top) { progressBar(for: tab.page) }
                         .overlay {
                             if let warning = tab.certificateWarning {
@@ -61,7 +64,36 @@ struct BrowserView: View {
                 model: model,
                 proxyAvailable: proxyAvailable,
                 showingTabTray: $showingTabTray,
-                onDisconnect: stopAndDismiss)
+                showingFind: $showingFind,
+                onDisconnect: stopAndDismiss,
+                onBookmarkSaved: flashBookmarkSaved)
+        }
+        .overlay(alignment: .bottom) {
+            if showBookmarkSaved {
+                BookmarkSavedToast()
+                    .padding(.bottom, 76)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let toast = model.downloads.toast {
+                DownloadStatusToast(toast: toast)
+                    .padding(.bottom, 76)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .sheet(item: Bindable(model.downloads).pendingPrompt) { prompt in
+            DownloadPromptView(
+                prompt: prompt,
+                onDownload: { model.downloads.confirm(prompt) },
+                onCancel: { model.downloads.cancelPrompt() })
+                .presentationDetents([.height(220)])
+                .presentationDragIndicator(.visible)
+        }
+        .animation(.easeInOut(duration: 0.25), value: model.downloads.toast)
+        .onChange(of: model.downloads.toast) {
+            // Auto-clear the terminal download toast after a moment.
+            guard let shown = model.downloads.toast else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                if model.downloads.toast == shown { model.downloads.toast = nil }
+            }
         }
         .fullScreenCover(isPresented: $showingTabTray) {
             TabTrayView(model: model)
@@ -122,6 +154,42 @@ struct BrowserView: View {
         }
     }
 
+    /// Briefly shows the "Bookmark Saved" toast, then fades it out.
+    private func flashBookmarkSaved() {
+        withAnimation(.spring(duration: 0.3)) { showBookmarkSaved = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+            withAnimation(.easeOut(duration: 0.3)) { showBookmarkSaved = false }
+        }
+    }
+
+}
+
+/// Transient confirmation shown after a bookmark is saved.
+private struct BookmarkSavedToast: View {
+    var body: some View {
+        Label("Bookmark Saved", systemImage: "checkmark.circle.fill")
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.green, in: Capsule())
+            .shadow(radius: 6, y: 2)
+    }
+}
+
+/// Transient confirmation shown when a download finishes or fails.
+private struct DownloadStatusToast: View {
+    let toast: DownloadToast
+
+    var body: some View {
+        Label(toast.message, systemImage: toast.isFailure ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(toast.isFailure ? Color.red : Color.green, in: Capsule())
+            .shadow(radius: 6, y: 2)
+    }
 }
 
 /// Placeholder shown for a fresh tab that hasn't navigated yet — a wordmark and
@@ -758,7 +826,22 @@ private struct BottomActionBar: View {
     @Bindable var model: BrowserModel
     let proxyAvailable: Bool
     @Binding var showingTabTray: Bool
+    @Binding var showingFind: Bool
     let onDisconnect: () -> Void
+    let onBookmarkSaved: () -> Void
+    @State private var showingLibrary = false
+    @State private var showingDownloads = false
+    @State private var shareItem: ShareItem?
+    @State private var bookmarkDraft: BookmarkDraft?
+    /// A draft requested from inside the share popout, applied once it dismisses
+    /// so we never present two sheets at once.
+    @State private var pendingShareDraft: BookmarkDraft?
+
+    /// Wraps the URL being shared so it can drive `.sheet(item:)`.
+    private struct ShareItem: Identifiable {
+        let url: URL
+        var id: String { url.absoluteString }
+    }
 
     var body: some View {
         let tab = model.selectedTab
@@ -774,11 +857,17 @@ private struct BottomActionBar: View {
 
             Spacer()
 
+            Button { showingDownloads = true } label: {
+                Image(systemName: downloadsActive ? "arrow.down.circle.fill" : "arrow.down.circle")
+            }
+            .accessibilityLabel("Downloads")
+
+            Spacer()
+
             if let url {
-                ShareLink(item: url) {
-                    Image(systemName: "square.and.arrow.up")
-                }
-                .disabled(!proxyAvailable)
+                Button { shareItem = ShareItem(url: url) } label: { Image(systemName: "square.and.arrow.up") }
+                    .disabled(!proxyAvailable)
+                    .accessibilityLabel("Share")
             } else {
                 Image(systemName: "square.and.arrow.up")
                     .foregroundStyle(.tertiary)
@@ -786,9 +875,8 @@ private struct BottomActionBar: View {
 
             Spacer()
 
-            // Placeholder — bookmarking is not implemented yet.
-            Button {} label: { Image(systemName: "bookmark") }
-                .disabled(true)
+            Button { showingLibrary = true } label: { Image(systemName: "bookmark") }
+                .accessibilityLabel("Bookmarks and history")
 
             Spacer()
 
@@ -799,11 +887,34 @@ private struct BottomActionBar: View {
 
             Menu {
                 if let url {
+                    if model.library.isBookmarked(url) {
+                        Button {
+                            model.library.removeBookmark(url: url)
+                        } label: {
+                            Label("Remove Bookmark", systemImage: "bookmark.slash")
+                        }
+                    } else {
+                        Button {
+                            bookmarkDraft = BookmarkDraft(
+                                name: tab?.displayTitle ?? (url.host() ?? url.absoluteString),
+                                url: url)
+                        } label: {
+                            Label("Add Bookmark", systemImage: "bookmark")
+                        }
+                    }
                     Button {
                         UIPasteboard.general.string = url.absoluteString
                     } label: {
                         Label("Copy URL", systemImage: "doc.on.doc")
                     }
+                    Button {
+                        showingFind = true
+                    } label: {
+                        Label("Find in Page", systemImage: "magnifyingglass")
+                    }
+                }
+                Divider()
+                if let url {
                     Button {
                         UIApplication.shared.open(url)
                     } label: {
@@ -830,6 +941,48 @@ private struct BottomActionBar: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
         .background(.bar)
+        .sheet(isPresented: $showingLibrary) {
+            BookmarksHistoryView(model: model)
+        }
+        .sheet(isPresented: $showingDownloads) {
+            DownloadsView(model: model)
+        }
+        .sheet(item: $shareItem) { item in
+            BrowserShareSheet(
+                url: item.url,
+                activities: [bookmarkActivity(for: item.url)],
+                onDismiss: {
+                    shareItem = nil
+                    // Present the editor only after the popout has gone, so the
+                    // two sheets never overlap.
+                    if let draft = pendingShareDraft {
+                        pendingShareDraft = nil
+                        DispatchQueue.main.async { bookmarkDraft = draft }
+                    }
+                })
+                .ignoresSafeArea()
+        }
+        .sheet(item: $bookmarkDraft) { draft in
+            BookmarkEditView(draft: draft) { name, url in
+                model.library.addBookmark(name: name, url: url)
+                onBookmarkSaved()
+            }
+        }
+    }
+
+    /// Builds the share-popout bookmark action. Removal happens immediately;
+    /// adding stashes a draft so the editor opens once the popout dismisses.
+    private func bookmarkActivity(for url: URL) -> BookmarkActivity {
+        let library = model.library
+        if library.isBookmarked(url) {
+            return BookmarkActivity(mode: .remove) { library.removeBookmark(url: url) }
+        }
+        let name = model.selectedTab?.displayTitle ?? (url.host() ?? url.absoluteString)
+        return BookmarkActivity(mode: .add) { pendingShareDraft = BookmarkDraft(name: name, url: url) }
+    }
+
+    private var downloadsActive: Bool {
+        model.downloads.items.contains { if case .downloading = $0.state { return true } else { return false } }
     }
 
     private var tabCountIcon: some View {

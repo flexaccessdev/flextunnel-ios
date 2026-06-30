@@ -1,3 +1,4 @@
+- purpose: a private-network access browser — reaches private resources through the flextunnel tunnel, split-tunnel by default (non-whitelisted traffic bypasses the proxy) with the option to route all traffic; behaves like a mainstream browser, not a privacy/anonymity browser
 - strict no backward compatibility
 - make change on sibling project ../flextunnel, which is the library used by this project, if needed 
 - target iOS 26 unless the webkit is downgraded to WKWebView

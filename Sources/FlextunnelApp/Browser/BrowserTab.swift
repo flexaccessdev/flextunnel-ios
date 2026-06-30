@@ -28,7 +28,13 @@ final class BrowserTab: Identifiable {
     private let log = Logger(subsystem: "com.example.flextunnel", category: "webview")
     private let certificateTrustStore: BrowserCertificateTrustStore
     private let navigationDecider: BrowserNavigationDecider
+    private let library: BrowserLibrary
     private var lastAttemptedURL: URL?
+
+    /// When true, the home view is shown even though `page` still holds a loaded
+    /// document — set by `goBack()` stepping off the first page, cleared by any
+    /// load or by `goForward()` returning to the page.
+    private var presentingHome = false
     private var certificateWarningContinuation: CheckedContinuation<Bool, Never>?
 
     /// Drains `page.navigations` for the tab's whole lifetime, independent of
@@ -38,19 +44,24 @@ final class BrowserTab: Identifiable {
     private init(
         page: WebPage,
         certificateTrustStore: BrowserCertificateTrustStore,
-        navigationDecider: BrowserNavigationDecider
+        navigationDecider: BrowserNavigationDecider,
+        library: BrowserLibrary
     ) {
         self.page = page
         self.certificateTrustStore = certificateTrustStore
         self.navigationDecider = navigationDecider
+        self.library = library
     }
 
     /// Build a tab whose `WebPage` is proxied through the loopback SOCKS5 listener.
-    /// The shared non-persistent data store keeps all tabs in one ephemeral session.
+    /// All tabs share the persistent default data store, so cookies and logins
+    /// carry across tabs and survive relaunch.
     static func make(
         socksPort: UInt16,
         websiteDataStore: WKWebsiteDataStore,
-        certificateTrustStore: BrowserCertificateTrustStore
+        certificateTrustStore: BrowserCertificateTrustStore,
+        library: BrowserLibrary,
+        downloads: BrowserDownloadManager
     ) -> BrowserTab {
         var config = WebPage.Configuration()
         config.websiteDataStore = websiteDataStore
@@ -64,9 +75,13 @@ final class BrowserTab: Identifiable {
         let tab = BrowserTab(
             page: WebPage(configuration: config, navigationDecider: navigationDecider),
             certificateTrustStore: certificateTrustStore,
-            navigationDecider: navigationDecider)
+            navigationDecider: navigationDecider,
+            library: library)
         navigationDecider.certificateWarningHandler = { [weak tab] warning in
             await tab?.requestCertificateWarning(warning) ?? false
+        }
+        navigationDecider.downloadHandler = { request, response in
+            Task { await downloads.requestDownload(request, response: response) }
         }
         tab.observationTask = Task { [weak tab] in await tab?.observeNavigations() }
         return tab
@@ -99,11 +114,17 @@ final class BrowserTab: Identifiable {
         return addressText.isEmpty ? "New Tab" : addressText
     }
 
-    var canGoBack: Bool { !page.backForwardList.backList.isEmpty }
-    var canGoForward: Bool { !page.backForwardList.forwardList.isEmpty }
+    /// Back is enabled whenever we're off the home view: it either steps through
+    /// the page's web history or, on the first page, returns to home.
+    var canGoBack: Bool { !isHome }
+    var canGoForward: Bool {
+        if presentingHome && page.url != nil { return true }
+        return !page.backForwardList.forwardList.isEmpty
+    }
 
     var visibleURL: URL? {
-        loadFailure?.url ?? page.url ?? lastAttemptedURL
+        if presentingHome { return nil }
+        return loadFailure?.url ?? page.url ?? lastAttemptedURL
     }
 
     /// True before the tab has navigated anywhere — no committed page, no
@@ -137,6 +158,7 @@ final class BrowserTab: Identifiable {
     // MARK: - Navigation
 
     func load(_ url: URL, displayAddress: String? = nil) {
+        presentingHome = false
         lastAttemptedURL = url
         addressText = displayAddress ?? url.absoluteString
         loadFailure = nil
@@ -145,7 +167,13 @@ final class BrowserTab: Identifiable {
     }
 
     func goBack() {
-        guard let item = page.backForwardList.backList.last else { return }
+        // On the first page there's no web history to step into, so back
+        // returns to the home view instead.
+        guard let item = page.backForwardList.backList.last else {
+            goHome()
+            return
+        }
+        presentingHome = false
         lastAttemptedURL = item.url
         addressText = item.url.absoluteString
         loadFailure = nil
@@ -153,11 +181,27 @@ final class BrowserTab: Identifiable {
     }
 
     func goForward() {
+        // Returning from home re-reveals the already-loaded page.
+        if presentingHome, let url = page.url {
+            presentingHome = false
+            lastAttemptedURL = url
+            addressText = url.absoluteString
+            loadFailure = nil
+            return
+        }
         guard let item = page.backForwardList.forwardList.first else { return }
         lastAttemptedURL = item.url
         addressText = item.url.absoluteString
         loadFailure = nil
         page.load(item)
+    }
+
+    /// Reveals the home view without unloading `page`, so `goForward()` can
+    /// return to it.
+    private func goHome() {
+        presentingHome = true
+        loadFailure = nil
+        addressText = ""
     }
 
     func reload() {
@@ -210,6 +254,11 @@ final class BrowserTab: Identifiable {
             if let url = page.url {
                 addressText = url.absoluteString
             }
+            // Record into history once the page has fully loaded, so the title
+            // (which arrives with the document) is available.
+            if case .finished = event, let url = page.url {
+                library.recordVisit(title: page.title, url: url)
+            }
         case .startedProvisionalNavigation, .receivedServerRedirect:
             break
         @unknown default:
@@ -220,6 +269,9 @@ final class BrowserTab: Identifiable {
     private func handleNavigationError(_ error: Error) {
         let nsError = underlyingNSError(from: error)
         guard nsError.code != NSURLErrorCancelled else { return }
+        // A navigation we cancelled to hand off as a download reports a policy
+        // interruption — not a real failure, so don't show the error screen.
+        if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 { return }
 
         let attemptedURL = failingURL(from: error) ?? lastAttemptedURL ?? page.url
         let message = Self.userFacingMessage(for: nsError)
@@ -341,11 +393,50 @@ final class BrowserCertificateTrustStore {
 @MainActor
 final class BrowserNavigationDecider: WebPage.NavigationDeciding {
     var certificateWarningHandler: ((BrowserCertificateWarning) async -> Bool)?
+    /// Invoked with the request (and the navigation response when one exists)
+    /// when a navigation turns out to be a download. iOS 26's `WebPage` can't
+    /// deliver the download itself, so we cancel the navigation and fetch it
+    /// separately.
+    var downloadHandler: ((URLRequest, URLResponse?) -> Void)?
 
     private let certificateTrustStore: BrowserCertificateTrustStore
+    /// The most recent navigation action's request, kept so the response path can
+    /// preserve the original method/body/headers — `NavigationResponse` doesn't
+    /// expose the request, and rebuilding from the URL alone would drop them.
+    private var lastNavigationRequest: URLRequest?
 
     init(certificateTrustStore: BrowserCertificateTrustStore) {
         self.certificateTrustStore = certificateTrustStore
+    }
+
+    func decidePolicy(
+        for action: WebPage.NavigationAction,
+        preferences: inout WebPage.NavigationPreferences
+    ) async -> WKNavigationActionPolicy {
+        lastNavigationRequest = action.request
+        if action.shouldPerformDownload {
+            downloadHandler?(action.request, nil)
+            return .cancel
+        }
+        return .allow
+    }
+
+    func decidePolicy(for response: WebPage.NavigationResponse) async -> WKNavigationResponsePolicy {
+        // A response WebKit can't display is a download. Cancel here (otherwise
+        // the navigation hangs, since WebPage has no download delegate) and hand
+        // it to the proxied downloader.
+        guard response.canShowMimeType else {
+            if let url = response.response.url {
+                // Reuse the original request when it's for this URL (preserving
+                // method/body/headers); after a redirect the URL differs, so fall
+                // back to a plain GET on the final URL.
+                let request = lastNavigationRequest.flatMap { $0.url == url ? $0 : nil }
+                    ?? URLRequest(url: url)
+                downloadHandler?(request, response.response)
+            }
+            return .cancel
+        }
+        return .allow
     }
 
     func decideAuthenticationChallengeDisposition(

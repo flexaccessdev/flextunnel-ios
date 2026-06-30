@@ -8,18 +8,27 @@ import WebKit
 @Observable
 final class BrowserModel {
     let socksPort: UInt16
+    let library: BrowserLibrary
+    let downloads: BrowserDownloadManager
     private(set) var tabs: [BrowserTab]
     var selectedID: BrowserTab.ID?
     var proxyIsAvailable = true
-    private let websiteDataStore = WKWebsiteDataStore.nonPersistent()
+    // Persistent (default) store so cookies, logins, and cache survive across
+    // launches like a mainstream browser. (Downloads stay session-only by design.)
+    private let websiteDataStore = WKWebsiteDataStore.default()
     private let certificateTrustStore = BrowserCertificateTrustStore()
 
-    init(socksPort: UInt16) {
+    init(socksPort: UInt16, library: BrowserLibrary) {
         self.socksPort = socksPort
+        self.library = library
+        let downloads = BrowserDownloadManager(socksPort: socksPort, websiteDataStore: websiteDataStore)
+        self.downloads = downloads
         let first = BrowserTab.make(
             socksPort: socksPort,
             websiteDataStore: websiteDataStore,
-            certificateTrustStore: certificateTrustStore)
+            certificateTrustStore: certificateTrustStore,
+            library: library,
+            downloads: downloads)
         self.tabs = [first]
         self.selectedID = first.id
     }
@@ -42,7 +51,9 @@ final class BrowserModel {
         let tab = BrowserTab.make(
             socksPort: socksPort,
             websiteDataStore: websiteDataStore,
-            certificateTrustStore: certificateTrustStore)
+            certificateTrustStore: certificateTrustStore,
+            library: library,
+            downloads: downloads)
         tabs.append(tab)
         selectedID = tab.id
         return tab
@@ -74,6 +85,7 @@ final class BrowserModel {
 
     func stopAll() {
         tabs.forEach { $0.stop() }
+        downloads.shutdown()
         proxyIsAvailable = false
     }
 
