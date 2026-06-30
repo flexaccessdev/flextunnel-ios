@@ -8,18 +8,21 @@ import WebKit
 @Observable
 final class BrowserModel {
     let socksPort: UInt16
+    let library: BrowserLibrary
     private(set) var tabs: [BrowserTab]
     var selectedID: BrowserTab.ID?
     var proxyIsAvailable = true
     private let websiteDataStore = WKWebsiteDataStore.nonPersistent()
     private let certificateTrustStore = BrowserCertificateTrustStore()
 
-    init(socksPort: UInt16) {
+    init(socksPort: UInt16, library: BrowserLibrary) {
         self.socksPort = socksPort
+        self.library = library
         let first = BrowserTab.make(
             socksPort: socksPort,
             websiteDataStore: websiteDataStore,
-            certificateTrustStore: certificateTrustStore)
+            certificateTrustStore: certificateTrustStore,
+            library: library)
         self.tabs = [first]
         self.selectedID = first.id
     }
@@ -42,7 +45,8 @@ final class BrowserModel {
         let tab = BrowserTab.make(
             socksPort: socksPort,
             websiteDataStore: websiteDataStore,
-            certificateTrustStore: certificateTrustStore)
+            certificateTrustStore: certificateTrustStore,
+            library: library)
         tabs.append(tab)
         selectedID = tab.id
         return tab

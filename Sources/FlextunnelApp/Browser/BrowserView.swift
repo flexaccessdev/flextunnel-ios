@@ -759,6 +759,14 @@ private struct BottomActionBar: View {
     let proxyAvailable: Bool
     @Binding var showingTabTray: Bool
     let onDisconnect: () -> Void
+    @State private var showingLibrary = false
+    @State private var shareItem: ShareItem?
+
+    /// Wraps the URL being shared so it can drive `.sheet(item:)`.
+    private struct ShareItem: Identifiable {
+        let url: URL
+        var id: String { url.absoluteString }
+    }
 
     var body: some View {
         let tab = model.selectedTab
@@ -775,10 +783,9 @@ private struct BottomActionBar: View {
             Spacer()
 
             if let url {
-                ShareLink(item: url) {
-                    Image(systemName: "square.and.arrow.up")
-                }
-                .disabled(!proxyAvailable)
+                Button { shareItem = ShareItem(url: url) } label: { Image(systemName: "square.and.arrow.up") }
+                    .disabled(!proxyAvailable)
+                    .accessibilityLabel("Share")
             } else {
                 Image(systemName: "square.and.arrow.up")
                     .foregroundStyle(.tertiary)
@@ -786,9 +793,8 @@ private struct BottomActionBar: View {
 
             Spacer()
 
-            // Placeholder — bookmarking is not implemented yet.
-            Button {} label: { Image(systemName: "bookmark") }
-                .disabled(true)
+            Button { showingLibrary = true } label: { Image(systemName: "bookmark") }
+                .accessibilityLabel("Bookmarks and history")
 
             Spacer()
 
@@ -799,11 +805,33 @@ private struct BottomActionBar: View {
 
             Menu {
                 if let url {
+                    if model.library.isBookmarked(url) {
+                        Button {
+                            model.library.removeBookmark(url: url)
+                        } label: {
+                            Label("Remove Bookmark", systemImage: "bookmark.slash")
+                        }
+                    } else {
+                        Button {
+                            model.library.addBookmark(
+                                name: tab?.displayTitle ?? (url.host() ?? url.absoluteString),
+                                url: url)
+                        } label: {
+                            Label("Add Bookmark", systemImage: "bookmark")
+                        }
+                    }
                     Button {
                         UIPasteboard.general.string = url.absoluteString
                     } label: {
                         Label("Copy URL", systemImage: "doc.on.doc")
                     }
+                }
+                Divider()
+                Button(role: .destructive, action: onDisconnect) {
+                    Label("Disconnect Tunnel", systemImage: "stop.circle")
+                }
+                Divider()
+                if let url {
                     Button {
                         UIApplication.shared.open(url)
                     } label: {
@@ -817,10 +845,6 @@ private struct BottomActionBar: View {
                         Label("Close Tab", systemImage: "xmark.square")
                     }
                 }
-                Divider()
-                Button(role: .destructive, action: onDisconnect) {
-                    Label("Disconnect Tunnel", systemImage: "stop.circle")
-                }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
@@ -830,6 +854,24 @@ private struct BottomActionBar: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
         .background(.bar)
+        .sheet(isPresented: $showingLibrary) {
+            BookmarksHistoryView(model: model)
+        }
+        .sheet(item: $shareItem) { item in
+            BrowserShareSheet(url: item.url, activities: [bookmarkActivity(for: item.url)])
+                .ignoresSafeArea()
+        }
+    }
+
+    /// Builds the share-sheet bookmark action, toggling between add and remove
+    /// based on whether the URL is already bookmarked.
+    private func bookmarkActivity(for url: URL) -> BookmarkActivity {
+        let library = model.library
+        if library.isBookmarked(url) {
+            return BookmarkActivity(mode: .remove) { library.removeBookmark(url: url) }
+        }
+        let name = model.selectedTab?.displayTitle ?? (url.host() ?? url.absoluteString)
+        return BookmarkActivity(mode: .add) { library.addBookmark(name: name, url: url) }
     }
 
     private var tabCountIcon: some View {

@@ -28,6 +28,7 @@ final class BrowserTab: Identifiable {
     private let log = Logger(subsystem: "com.example.flextunnel", category: "webview")
     private let certificateTrustStore: BrowserCertificateTrustStore
     private let navigationDecider: BrowserNavigationDecider
+    private let library: BrowserLibrary
     private var lastAttemptedURL: URL?
     private var certificateWarningContinuation: CheckedContinuation<Bool, Never>?
 
@@ -38,11 +39,13 @@ final class BrowserTab: Identifiable {
     private init(
         page: WebPage,
         certificateTrustStore: BrowserCertificateTrustStore,
-        navigationDecider: BrowserNavigationDecider
+        navigationDecider: BrowserNavigationDecider,
+        library: BrowserLibrary
     ) {
         self.page = page
         self.certificateTrustStore = certificateTrustStore
         self.navigationDecider = navigationDecider
+        self.library = library
     }
 
     /// Build a tab whose `WebPage` is proxied through the loopback SOCKS5 listener.
@@ -50,7 +53,8 @@ final class BrowserTab: Identifiable {
     static func make(
         socksPort: UInt16,
         websiteDataStore: WKWebsiteDataStore,
-        certificateTrustStore: BrowserCertificateTrustStore
+        certificateTrustStore: BrowserCertificateTrustStore,
+        library: BrowserLibrary
     ) -> BrowserTab {
         var config = WebPage.Configuration()
         config.websiteDataStore = websiteDataStore
@@ -64,7 +68,8 @@ final class BrowserTab: Identifiable {
         let tab = BrowserTab(
             page: WebPage(configuration: config, navigationDecider: navigationDecider),
             certificateTrustStore: certificateTrustStore,
-            navigationDecider: navigationDecider)
+            navigationDecider: navigationDecider,
+            library: library)
         navigationDecider.certificateWarningHandler = { [weak tab] warning in
             await tab?.requestCertificateWarning(warning) ?? false
         }
@@ -209,6 +214,11 @@ final class BrowserTab: Identifiable {
             loadFailure = nil
             if let url = page.url {
                 addressText = url.absoluteString
+            }
+            // Record into history once the page has fully loaded, so the title
+            // (which arrives with the document) is available.
+            if case .finished = event, let url = page.url {
+                library.recordVisit(title: page.title, url: url)
             }
         case .startedProvisionalNavigation, .receivedServerRedirect:
             break

@@ -10,6 +10,10 @@ struct ContentView: View {
     @State private var browserModel: BrowserModel?
     @State private var didLoadToken = false
 
+    // Owned here so bookmarks/history survive BrowserModel being recreated when
+    // the proxy port changes.
+    @State private var library = BrowserLibrary()
+
     var body: some View {
         NavigationStack {
             Form {
@@ -157,7 +161,7 @@ struct ContentView: View {
         }
 
         if browserModel?.socksPort != socksPort {
-            browserModel = BrowserModel(socksPort: socksPort)
+            browserModel = BrowserModel(socksPort: socksPort, library: library)
         }
     }
 }
