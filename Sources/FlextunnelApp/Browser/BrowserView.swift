@@ -12,6 +12,7 @@ struct BrowserView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showingTunnelStatus = false
     @State private var showingTabTray = false
+    @State private var showBookmarkSaved = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -61,7 +62,15 @@ struct BrowserView: View {
                 model: model,
                 proxyAvailable: proxyAvailable,
                 showingTabTray: $showingTabTray,
-                onDisconnect: stopAndDismiss)
+                onDisconnect: stopAndDismiss,
+                onBookmarkSaved: flashBookmarkSaved)
+        }
+        .overlay(alignment: .bottom) {
+            if showBookmarkSaved {
+                BookmarkSavedToast()
+                    .padding(.bottom, 76)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .fullScreenCover(isPresented: $showingTabTray) {
             TabTrayView(model: model)
@@ -122,6 +131,27 @@ struct BrowserView: View {
         }
     }
 
+    /// Briefly shows the "Bookmark Saved" toast, then fades it out.
+    private func flashBookmarkSaved() {
+        withAnimation(.spring(duration: 0.3)) { showBookmarkSaved = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+            withAnimation(.easeOut(duration: 0.3)) { showBookmarkSaved = false }
+        }
+    }
+
+}
+
+/// Transient confirmation shown after a bookmark is saved.
+private struct BookmarkSavedToast: View {
+    var body: some View {
+        Label("Bookmark Saved", systemImage: "checkmark.circle.fill")
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.green, in: Capsule())
+            .shadow(radius: 6, y: 2)
+    }
 }
 
 /// Placeholder shown for a fresh tab that hasn't navigated yet — a wordmark and
@@ -759,6 +789,7 @@ private struct BottomActionBar: View {
     let proxyAvailable: Bool
     @Binding var showingTabTray: Bool
     let onDisconnect: () -> Void
+    let onBookmarkSaved: () -> Void
     @State private var showingLibrary = false
     @State private var shareItem: ShareItem?
     @State private var bookmarkDraft: BookmarkDraft?
@@ -879,6 +910,7 @@ private struct BottomActionBar: View {
         .sheet(item: $bookmarkDraft) { draft in
             BookmarkEditView(draft: draft) { name, url in
                 model.library.addBookmark(name: name, url: url)
+                onBookmarkSaved()
             }
         }
     }
