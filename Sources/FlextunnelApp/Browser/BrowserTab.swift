@@ -399,6 +399,10 @@ final class BrowserNavigationDecider: WebPage.NavigationDeciding {
     var downloadHandler: ((URLRequest, URLResponse?) -> Void)?
 
     private let certificateTrustStore: BrowserCertificateTrustStore
+    /// The most recent navigation action's request, kept so the response path can
+    /// preserve the original method/body/headers — `NavigationResponse` doesn't
+    /// expose the request, and rebuilding from the URL alone would drop them.
+    private var lastNavigationRequest: URLRequest?
 
     init(certificateTrustStore: BrowserCertificateTrustStore) {
         self.certificateTrustStore = certificateTrustStore
@@ -408,6 +412,7 @@ final class BrowserNavigationDecider: WebPage.NavigationDeciding {
         for action: WebPage.NavigationAction,
         preferences: inout WebPage.NavigationPreferences
     ) async -> WKNavigationActionPolicy {
+        lastNavigationRequest = action.request
         if action.shouldPerformDownload {
             downloadHandler?(action.request, nil)
             return .cancel
@@ -421,7 +426,12 @@ final class BrowserNavigationDecider: WebPage.NavigationDeciding {
         // it to the proxied downloader.
         guard response.canShowMimeType else {
             if let url = response.response.url {
-                downloadHandler?(URLRequest(url: url), response.response)
+                // Reuse the original request when it's for this URL (preserving
+                // method/body/headers); after a redirect the URL differs, so fall
+                // back to a plain GET on the final URL.
+                let request = lastNavigationRequest.flatMap { $0.url == url ? $0 : nil }
+                    ?? URLRequest(url: url)
+                downloadHandler?(request, response.response)
             }
             return .cancel
         }
