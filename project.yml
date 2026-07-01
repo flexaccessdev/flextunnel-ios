@@ -21,6 +21,13 @@ options:
     iOS: "26.0"
   createIntermediateGroups: true
 
+# Per-developer signing lives in Developer.xcconfig (gitignored). Copy
+# Developer.xcconfig.sample to Developer.xcconfig and set DEVELOPMENT_TEAM so
+# Xcode/xcodebuild builds sign automatically — same pattern as ../s3player-app.
+configFiles:
+  Debug: Developer.xcconfig
+  Release: Developer.xcconfig
+
 packages:
   # Local package (Packages/Flextunnel) whose binary target downloads the pinned
   # release zip by URL+checksum (reproducible), or links a local build when
@@ -30,8 +37,9 @@ packages:
 
 settings:
   base:
-    # ---- SET THIS to your Apple Developer Team ID, or set it in Xcode. ----
-    DEVELOPMENT_TEAM: ""
+    # DEVELOPMENT_TEAM comes from Developer.xcconfig (see configFiles above),
+    # which #include?s the gitignored per-developer Developer.local.xcconfig.
+    # Not set here: a build setting would override the xcconfig value.
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "5.0"
     TARGETED_DEVICE_FAMILY: "1,2"

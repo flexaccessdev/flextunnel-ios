@@ -59,8 +59,17 @@ no vendored copy to stage. To move to a new release, run
    open Flextunnel.xcodeproj
    ```
 
-2. **Set signing.** Select your Team on the `FlextunnelApp` target (or set
-   `DEVELOPMENT_TEAM` in `project.yml` and re-run `xcodegen generate`).
+2. **Set signing.** Copy the sample and fill in your Team ID (gitignored, so it
+   stays local and survives `xcodegen generate`):
+
+   ```sh
+   cp Developer.local.xcconfig.sample Developer.local.xcconfig
+   # then edit Developer.local.xcconfig and set DEVELOPMENT_TEAM
+   ```
+
+   The committed `Developer.xcconfig` (wired via `configFiles` in `project.yml`)
+   `#include?`s it, so Xcode and `xcodebuild` sign automatically. You can still
+   just pick a Team on the `FlextunnelApp` target in Xcode instead.
 
 3. **Run** on a device or the Simulator. Enter:
    - *Server node id* — the flextunnel server's iroh endpoint id.
@@ -97,13 +106,13 @@ and the next app build picks it up. Unset it to return to the pinned release.
 
 `scripts/create-archive-ios.sh` builds a Release `.xcarchive` and exports a
 signed `.ipa` in one step. It needs an Apple Developer Team ID, which it reads
-from `Developer.xcconfig` (gitignored, per-developer) or a `--team-id` flag.
+from `Developer.local.xcconfig` (gitignored, per-developer) or a `--team-id` flag.
 
 1. **Set your Team ID** (once):
 
    ```sh
-   cp Developer.xcconfig.sample Developer.xcconfig
-   # then edit Developer.xcconfig and fill in DEVELOPMENT_TEAM
+   cp Developer.local.xcconfig.sample Developer.local.xcconfig
+   # then edit Developer.local.xcconfig and fill in DEVELOPMENT_TEAM
    ```
 
 2. **Generate the project** if you haven't already (`xcodegen generate`).

@@ -5,8 +5,9 @@
 .build/
 .swiftpm/
 
-# Local-only developer signing settings.
-Developer.xcconfig
+# Local-only developer signing settings (per-developer Team ID). The committed
+# Developer.xcconfig optionally #include?s this file.
+Developer.local.xcconfig
 
 # Xcode/user state.
 xcuserdata/

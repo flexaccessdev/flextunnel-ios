@@ -16,7 +16,7 @@ Builds an iOS .xcarchive and exports it to a signed .ipa in one step.
 
 Options:
   -t, --team-id TEAM_ID       Developer Team ID.
-                              Defaults to DEVELOPMENT_TEAM from Developer.xcconfig.
+                              Defaults to DEVELOPMENT_TEAM from Developer.local.xcconfig.
   -a, --archive-path PATH     Output path for the iOS .xcarchive.
                               Defaults to ./build/${APP_NAME}-ios.xcarchive.
   -c, --configuration NAME    Build configuration. Defaults to Release.
@@ -96,7 +96,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 detect_project_team_id() {
-  local xcconfig="$PROJECT_ROOT/Developer.xcconfig"
+  local xcconfig="$PROJECT_ROOT/Developer.local.xcconfig"
   [[ -f "$xcconfig" ]] || return 1
 
   /usr/bin/awk '
@@ -121,7 +121,7 @@ fi
 
 [[ -n "$TEAM_ID" ]] || {
   usage >&2
-  die "team ID is required: set DEVELOPMENT_TEAM in Developer.xcconfig (copy Developer.xcconfig.sample) or pass --team-id"
+  die "team ID is required: set DEVELOPMENT_TEAM in Developer.local.xcconfig (copy Developer.local.xcconfig.sample) or pass --team-id"
 }
 
 [[ "$ARCHIVE_PATH" == *.xcarchive ]] || die "--archive-path must end in .xcarchive"

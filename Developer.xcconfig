@@ -1,0 +1,9 @@
+// Committed base signing config, referenced by project.yml (configFiles) so
+// Xcode/xcodebuild builds sign automatically — same idea as ../s3player-app.
+//
+// Do NOT put your Team ID here. Per-developer signing lives in the gitignored
+// Developer.local.xcconfig (copy Developer.local.xcconfig.sample and fill it in).
+// The optional include below pulls it in when present, so a fresh clone with no
+// local file still runs `xcodegen generate` and builds without error.
+DEVELOPMENT_TEAM =
+#include? "Developer.local.xcconfig"
