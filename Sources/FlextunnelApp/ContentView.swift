@@ -9,6 +9,10 @@ struct ContentView: View {
     @State private var socksPortText = "18080"
     @State private var browserModel: BrowserModel?
     @State private var didLoadToken = false
+    // The immutable settings snapshot handed to `proxy.start`, so the Keychain
+    // save on `.connected` persists the exact token that authenticated — not
+    // whatever the (still-editable) field holds by the time the handshake lands.
+    @State private var connectingSettings: ProxyController.Settings?
 
     // Owned here so bookmarks/history survive BrowserModel being recreated when
     // the proxy port changes.
@@ -49,23 +53,34 @@ struct ContentView: View {
                 }
 
                 Section {
-                    Button("Start proxy") {
-                        proxy.start(currentSettings())
-                        // Persist the token only once it has driven a clean
-                        // start, so we never save a typo'd credential.
-                        if proxy.socksPort != nil {
-                            TokenStore.save(trimmedAuthToken)
+                    if proxy.phase == .connecting {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                            Text("Connecting to server…")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Cancel") { proxy.stop() }
+                                .buttonStyle(.bordered)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                    } else {
+                        Button("Start proxy") {
+                            let settings = currentSettings()
+                            connectingSettings = settings
+                            proxy.start(settings)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .frame(maxWidth: .infinity)
+                        .disabled(!canStartProxy)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .frame(maxWidth: .infinity)
-                    .disabled(!canStartProxy)
-                    .listRowInsets(EdgeInsets())
-                    .listRowBackground(Color.clear)
 
-                    if let err = proxy.lastError {
-                        Text(err)
+                    if proxy.phase == .failed {
+                        Text(proxy.lastError ?? proxy.status)
                             .foregroundStyle(.red)
                             .font(.footnote)
                     }
@@ -79,7 +94,16 @@ struct ContentView: View {
                         .interactiveDismissDisabled(proxy.socksPort != nil)
                 }
             }
-            .onChange(of: proxy.healthy) { syncBrowserPresentation() }
+            .onChange(of: proxy.phase) { _, newPhase in
+                // Persist the token only once it has actually authenticated, so a
+                // typo'd credential (which starts fine but fails the handshake)
+                // never overwrites a good one. Save the token from the snapshot the
+                // connection used, not the live (still-editable) field.
+                if newPhase == .connected, let token = connectingSettings?.authToken {
+                    TokenStore.save(token)
+                }
+                syncBrowserPresentation()
+            }
             .onChange(of: proxy.socksPort) { syncBrowserPresentation() }
             .onAppear {
                 loadStoredToken()
@@ -153,14 +177,18 @@ struct ContentView: View {
         }
     }
 
+    /// Present-only: create the browser once the handshake lands and never tear
+    /// it down here. A drop after connecting keeps the browser up (the tunnel
+    /// auto-reconnects behind an overlay); teardown happens solely through the
+    /// explicit-quit path — `stopAndDismiss` → `proxy.stop()` (socksPort == nil)
+    /// → the `browserIsPresented` setter clears `browserModel`.
     private func syncBrowserPresentation() {
-        guard let socksPort = proxy.socksPort, proxy.healthy else {
-            browserModel?.stopAll()
-            browserModel = nil
-            return
-        }
+        guard proxy.phase == .connected, let socksPort = proxy.socksPort else { return }
 
-        if browserModel?.socksPort != socksPort {
+        if browserModel == nil {
+            browserModel = BrowserModel(socksPort: socksPort, library: library)
+        } else if browserModel?.socksPort != socksPort {
+            browserModel?.stopAll()
             browserModel = BrowserModel(socksPort: socksPort, library: library)
         }
     }

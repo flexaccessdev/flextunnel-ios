@@ -24,6 +24,7 @@ struct BrowserView: View {
                 tunnelStatusIcon: tunnelStatusIcon,
                 tunnelStatusColor: tunnelStatusColor,
                 showingTunnelStatus: $showingTunnelStatus,
+                onReconnect: { proxy.retryNow() },
                 onStopAndReconfigure: stopAndDismiss)
             Divider()
 
@@ -99,43 +100,42 @@ struct BrowserView: View {
             TabTrayView(model: model)
         }
         .onAppear { enforceProxyAvailability() }
-        .onChange(of: proxy.healthy) { enforceProxyAvailability() }
+        .onChange(of: proxy.socksAlive) { enforceProxyAvailability() }
+        .onChange(of: proxy.tunnelConnected) { enforceProxyAvailability() }
         .onChange(of: proxy.socksPort) { enforceProxyAvailability() }
     }
 
+    /// Whether the browser is usable: the SOCKS5 listener is up and this tab's
+    /// port matches. Stays true while the tunnel link is down for a partial
+    /// split-tunnel set (off-list targets still browse directly).
     private var proxyAvailable: Bool {
-        proxy.healthy && proxy.socksPort == model.socksPort
+        proxy.canBrowse && proxy.socksPort == model.socksPort
     }
 
     private var tunnelStatusIcon: String {
-        if proxyAvailable {
-            return "bolt.horizontal.circle.fill"
-        }
-        if proxy.socksPort != nil || proxy.status == "error" {
-            return "bolt.horizontal.circle.fill"
-        }
-        return "bolt.horizontal.circle"
+        proxy.socksPort != nil ? "bolt.horizontal.circle.fill" : "bolt.horizontal.circle"
     }
 
+    /// Green when the tunnel link is up, orange when browsing still works but the
+    /// tunnel is down (off-list only), red when the proxy is unusable.
     private var tunnelStatusColor: Color {
-        if proxyAvailable {
+        if proxy.tunnelConnected {
             return .green
         }
-        if proxy.socksPort != nil || proxy.status == "error" {
+        if proxyAvailable {
+            return .orange
+        }
+        if proxy.socksPort != nil {
             return .red
         }
         return .secondary
     }
 
+    /// Keep navigation gated to the tunnel's availability. A drop no longer
+    /// dismisses the browser — the page stays put and reconnect/quit live in the
+    /// tunnel status popover; only an explicit Quit (`stopAndDismiss`) closes it.
     private func enforceProxyAvailability() {
         model.proxyIsAvailable = proxyAvailable
-        guard proxyAvailable else {
-            model.stopAll()
-            showingTunnelStatus = false
-            showingTabTray = false
-            dismiss()
-            return
-        }
     }
 
     private func stopAndDismiss() {
@@ -414,6 +414,7 @@ private struct AddressBarView: View {
     let tunnelStatusIcon: String
     let tunnelStatusColor: Color
     @Binding var showingTunnelStatus: Bool
+    let onReconnect: () -> Void
     let onStopAndReconfigure: () -> Void
     @State private var editText = ""
     @State private var showingSiteSecurity = false
@@ -510,6 +511,7 @@ private struct AddressBarView: View {
                 proxy: proxy,
                 boundPort: model.socksPort,
                 onDismiss: { showingTunnelStatus = false },
+                onReconnect: onReconnect,
                 onStopAndReconfigure: onStopAndReconfigure)
                 .presentationCompactAdaptation(.popover)
         }
@@ -1000,7 +1002,14 @@ private struct TunnelStatusPopover: View {
     @ObservedObject var proxy: ProxyController
     let boundPort: UInt16
     let onDismiss: () -> Void
+    let onReconnect: () -> Void
     let onStopAndReconfigure: () -> Void
+
+    /// The SOCKS proxy is up but the tunnel link is (re)establishing. Browsing may
+    /// still work (off-list) while this is true; the core reconnects on its own.
+    private var isReconnecting: Bool {
+        proxy.socksAlive && !proxy.tunnelConnected
+    }
 
     var body: some View {
         ScrollView {
@@ -1024,7 +1033,9 @@ private struct TunnelStatusPopover: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     DetailRow("State", proxy.status)
-                    DetailRow("Health", proxy.healthy ? "alive" : "down", valueColor: healthColor)
+                    DetailRow("SOCKS proxy", proxy.socksAlive ? "running" : "stopped",
+                              valueColor: proxy.socksAlive ? .green : .red)
+                    DetailRow("Tunnel link", tunnelLinkText, valueColor: healthColor)
                     DetailRow("Bound SOCKS", "127.0.0.1:\(proxy.socksPort ?? boundPort)")
 
                     if let summary = proxy.connectionSummary {
@@ -1042,6 +1053,32 @@ private struct TunnelStatusPopover: View {
 
                 Divider()
 
+                // Tunnel status lives here in the popover so the page underneath
+                // is never disturbed. While the link is down the core reconnects on
+                // its own (off-list browsing keeps working); only a fully stopped
+                // proxy needs a manual Reconnect.
+                if isReconnecting {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("Reconnecting…")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        if proxy.canBrowse {
+                            Text("Off-list browsing works; on-list (tunneled) routes are temporarily unavailable.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else if !proxy.socksAlive {
+                    Button(action: onReconnect) {
+                        Label("Reconnect", systemImage: "arrow.clockwise")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
                 Button(role: .destructive, action: onStopAndReconfigure) {
                     Label("Stop and Reconfigure", systemImage: "stop.circle")
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1052,35 +1089,44 @@ private struct TunnelStatusPopover: View {
         .frame(minWidth: 300, idealWidth: 340, maxHeight: 520)
     }
 
-    /// What the tunnel forwards: the server's split-tunnel set. An active
-    /// whitelist lists the routed domains/CIDRs; an empty set means everything
-    /// is tunneled.
+    /// The tunnel set the server pushed: the domains/CIDRs routed through the
+    /// tunnel (everything else browses directly). Shown even while the link is
+    /// down so the user can see which routes are temporarily unavailable.
     @ViewBuilder
     private var forwardedRoutesRows: some View {
-        if let routes = proxy.forwardedRoutes, routes.connected {
-            if routes.isWhitelistActive {
+        if let routes = proxy.forwardedRoutes {
+            if routes.isFullTunnel {
+                DetailRow("Tunnel set", "Full tunnel (all traffic)")
+            } else {
                 if !routes.domains.isEmpty {
-                    DetailRow("Forwarded domains", routes.domains.joined(separator: "\n"), monospace: true)
+                    DetailRow("Tunneled domains", routes.domains.joined(separator: "\n"), monospace: true)
                 }
                 if !routes.cidrs.isEmpty {
-                    DetailRow("Forwarded CIDRs", routes.cidrs.joined(separator: "\n"), monospace: true)
+                    DetailRow("Tunneled CIDRs", routes.cidrs.joined(separator: "\n"), monospace: true)
                 }
-            } else {
-                DetailRow("Forwarded", "All traffic (no whitelist)")
             }
         }
     }
 
+    private var tunnelLinkText: String {
+        if proxy.tunnelConnected { return "connected" }
+        return proxy.socksAlive ? "reconnecting" : "down"
+    }
+
     private var healthTitle: String {
-        proxy.healthy ? "Tunnel is healthy" : "Tunnel is unavailable"
+        if proxy.tunnelConnected { return "Tunnel connected" }
+        if proxy.canBrowse { return "Tunnel reconnecting" }
+        return "Tunnel unavailable"
     }
 
     private var healthIcon: String {
-        proxy.healthy ? "bolt.horizontal.circle.fill" : "bolt.horizontal.circle"
+        proxy.tunnelConnected ? "bolt.horizontal.circle.fill" : "bolt.horizontal.circle"
     }
 
     private var healthColor: Color {
-        proxy.healthy ? .green : .red
+        if proxy.tunnelConnected { return .green }
+        if proxy.canBrowse { return .orange }
+        return .red
     }
 
     private func relayURLsText(_ relayURLs: [String]) -> String {
