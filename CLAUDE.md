@@ -1,6 +1,7 @@
 - purpose: a private-network access browser — reaches private resources through the flextunnel tunnel, split-tunnel by default (non-whitelisted traffic bypasses the proxy) with the option to route all traffic; behaves like a mainstream browser, not a privacy/anonymity browser
 - strict no backward compatibility
 - make change on sibling project ../flextunnel, which is the library used by this project, if needed 
+- the Rust artifacts (libflextunnel.xcframework + flextunnel.h) live in gitignored vendor/, populated by `scripts/fetch-vendor.sh`: default downloads a pinned GitHub release (reproducible; tag defaults to v0.0.10, override with `--tag`/`--url`), `--local` symlinks the sibling's `../flextunnel/dist/ios` build for FFI dev without cutting a release. The sibling's build-ios.sh no longer copies into vendor/; run fetch-vendor.sh before `xcodegen generate`
 - target iOS 26 unless the webkit is downgraded to WKWebView
 - regenerate the project from project.yml after code changes (`xcodegen generate`)
 - build/verify with an arm64 iOS 26 simulator pinned, e.g. `xcodebuild -project Flextunnel.xcodeproj -scheme FlextunnelApp -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' build` — the vendored libflextunnel.xcframework is arm64-only, so `-sdk iphonesimulator` with a generic destination picks x86_64 and fails to link

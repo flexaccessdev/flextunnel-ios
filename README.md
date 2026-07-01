@@ -47,12 +47,22 @@ proxy. The core logs each CONNECT's address type so you can confirm it
 
 ## Build & run
 
-1. **Build the Rust static library** (from the sibling repo). This stages
-   `vendor/libflextunnel.xcframework` and `vendor/flextunnel.h` here automatically:
+1. **Fetch the Rust artifacts** into `vendor/`. By default this downloads a
+   pinned GitHub release (`libflextunnel.xcframework` + `flextunnel.h`), so a
+   clean checkout builds reproducibly:
 
    ```sh
-   cd ../flextunnel
-   ./build-ios.sh release
+   scripts/fetch-vendor.sh                 # pinned release (default)
+   scripts/fetch-vendor.sh --tag v0.0.11   # a different release tag
+   ```
+
+   To iterate on the Rust FFI without cutting a release, build the sibling and
+   point `vendor/` at its output (symlinks — each rebuild is picked up with no
+   re-fetch):
+
+   ```sh
+   cd ../flextunnel && ./build-ios.sh release
+   cd ../flextunnel-ios && scripts/fetch-vendor.sh --local
    ```
 
 2. **Generate the Xcode project:**
@@ -134,5 +144,6 @@ front-end.)
 - The vendored `libflextunnel.xcframework` is arm64-only; build/verify against a
   pinned arm64 iOS 26 Simulator, e.g. `-destination 'platform=iOS
   Simulator,name=iPhone 17,OS=26.2'`.
-- The `.xcodeproj` and the staged `vendor/` artifacts are git-ignored on purpose;
-  regenerate/rebuild them as above.
+- The `.xcodeproj` and the `vendor/` artifacts are git-ignored on purpose;
+  regenerate the project with `xcodegen` and (re)populate `vendor/` with
+  `scripts/fetch-vendor.sh` as above.
