@@ -1,43 +1,36 @@
-# flextunnel-ios (POC)
+# flextunnel-ios
 
-A **private-network access browser** for iOS. It reaches private resources
-through flextunnel's SOCKS5-over-QUIC tunnel **without a system-proxy change and
-without a VPN / Network Extension**, working while the app is foregrounded. It's
-split-tunnel by default (traffic to off-list resources — those not in the
-server's routed tunnel set — bypasses the proxy and connects directly), with the
-option to route everything through the tunnel. It behaves like a mainstream
-browser — **not** a privacy/anonymity browser.
+An iOS browser for reaching **private resources** — hosts on your server's
+network by **hostname** (including names that only resolve via the server's DNS),
+the server's own `localhost`, or hosts by **IP** — without a VPN. It's the iOS
+client for [flextunnel](../flextunnel), a SOCKS5-over-QUIC proxy where the
+**server** makes the outbound TCP connection from its own network, resolving DNS
+server-side when the target is a hostname. Because the transport is [iroh](https://www.iroh.computer/)
+QUIC (NAT traversal, relay fallback, TLS 1.3), the app dials the server by its
+endpoint id — the server needs no public inbound port, and neither end needs
+root or a TUN device.
 
-It links `libflextunnel.a` (the Rust core, built from the sibling `../flextunnel`
-repo) directly into the app. The core runs an in-process loopback SOCKS5 listener
-over an iroh QUIC connection; the SwiftUI `WebView` (iOS 26 `WebPage`) is pointed
-at it via `WKWebsiteDataStore.proxyConfigurations` (iOS 17+).
+This is a **private-network access browser**, not a privacy/anonymity browser: it
+behaves like a mainstream browser and split-tunnels by default. The flextunnel
+Rust core is embedded on-device (via `libflextunnel.xcframework`) and runs a
+local SOCKS5 listener on loopback; the SwiftUI `WebView` routes all its traffic
+through that listener via `WKWebsiteDataStore.proxyConfigurations`.
 
-## Browser features
+## How routing works
 
-Beyond loading a URL, it's a real browser: multiple tabs, an address bar with
-site-security indicator, back/forward + home, find-in-page, and certificate-trust
-warnings. Bookmarks and history persist across launches in protected files in
-the app container (Data Protection + excluded from backups), and web sessions
-(cookies/logins/cache) persist via the default `WKWebsiteDataStore`. Downloads
-are fetched through the tunnel and shown in a downloads panel with a confirmation
-prompt and QuickLook preview; the download **list** is intentionally session-only
-to reduce clutter.
+The server defines a **tunnel set** — the domains/CIDRs it will route — and pushes
+it to the client during the handshake. The on-device core tunnels requests to
+**on-list** destinations through the QUIC connection (resolved and connected
+server-side) and **direct-connects** everything off-list. This split-tunnel
+behavior is the default; a server whose set matches everything (`*` /
+`0.0.0.0/0`) routes all traffic. The server independently enforces the same set
+as a whitelist (defense in depth). The app surfaces the active set, health, and
+bound port under **Tunnel status**.
 
-## Why no VPN
-
-flextunnel is pure-userspace SOCKS5-over-QUIC (no TUN, no root). So, unlike the
-sibling `ezvpn-ios` POC, there is **no `NEPacketTunnelProvider`, no Network
-Extension entitlement, and no paid Apple Developer account requirement**. A free
-personal team works, and it runs in the Simulator too.
-
-## The DNS goal (server-side resolution)
-
-SOCKS5 sends the **hostname** (ATYP_DOMAIN) to the proxy, so DNS for tunneled
-hosts is resolved on the flextunnel **server**, not the device — the same SOCKS
-remote-DNS mechanism Onion Browser uses to resolve `.onion` through Tor's local
-proxy. The core logs each CONNECT's address type so you can confirm it
-(`ATYP_DOMAIN (remote DNS…)` vs `ATYP_IP (local DNS…)`).
+The routing decision lives in the Rust core rather than the WebView because iOS
+`WKWebsiteDataStore.proxyConfigurations` is global — every WebView request hits
+the local SOCKS5 proxy with no per-host routing — so the core is what decides
+tunnel-vs-direct per destination.
 
 ## Prerequisites
 
