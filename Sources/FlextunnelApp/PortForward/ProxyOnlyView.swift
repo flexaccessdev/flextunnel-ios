@@ -60,6 +60,8 @@ struct ProxyOnlyView: View {
 
     // MARK: - Status
 
+    /// Mirrors the browser's TunnelStatusPopover row-for-row so both surfaces
+    /// report the tunnel at the same level of detail.
     private var statusSection: some View {
         Section("Tunnel") {
             HStack {
@@ -72,6 +74,7 @@ struct ProxyOnlyView: View {
                 }
             }
 
+            InfoRow("State", proxy.status)
             InfoRow("SOCKS proxy", proxy.socksAlive ? "running" : "stopped",
                     valueColor: proxy.socksAlive ? .green : .red)
             InfoRow("Tunnel link", tunnelLinkText, valueColor: healthColor)
@@ -80,9 +83,41 @@ struct ProxyOnlyView: View {
             }
             if let summary = proxy.connectionSummary {
                 InfoRow("Server node id", summary.serverNodeID, monospace: true)
+                InfoRow("Relay URLs", summary.relayURLs.isEmpty
+                    ? "iroh defaults"
+                    : summary.relayURLs.joined(separator: "\n"))
+                InfoRow("DNS discovery", summary.dnsServer ?? "iroh discovery")
             }
+
+            forwardedRoutesRows
+
             if let error = proxy.lastError {
                 InfoRow("Last error", error, valueColor: .red)
+            }
+
+            if proxy.socksAlive && !proxy.tunnelConnected {
+                Text("Direct forwards keep working; tunneled forwards are unavailable until the link recovers.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// The tunnel set the server pushed — same presentation as the popover:
+    /// "Full tunnel" or the routed domains/CIDRs, shown even while the link is
+    /// down so it's clear which forward targets are temporarily unavailable.
+    @ViewBuilder
+    private var forwardedRoutesRows: some View {
+        if let routes = proxy.forwardedRoutes {
+            if routes.isFullTunnel {
+                InfoRow("Tunnel set", "Full tunnel (all traffic)")
+            } else {
+                if !routes.domains.isEmpty {
+                    InfoRow("Tunneled domains", routes.domains.joined(separator: "\n"), monospace: true)
+                }
+                if !routes.cidrs.isEmpty {
+                    InfoRow("Tunneled CIDRs", routes.cidrs.joined(separator: "\n"), monospace: true)
+                }
             }
         }
     }
