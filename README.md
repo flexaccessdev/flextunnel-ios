@@ -139,6 +139,18 @@ for an off-list target. Off-list hosts are **always direct-connected** today
 — see "Routed-set split-tunneling → Roadmap" in the
 [flextunnel README](https://github.com/andrewtheguy/flextunnel/blob/main/README.md).
 
+## Proxy-only mode & port forwarding
+
+**Start proxy only (no browser)** on the setup screen runs the same tunnel +
+SOCKS5 core without the browser, for **other apps on this device**: they can use
+the SOCKS5 proxy at `127.0.0.1:<SOCKS bind port>` directly, or connect to
+managed **port forwards** — loopback TCP listeners
+(`127.0.0.1:<local port> → remote host:port`) relayed through the core, so the
+same split-tunnel routing applies (server-side DNS for tunneled targets).
+Forwards persist, auto-start with the proxy, and keep serving best-effort for
+~30 s after backgrounding (no Network Extension — iOS then suspends the app
+until it's foregrounded again). Details: [docs/port-forwarding.md](docs/port-forwarding.md).
+
 ## Verifying server-side DNS
 
 Run the flextunnel **server** with `RUST_LOG=info`. Browsing a tunneled host

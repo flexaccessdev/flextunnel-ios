@@ -120,7 +120,16 @@ struct ContentView: View {
                 }
             }
             .fullScreenCover(isPresented: proxyOnlyIsPresented) {
-                ProxyOnlyView(proxy: proxy, store: portForwards, onStop: { proxy.stop() })
+                ProxyOnlyView(
+                    proxy: proxy,
+                    store: portForwards,
+                    onStop: {
+                        proxy.stop()
+                        // Explicitly drop the cover: the binding's setter only
+                        // runs on a dismissal attempt, so stopping alone would
+                        // leave the screen up showing a dead proxy.
+                        proxyOnlyActive = false
+                    })
                     .interactiveDismissDisabled(proxy.socksPort != nil)
             }
             .onChange(of: proxy.phase) { _, newPhase in
