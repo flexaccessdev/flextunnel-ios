@@ -1,9 +1,9 @@
 # Proxy-only mode & port forwarding
 
-Besides the browser, the app can run as a plain tunnel endpoint: **Start proxy
-only (no browser)** on the setup screen brings up the same flextunnel core (the
-loopback SOCKS5 listener plus the QUIC link to your server) but presents a
-status-and-forwards screen instead of the browser. The point is to serve **other
+Besides the browser, the app can run as a plain tunnel endpoint: choose
+**Forward ports** on the setup screen and tap **Start Port Forwarding** to
+bring up the same flextunnel core (the loopback SOCKS5 listener plus the QUIC
+link to your server) with a status-and-forwards screen instead of the browser. The point is to serve **other
 apps on the device**: iOS loopback is shared across processes, so anything you
 run — an SSH client, RDP viewer, database GUI, another browser — can reach
 `localhost:<port>` endpoints this app provides while it is alive.
