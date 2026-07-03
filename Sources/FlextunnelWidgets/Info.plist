@@ -4,6 +4,8 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>Flextunnel Widgets</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -18,25 +20,10 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>UILaunchScreen</key>
-	<dict/>
-	<key>UIApplicationSceneManifest</key>
+	<key>NSExtension</key>
 	<dict>
-		<key>UIApplicationSupportsMultipleScenes</key>
-		<true/>
-	</dict>
-	<!-- Enables the tunnel status Live Activity (lock screen / Dynamic Island).
-	     Purely a status surface; does not affect background execution. -->
-	<key>NSSupportsLiveActivities</key>
-	<true/>
-	<!-- POC only: allow cleartext http:// so plain-HTTP targets (e.g. the
-	     server.ezvpn:8000 alias) can be tested. The traffic is still tunneled
-	     over QUIC/TLS to the server; this only relaxes the *app's* ATS policy
-	     for the loopback->WebView leg. Tighten or remove for any real use. -->
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsArbitraryLoads</key>
-		<true/>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.widgetkit-extension</string>
 	</dict>
 </dict>
 </plist>
