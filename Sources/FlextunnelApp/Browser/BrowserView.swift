@@ -455,11 +455,11 @@ private struct AddressBarView: View {
                         .disabled(!proxyAvailable)
                     }
                 }
-                .frame(maxWidth: .infinity, minHeight: 44)
+                .frame(maxWidth: .infinity, minHeight: 36)
 
                 trailingLocationButton(for: tab)
             }
-            .frame(height: 44)
+            .frame(height: 36)
             .padding(.leading, 2)
             .padding(.trailing, 4)
             .background {
@@ -481,7 +481,7 @@ private struct AddressBarView: View {
             tunnelStatusButton
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 4)
+        .padding(.vertical, 8)
         .background(.bar)
         .onChange(of: model.selectedID) { syncAddress(model.selectedTab?.addressText) }
         .onChange(of: tab?.addressText) { if !addressFocused { syncAddress(tab?.addressText) } }
@@ -502,7 +502,7 @@ private struct AddressBarView: View {
             Image(systemName: tunnelStatusIcon)
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(tunnelStatusColor)
-                .frame(width: 40, height: 44)
+                .frame(width: 40, height: 36)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Tunnel status")
@@ -523,7 +523,7 @@ private struct AddressBarView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 40, height: 44)
+                .frame(width: 40, height: 36)
                 .accessibilityHidden(true)
         } else if let tab {
             Button {
@@ -532,7 +532,7 @@ private struct AddressBarView: View {
                 Image(systemName: siteSecurityIcon(for: tab.siteSecurity))
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(siteSecurityColor(for: tab.siteSecurity))
-                    .frame(width: 40, height: 44)
+                    .frame(width: 40, height: 36)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(siteSecurityAccessibilityLabel(for: tab.siteSecurity))
@@ -549,7 +549,7 @@ private struct AddressBarView: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(.secondary)
-                        .frame(width: 40, height: 44)
+                        .frame(width: 40, height: 36)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear address")
@@ -565,7 +565,7 @@ private struct AddressBarView: View {
                 Image(systemName: tab.page.isLoading ? "xmark" : "arrow.clockwise")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.primary)
-                    .frame(width: 40, height: 44)
+                    .frame(width: 40, height: 36)
             }
             .buttonStyle(.plain)
             .disabled(!proxyAvailable)
