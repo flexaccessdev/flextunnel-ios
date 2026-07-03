@@ -3,13 +3,20 @@ import SwiftUI
 import WidgetKit
 
 /// Lock-screen banner + Dynamic Island rendering for the tunnel session. Colors
-/// follow tunnel-link state: green when connected, orange while reconnecting.
+/// follow tunnel-link state: green when connected, orange while reconnecting. Once
+/// the pushed state goes stale (`context.isStale` — the app stopped updating, e.g.
+/// it was suspended in the background), everything dims to a neutral "status
+/// unknown, open app" look so we never show a confidently-wrong "Connected".
 struct TunnelLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: TunnelActivityAttributes.self) { context in
-            LockScreenView(attributes: context.attributes, state: context.state)
-                .padding()
-                .activityBackgroundTint(nil)
+            LockScreenView(
+                attributes: context.attributes,
+                state: context.state,
+                isStale: context.isStale
+            )
+            .padding()
+            .activityBackgroundTint(nil)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
@@ -18,23 +25,23 @@ struct TunnelLiveActivity: Widget {
                         .lineLimit(1)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    StatusPill(state: context.state)
+                    StatusPill(state: context.state, isStale: context.isStale)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    Text(context.attributes.modeTitle)
+                    Text(context.isStale ? "Open app to refresh" : context.attributes.modeTitle)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             } compactLeading: {
                 Image(systemName: "lock.shield.fill")
-                    .foregroundStyle(context.state.statusColor)
+                    .foregroundStyle(statusColor(context.state, isStale: context.isStale))
             } compactTrailing: {
                 Circle()
-                    .fill(context.state.statusColor)
+                    .fill(statusColor(context.state, isStale: context.isStale))
                     .frame(width: 8, height: 8)
             } minimal: {
                 Image(systemName: "lock.shield.fill")
-                    .foregroundStyle(context.state.statusColor)
+                    .foregroundStyle(statusColor(context.state, isStale: context.isStale))
             }
         }
     }
@@ -43,42 +50,48 @@ struct TunnelLiveActivity: Widget {
 private struct LockScreenView: View {
     let attributes: TunnelActivityAttributes
     let state: TunnelActivityAttributes.ContentState
+    let isStale: Bool
 
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: "lock.shield.fill")
                 .font(.title2)
-                .foregroundStyle(state.statusColor)
+                .foregroundStyle(statusColor(state, isStale: isStale))
             VStack(alignment: .leading, spacing: 2) {
                 Text(attributes.serverLabel)
                     .font(.headline)
                     .lineLimit(1)
-                Text(attributes.modeTitle)
+                Text(isStale ? "Open app to refresh" : attributes.modeTitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
-            StatusPill(state: state)
+            StatusPill(state: state, isStale: isStale)
         }
     }
 }
 
 private struct StatusPill: View {
     let state: TunnelActivityAttributes.ContentState
+    let isStale: Bool
 
     var body: some View {
-        Text(state.statusText)
+        Text(statusText(state, isStale: isStale))
             .font(.caption.weight(.semibold))
-            .foregroundStyle(state.statusColor)
+            .foregroundStyle(statusColor(state, isStale: isStale))
             .lineLimit(1)
     }
 }
 
-extension TunnelActivityAttributes.ContentState {
-    var statusColor: Color {
-        if tunnelConnected { return .green }
-        if socksAlive { return .orange }
-        return .secondary
-    }
+/// Neutral once stale; otherwise green connected / orange reconnecting.
+private func statusColor(_ state: TunnelActivityAttributes.ContentState, isStale: Bool) -> Color {
+    if isStale { return .secondary }
+    if state.tunnelConnected { return .green }
+    if state.socksAlive { return .orange }
+    return .secondary
+}
+
+private func statusText(_ state: TunnelActivityAttributes.ContentState, isStale: Bool) -> String {
+    isStale ? "Unknown" : state.statusText
 }

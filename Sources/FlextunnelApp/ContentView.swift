@@ -215,6 +215,9 @@ struct ContentView: View {
                 loadStoredToken()
                 syncSessionPresentation()
                 syncForwards()
+                // Reconcile any Live Activity the controller reattached to on
+                // launch with the real state (ends a leftover banner while idle).
+                syncLiveActivity()
             }
         }
     }
@@ -340,6 +343,9 @@ struct ContentView: View {
     private func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
         case .background:
+            // Re-arm the Live Activity's stale window from the current state so its
+            // "status unknown" countdown starts the moment the app stops running.
+            syncLiveActivity()
             guard proxy.socksPort != nil, backgroundTask == .invalid else { break }
             backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "flextunnel-proxy") {
                 endBackgroundTask()
@@ -347,6 +353,8 @@ struct ContentView: View {
         case .active:
             endBackgroundTask()
             proxy.noteForegrounded()
+            // Immediately reflect real state on return, clearing any stale banner.
+            syncLiveActivity()
         default:
             break
         }
