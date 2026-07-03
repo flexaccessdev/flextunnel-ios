@@ -78,6 +78,10 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
+    // Tunnel status Live Activity (lock screen / Dynamic Island). UX only — it
+    // reflects the last-known state; it neither grants nor needs background time.
+    @State private var liveActivity = LiveActivityController()
+
     // Owned here so bookmarks/history survive BrowserModel being recreated when
     // the proxy port changes.
     @State private var library = BrowserLibrary()
@@ -193,12 +197,17 @@ struct ContentView: View {
                     TokenStore.save(token)
                 }
                 syncSessionPresentation()
+                syncLiveActivity()
             }
             .onChange(of: proxy.socksPort) {
                 syncSessionPresentation()
                 syncForwards()
             }
-            .onChange(of: proxy.socksAlive) { syncForwards() }
+            .onChange(of: proxy.socksAlive) {
+                syncForwards()
+                syncLiveActivity()
+            }
+            .onChange(of: proxy.tunnelConnected) { syncLiveActivity() }
             .onChange(of: scenePhase) { _, phase in
                 handleScenePhase(phase)
             }
@@ -347,6 +356,42 @@ struct ContentView: View {
         guard backgroundTask != .invalid else { return }
         UIApplication.shared.endBackgroundTask(backgroundTask)
         backgroundTask = .invalid
+    }
+
+    // MARK: - Live Activity
+
+    /// Mirror the session into the Live Activity: start/refresh it while connected,
+    /// end it once the session is gone. Idempotent — `start` updates an existing
+    /// activity — so it's safe to call from every relevant state change.
+    private func syncLiveActivity() {
+        switch proxy.phase {
+        case .connected:
+            let state = TunnelActivityAttributes.ContentState(
+                tunnelConnected: proxy.tunnelConnected,
+                socksAlive: proxy.socksAlive,
+                statusText: liveActivityStatusText
+            )
+            liveActivity.start(
+                serverLabel: liveActivityServerLabel,
+                modeTitle: sessionMode.title,
+                state: state
+            )
+        case .idle, .failed:
+            liveActivity.end()
+        case .connecting:
+            break
+        }
+    }
+
+    private var liveActivityServerLabel: String {
+        let id = proxy.connectionSummary?.serverNodeID ?? trimmedServerNodeID
+        return id.isEmpty ? "Tunnel" : id
+    }
+
+    private var liveActivityStatusText: String {
+        if proxy.tunnelConnected { return "Connected" }
+        if proxy.socksAlive { return "Reconnecting…" }
+        return "Disconnected"
     }
 }
 
