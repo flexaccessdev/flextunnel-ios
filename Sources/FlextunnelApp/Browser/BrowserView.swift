@@ -481,7 +481,7 @@ private struct AddressBarView: View {
             tunnelStatusButton
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, 4)
         .background(.bar)
         .onChange(of: model.selectedID) { syncAddress(model.selectedTab?.addressText) }
         .onChange(of: tab?.addressText) { if !addressFocused { syncAddress(tab?.addressText) } }
@@ -940,7 +940,7 @@ private struct BottomActionBar: View {
         }
         .imageScale(.large)
         .padding(.horizontal, 20)
-        .padding(.vertical, 10)
+        .padding(.vertical, 6)
         .background(.bar)
         .sheet(isPresented: $showingLibrary) {
             BookmarksHistoryView(model: model)
