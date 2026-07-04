@@ -35,6 +35,12 @@ final class BrowserTab: Identifiable {
     /// document — set by `goBack()` stepping off the first page, cleared by any
     /// load or by `goForward()` returning to the page.
     private var presentingHome = false
+
+    /// Whether the current navigation has committed. WebKit publishes the target
+    /// URL as soon as the provisional navigation starts — before any TLS
+    /// handshake — so the security indicator must not trust `page.url` until the
+    /// response has actually arrived over the negotiated connection.
+    private var hasCommittedNavigation = false
     private var certificateWarningContinuation: CheckedContinuation<Bool, Never>?
 
     /// Drains `page.navigations` for the tab's whole lifetime, independent of
@@ -145,12 +151,18 @@ final class BrowserTab: Identifiable {
             return .notSecure
         }
 
+        if loadFailure != nil {
+            return .notSecure
+        }
+        // No lock until the response has committed: only then has the TLS
+        // handshake been confirmed for the URL in the address bar.
+        guard hasCommittedNavigation else {
+            return nil
+        }
+
         let port = url.port ?? 443
         if certificateTrustStore.isTrusted(host: host, port: port) {
             return .certificateException
-        }
-        if loadFailure != nil {
-            return .notSecure
         }
         return .secure
     }
@@ -162,6 +174,7 @@ final class BrowserTab: Identifiable {
         lastAttemptedURL = url
         addressText = displayAddress ?? url.absoluteString
         loadFailure = nil
+        hasCommittedNavigation = false
         log.info("loading host \(Self.logHost(for: url), privacy: .public) via in-app SOCKS5")
         page.load(URLRequest(url: url))
     }
@@ -250,6 +263,7 @@ final class BrowserTab: Identifiable {
     private func handleNavigationEvent(_ event: WebPage.NavigationEvent) {
         switch event {
         case .committed, .finished:
+            hasCommittedNavigation = true
             loadFailure = nil
             if let url = page.url {
                 addressText = url.absoluteString
@@ -259,7 +273,11 @@ final class BrowserTab: Identifiable {
             if case .finished = event, let url = page.url {
                 library.recordVisit(title: page.title, url: url)
             }
-        case .startedProvisionalNavigation, .receivedServerRedirect:
+        case .startedProvisionalNavigation:
+            // Covers link clicks and reloads too, which never go through
+            // `load(_:)` — the indicator resets for every fresh navigation.
+            hasCommittedNavigation = false
+        case .receivedServerRedirect:
             break
         @unknown default:
             break
@@ -369,7 +387,8 @@ struct BrowserCertificateWarning: Identifiable, Equatable {
     let reason: String
 
     var displayHost: String {
-        port == 443 ? host : "\(host):\(port)"
+        let bracketed = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+        return port == 443 ? bracketed : "\(bracketed):\(port)"
     }
 }
 

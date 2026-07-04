@@ -860,7 +860,10 @@ private struct SiteSecurityPopover: View {
     }
 
     private func hostText(for url: URL) -> String {
-        guard let host = url.host() else { return url.absoluteString }
+        guard var host = url.host() else { return url.absoluteString }
+        if host.contains(":") && !host.hasPrefix("[") {
+            host = "[\(host)]"
+        }
         if let port = url.port {
             return "\(host):\(port)"
         }

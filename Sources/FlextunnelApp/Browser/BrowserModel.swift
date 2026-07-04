@@ -141,7 +141,9 @@ final class BrowserModel {
     }
 
     private static func bareHostURL(from text: String) -> URL? {
-        guard !text.contains(" "), text.contains("."), Double(text) == nil else { return nil }
+        // A bracketed IPv6 literal (`[fdb8::1]:8006`) is an address even though
+        // it has no dot.
+        guard !text.contains(" "), text.contains(".") || text.hasPrefix("["), Double(text) == nil else { return nil }
 
         // Parse with a default scheme so the host is isolated from any port or
         // path, then pick the real scheme from the parsed host. Onion services
@@ -160,6 +162,8 @@ final class BrowserModel {
     }
 
     private static func hostIsNavigable(_ host: String) -> Bool {
-        host == "localhost" || host.contains(".")
+        // A colon in the parsed host means an IPv6 literal (URLComponents keeps
+        // the port separate), e.g. https://[fdb8:d92a:f690:1abf::1]:8006.
+        host == "localhost" || host.contains(".") || host.contains(":")
     }
 }
