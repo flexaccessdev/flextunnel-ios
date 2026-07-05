@@ -86,14 +86,14 @@ that is actively receiving location updates — so the SOCKS listener and every
 forward stay reachable indefinitely while you use other apps.
 
 The **"Keep alive in background"** toggle in the proxy screen's Background
-section controls this; it is **on by default** and the choice persists across
-launches. Switched off, the app falls back to the best-effort ~30 s grace
-described below.
+section controls this; it is **off by default** (opt-in, mirroring Termius's
+"Location tracking" setting) and the choice persists across launches. Switched
+off, the app falls back to the best-effort ~30 s grace described below.
 
 How it's implemented (`BackgroundKeepAlive.swift`):
 
-- the first port-forwarding session prompts for **When In Use** location
-  permission; granting it is all the setup there is;
+- enabling the toggle prompts for **When In Use** location permission;
+  granting it is all the setup there is;
 - accuracy is deliberately coarse (100 km, like Blink's `geo track`) so fixes
   come from cell towers rather than the GPS radio — the battery cost is small;
 - every fix is **discarded**: nothing is stored or sent anywhere; the location

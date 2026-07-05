@@ -8,14 +8,15 @@ import Foundation
 /// ~30s after backgrounding.
 ///
 /// Runs while a proxy-only session is up (`setSessionActive`) and the persisted
-/// `enabled` preference is on (the default — this build is not App Store bound).
+/// `enabled` preference is on (off by default, like Termius's opt-in setting).
 /// The accuracy is deliberately coarse (100 km, like Blink's `geo track`) so
 /// fixes come from cell towers rather than the GPS radio, and every fix is
 /// discarded — the session exists only to keep the process alive, and it stops
 /// with the proxy so the location indicator never outlives it.
 @MainActor
 final class BackgroundKeepAlive: NSObject, ObservableObject {
-    /// The persisted "Keep alive in background" preference; on by default.
+    /// The persisted "Keep alive in background" preference; off by default, so
+    /// no location prompt until the user opts in.
     @Published var enabled: Bool {
         didSet {
             UserDefaults.standard.set(enabled, forKey: Self.defaultsKey)
@@ -33,7 +34,7 @@ final class BackgroundKeepAlive: NSObject, ObservableObject {
     override init() {
         let manager = CLLocationManager()
         self.manager = manager
-        enabled = UserDefaults.standard.object(forKey: Self.defaultsKey) as? Bool ?? true
+        enabled = UserDefaults.standard.bool(forKey: Self.defaultsKey)
         authorization = manager.authorizationStatus
         super.init()
         manager.delegate = self
