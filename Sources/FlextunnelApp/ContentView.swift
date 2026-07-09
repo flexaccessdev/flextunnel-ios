@@ -85,6 +85,15 @@ struct ContentView: View {
     // forward listeners, so the next foreground must rebind them.
     @State private var wasSuspended = false
 
+    // Tunnel status Live Activity (lock screen / Dynamic Island). UX only — it
+    // reflects the last-known state; it neither grants nor needs background time.
+    @State private var liveActivity = LiveActivityController()
+    // Approximates iOS's `beginBackgroundTask` grace: when the app is backgrounded
+    // without the location keep-alive holding it, the process is suspended about
+    // this long after, so the Live Activity is scheduled to disappear then (the
+    // same ~30s cited in ProxyOnlyView's background note).
+    private static let liveActivityBackgroundGrace: TimeInterval = 30
+
     // Owned here so bookmarks/history survive BrowserModel being recreated when
     // the proxy port changes.
     @State private var library = BrowserLibrary()
@@ -201,6 +210,7 @@ struct ContentView: View {
                     TokenStore.save(token)
                 }
                 syncSessionPresentation()
+                syncLiveActivity()
             }
             .onChange(of: proxy.socksPort) {
                 syncSessionPresentation()
@@ -212,7 +222,9 @@ struct ContentView: View {
             }
             .onChange(of: proxy.socksAlive) {
                 syncForwards()
+                syncLiveActivity()
             }
+            .onChange(of: proxy.tunnelConnected) { syncLiveActivity() }
             .onChange(of: scenePhase) { _, phase in
                 handleScenePhase(phase)
             }
@@ -221,6 +233,9 @@ struct ContentView: View {
                 syncSessionPresentation()
                 syncForwards()
                 syncKeepAlive()
+                // Reconcile any Live Activity the controller reattached to on
+                // launch with the real state (ends a leftover banner while idle).
+                syncLiveActivity()
             }
         }
     }
@@ -363,6 +378,12 @@ struct ContentView: View {
     private func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
         case .background:
+            // Expire the Live Activity around when iOS suspends us; if the
+            // location keep-alive is holding the process, the app keeps running
+            // (and updating the banner), so leave it live.
+            if !keepAlive.isRunning {
+                liveActivity.expire(after: Self.liveActivityBackgroundGrace)
+            }
             guard proxy.socksPort != nil, backgroundTask == .invalid else { break }
             backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "flextunnel-proxy") {
                 // Grace expired. Unless the location keep-alive is holding the
@@ -374,6 +395,9 @@ struct ContentView: View {
         case .active:
             endBackgroundTask()
             proxy.noteForegrounded()
+            // Revive an expired banner (via start()) so a still-connected session
+            // is glanceable again on return.
+            syncLiveActivity()
             if wasSuspended {
                 wasSuspended = false
                 recoverFromSuspension()
@@ -400,6 +424,42 @@ struct ContentView: View {
         guard backgroundTask != .invalid else { return }
         UIApplication.shared.endBackgroundTask(backgroundTask)
         backgroundTask = .invalid
+    }
+
+    // MARK: - Live Activity
+
+    /// Mirror the session into the Live Activity: start/refresh it while connected,
+    /// end it once the session is gone. Idempotent — `start` updates an existing
+    /// activity — so it's safe to call from every relevant state change.
+    private func syncLiveActivity() {
+        switch proxy.phase {
+        case .connected:
+            let state = TunnelActivityAttributes.ContentState(
+                tunnelConnected: proxy.tunnelConnected,
+                socksAlive: proxy.socksAlive,
+                statusText: liveActivityStatusText
+            )
+            liveActivity.start(
+                serverLabel: liveActivityServerLabel,
+                modeTitle: sessionMode.title,
+                state: state
+            )
+        case .idle, .failed:
+            liveActivity.end()
+        case .connecting:
+            break
+        }
+    }
+
+    private var liveActivityServerLabel: String {
+        let id = proxy.connectionSummary?.serverNodeID ?? trimmedServerNodeID
+        return id.isEmpty ? "Tunnel" : id
+    }
+
+    private var liveActivityStatusText: String {
+        if proxy.tunnelConnected { return "Connected" }
+        if proxy.socksAlive { return "Reconnecting…" }
+        return "Disconnected"
     }
 }
 
