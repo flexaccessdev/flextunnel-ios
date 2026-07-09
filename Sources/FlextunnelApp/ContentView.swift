@@ -59,7 +59,10 @@ struct ContentView: View {
     @AppStorage("lastServerNodeID") private var serverNodeID = ""
     @State private var authToken = ""
     @State private var relayURLs = ""
-    @State private var socksPortText = "18080"
+    // Proxy-only mode's fixed SOCKS5 port, which other apps on the device point
+    // at (shown on the proxy-only screen). Browser mode ignores it and binds an
+    // ephemeral port instead.
+    @AppStorage("lastSocksPort") private var socksPortText = "18080"
     @State private var browserModel: BrowserModel?
     @State private var didLoadToken = false
     // The immutable settings snapshot handed to `proxy.start`, so the Keychain
@@ -85,6 +88,10 @@ struct ContentView: View {
     // forward listeners, so the next foreground must rebind them.
     @State private var wasSuspended = false
 
+    // Tunnel status Live Activity (lock screen / Dynamic Island). UX only — it
+    // reflects the last-known state; it neither grants nor needs background time.
+    @State private var liveActivity = LiveActivityController()
+
     // Owned here so bookmarks/history survive BrowserModel being recreated when
     // the proxy port changes.
     @State private var library = BrowserLibrary()
@@ -105,22 +112,6 @@ struct ContentView: View {
                         TextField("", text: $relayURLs)
                             .autocorrectionDisabled().textInputAutocapitalization(.never)
                     }
-                    LabeledField("SOCKS bind port") {
-                        TextField("", text: $socksPortText)
-                            .keyboardType(.numberPad)
-                            .autocorrectionDisabled()
-                            .onChange(of: socksPortText) { _, newValue in
-                                let filtered = newValue.filter { $0.isNumber }
-                                if filtered != newValue {
-                                    socksPortText = filtered
-                                }
-                            }
-                    }
-                    if let portValidationMessage {
-                        Text(portValidationMessage)
-                            .foregroundStyle(.red)
-                            .font(.footnote)
-                    }
                 }
 
                 // Both modes share the config above; pick one, and the single
@@ -134,6 +125,30 @@ struct ContentView: View {
                             isSelected: sessionMode == mode,
                             disabled: proxy.phase == .connecting) {
                             sessionMode = mode
+                        }
+                    }
+                }
+
+                // Proxy-only mode exposes the SOCKS5 listener for other apps to
+                // use, so its port must be fixed and user-chosen. Browser mode
+                // keeps the port internal and binds an ephemeral one, so no field.
+                if sessionMode == .proxyOnly {
+                    Section("SOCKS proxy") {
+                        LabeledField("SOCKS bind port") {
+                            TextField("", text: $socksPortText)
+                                .keyboardType(.numberPad)
+                                .autocorrectionDisabled()
+                                .onChange(of: socksPortText) { _, newValue in
+                                    let filtered = newValue.filter { $0.isNumber }
+                                    if filtered != newValue {
+                                        socksPortText = filtered
+                                    }
+                                }
+                        }
+                        if let portValidationMessage {
+                            Text(portValidationMessage)
+                                .foregroundStyle(.red)
+                                .font(.footnote)
                         }
                     }
                 }
@@ -201,6 +216,7 @@ struct ContentView: View {
                     TokenStore.save(token)
                 }
                 syncSessionPresentation()
+                syncLiveActivity()
             }
             .onChange(of: proxy.socksPort) {
                 syncSessionPresentation()
@@ -212,7 +228,12 @@ struct ContentView: View {
             }
             .onChange(of: proxy.socksAlive) {
                 syncForwards()
+                syncLiveActivity()
             }
+            .onChange(of: proxy.tunnelConnected) { syncLiveActivity() }
+            // `tunnelStuck` flips without `tunnelConnected`/`socksAlive` changing,
+            // so it needs its own trigger to refresh the banner (→ "Disconnected").
+            .onChange(of: proxy.tunnelStuck) { syncLiveActivity() }
             .onChange(of: scenePhase) { _, phase in
                 handleScenePhase(phase)
             }
@@ -221,6 +242,14 @@ struct ContentView: View {
                 syncSessionPresentation()
                 syncForwards()
                 syncKeepAlive()
+                // Let the poll loop refresh the Live Activity while backgrounded
+                // under keep-alive (SwiftUI's .onChange above is paused then).
+                // Background refreshes must not create an activity — Activity.request
+                // is foreground-only — so they only update/end an existing one.
+                proxy.onBackgroundLiveActivityRefresh = { syncLiveActivity(allowCreate: false) }
+                // Reconcile any Live Activity the controller reattached to on
+                // launch with the real state (ends a leftover banner while idle).
+                syncLiveActivity()
             }
         }
     }
@@ -287,14 +316,17 @@ struct ContentView: View {
     }
 
     private var canStartProxy: Bool {
-        !trimmedServerNodeID.isEmpty && !trimmedAuthToken.isEmpty && parsedSocksPort != nil
+        guard !trimmedServerNodeID.isEmpty, !trimmedAuthToken.isEmpty else { return false }
+        // Only proxy-only mode needs a valid fixed port; the browser binds ephemeral.
+        return sessionMode == .browser || parsedSocksPort != nil
     }
 
     private func currentSettings() -> ProxyController.Settings {
         ProxyController.Settings(
             serverNodeID: trimmedServerNodeID,
             authToken: trimmedAuthToken,
-            socksPort: parsedSocksPort ?? 18080,
+            // Browser: 0 → ephemeral. Proxy-only: the user's fixed port.
+            socksPort: sessionMode == .proxyOnly ? (parsedSocksPort ?? 18080) : 0,
             relayURLs: splitCSV(relayURLs)
         )
     }
@@ -363,17 +395,41 @@ struct ContentView: View {
     private func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
         case .background:
+            // While the location keep-alive holds the process, the poll loop keeps
+            // running: let it refresh the Live Activity in the background (SwiftUI's
+            // .onChange handlers are paused now). Otherwise the banner is left live
+            // and only dismissed at actual suspension (the expiration handler
+            // below), so it lingers the full grace and a return to the foreground
+            // within it keeps it live — no premature .end()/revive flicker.
+            proxy.backgroundLiveActivityRefreshEnabled = keepAlive.isRunning
             guard proxy.socksPort != nil, backgroundTask == .invalid else { break }
             backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "flextunnel-proxy") {
-                // Grace expired. Unless the location keep-alive is holding the
-                // process, iOS suspends it now and defuncts the forward
-                // listeners — remember that so the next foreground rebinds them.
+                // Grace expired → iOS suspends us now (unless keep-alive holds the
+                // process) and defuncts the forward listeners — remember that so the
+                // next foreground rebinds them.
                 wasSuspended = !keepAlive.isRunning
-                endBackgroundTask()
+                if wasSuspended {
+                    // Suspended: the banner can no longer be kept fresh, so dismiss
+                    // it now (≈ the grace after backgrounding). Hold the task
+                    // assertion until the async dismissal actually registers, then
+                    // end it — otherwise the app can suspend first and leave the
+                    // banner behind. A foreground before this handler fires cancels
+                    // the task, so the banner stays live.
+                    Task {
+                        await liveActivity.endNow()
+                        endBackgroundTask()
+                    }
+                } else {
+                    endBackgroundTask()
+                }
             }
         case .active:
             endBackgroundTask()
+            proxy.backgroundLiveActivityRefreshEnabled = false
             proxy.noteForegrounded()
+            // Revive an expired banner (via start()) so a still-connected session
+            // is glanceable again on return.
+            syncLiveActivity()
             if wasSuspended {
                 wasSuspended = false
                 recoverFromSuspension()
@@ -400,6 +456,58 @@ struct ContentView: View {
         guard backgroundTask != .invalid else { return }
         UIApplication.shared.endBackgroundTask(backgroundTask)
         backgroundTask = .invalid
+    }
+
+    // MARK: - Live Activity
+
+    /// Mirror the session into the Live Activity: start/refresh it while connected,
+    /// reflect a reconnect while connecting, and end it once the session is gone.
+    /// `allowCreate` is false for background refreshes, which must never call
+    /// `Activity.request` (foreground-only) — they only update/end an existing one.
+    private func syncLiveActivity(allowCreate: Bool = true) {
+        switch proxy.phase {
+        case .connected:
+            let state = TunnelActivityAttributes.ContentState(
+                tunnelConnected: proxy.tunnelConnected,
+                socksAlive: proxy.socksAlive,
+                statusText: liveActivityStatusText
+            )
+            if allowCreate {
+                liveActivity.start(
+                    serverLabel: liveActivityServerLabel,
+                    modeTitle: sessionMode.title,
+                    state: state
+                )
+            } else {
+                liveActivity.update(state)
+            }
+        case .connecting:
+            // A reconnect (retryNow) passes through .connecting with a live banner —
+            // reflect it as reconnecting rather than leaving the stale "Connected".
+            // update() is a no-op when there's no banner (initial connect), so it
+            // never creates one here.
+            liveActivity.update(TunnelActivityAttributes.ContentState(
+                tunnelConnected: false,
+                socksAlive: proxy.socksAlive,
+                statusText: "Reconnecting…"
+            ))
+        case .idle, .failed:
+            liveActivity.end()
+        }
+    }
+
+    private var liveActivityServerLabel: String {
+        let id = proxy.connectionSummary?.serverNodeID ?? trimmedServerNodeID
+        return id.isEmpty ? "Tunnel" : id
+    }
+
+    private var liveActivityStatusText: String {
+        if proxy.tunnelConnected { return "Connected" }
+        // Stuck: the core's own reconnect is presumed wedged (manual retry needed),
+        // so it reads disconnected rather than optimistically "Reconnecting…".
+        if proxy.tunnelStuck { return "Disconnected" }
+        if proxy.socksAlive { return "Reconnecting…" }
+        return "Disconnected"
     }
 }
 

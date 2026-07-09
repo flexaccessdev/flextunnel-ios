@@ -25,7 +25,9 @@ final class ProxyController: ObservableObject {
     @Published var lastError: String?
     /// Current lifecycle phase; drives whether the browser is presented.
     @Published private(set) var phase: Phase = .idle
-    /// Loopback SOCKS5 port the core bound (fixed), or nil while stopped.
+    /// Loopback SOCKS5 port the core actually bound, or nil while stopped. In
+    /// browser mode this is an OS-assigned ephemeral port; in proxy-only mode it
+    /// is the fixed port the user chose (shown so other apps can point at it).
     @Published var socksPort: UInt16?
     /// The SOCKS5 serve loop is alive (FFI health == 1). This — not the tunnel
     /// link — gates browsing: while it's up, off-list targets connect directly
@@ -44,6 +46,45 @@ final class ProxyController: ObservableObject {
     /// Nil until the first handshake; retained across drops by the core.
     @Published private(set) var forwardedRoutes: ForwardedRoutes?
 
+    /// Called (on the main actor) from the poll loop when the Live-Activity-
+    /// relevant state changes while the app is backgrounded with keep-alive — the
+    /// hook `ContentView` uses to refresh the banner without SwiftUI's `.onChange`
+    /// (which doesn't fire while backgrounded). Only invoked while
+    /// `backgroundLiveActivityRefreshEnabled` is set.
+    var onBackgroundLiveActivityRefresh: (() -> Void)?
+    /// Set by `ContentView` while the app is in the background AND the keep-alive
+    /// session is holding the process; gates `onBackgroundLiveActivityRefresh`.
+    /// Clearing it resets the keep-alive refresh clock so the next background
+    /// stint re-arms immediately.
+    var backgroundLiveActivityRefreshEnabled = false {
+        didSet { if !backgroundLiveActivityRefreshEnabled { lastBackgroundRefresh = nil } }
+    }
+    /// When the background Live Activity was last refreshed, so a periodic
+    /// re-arm keeps its `staleDate` in the future while the app stays alive (even
+    /// with no state change); nil until the first background refresh.
+    private var lastBackgroundRefresh: Date?
+    /// Re-arm cadence for the background refresh — shorter than the Live
+    /// Activity's stale window (`LiveActivityController.staleAfter`, 90s) so the
+    /// banner never falsely reads stale while the app is genuinely running, yet
+    /// still goes stale within ~90s if the app actually stops updating.
+    private static let backgroundRefreshInterval: TimeInterval = 60
+
+    /// The subset of state the Live Activity reflects; compared across a poll to
+    /// detect a meaningful change worth pushing to the banner.
+    private struct LiveActivityState: Equatable {
+        let phase: Phase
+        let socksAlive: Bool
+        let tunnelConnected: Bool
+        let tunnelStuck: Bool
+    }
+    private var liveActivityState: LiveActivityState {
+        LiveActivityState(
+            phase: phase,
+            socksAlive: socksAlive,
+            tunnelConnected: tunnelConnected,
+            tunnelStuck: tunnelStuck)
+    }
+
     private var handle: OpaquePointer?
     private var healthTimer: Timer?
     /// Give up on a stalled first handshake after this long.
@@ -60,6 +101,9 @@ final class ProxyController: ObservableObject {
     struct Settings {
         var serverNodeID: String
         var authToken: String
+        /// Loopback port for the SOCKS5 listener. `0` binds an OS-assigned
+        /// ephemeral port (browser mode — the port is internal). Proxy-only mode
+        /// passes a fixed, user-chosen port other apps on the device point at.
         var socksPort: UInt16
         var relayURLs: [String]
     }
@@ -169,6 +213,8 @@ final class ProxyController: ObservableObject {
         let configDict: [String: Any] = [
             "server_node_id": s.serverNodeID,
             "auth_token": s.authToken,
+            // 0 → OS-assigned ephemeral loopback port (browser); a fixed value in
+            // proxy-only mode. The core returns the actual bound port below.
             "socks_port": Int(s.socksPort),
             "relay_urls": s.relayURLs,
             "dns_server": NSNull(),
@@ -285,6 +331,26 @@ final class ProxyController: ObservableObject {
 
     private func poll() {
         guard let handle else { return }
+
+        // While the location keep-alive holds the app in the background, SwiftUI
+        // stops firing the `.onChange` handlers that refresh the Live Activity —
+        // so drive it from this poll (which keeps running under keep-alive)
+        // instead: snapshot the banner-relevant state and, if it changed this
+        // tick, ask `ContentView` to re-sync. Gated to the background+keep-alive
+        // case so it never fights the foreground `.onChange` path.
+        let liveStateBefore = liveActivityState
+        defer {
+            if backgroundLiveActivityRefreshEnabled {
+                let changed = liveActivityState != liveStateBefore
+                let elapsed = lastBackgroundRefresh.map { Date().timeIntervalSince($0) } ?? .infinity
+                // Refresh on a real change, or periodically to re-arm the stale
+                // window so the banner stays fresh while the app is alive.
+                if changed || elapsed >= Self.backgroundRefreshInterval {
+                    lastBackgroundRefresh = Date()
+                    onBackgroundLiveActivityRefresh?()
+                }
+            }
+        }
 
         // health == 0 means the serve loop ended. Before the first connect that's
         // a fatal initial failure; after, the whole proxy died (rare — the core

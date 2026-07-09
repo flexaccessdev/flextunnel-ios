@@ -25,6 +25,8 @@
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<true/>
 	</dict>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<!-- Background keep-alive for port forwarding (see BackgroundKeepAlive.swift):
 	     a coarse continuous location session stops iOS from suspending the app so
 	     forwards stay reachable in the background — same technique as Termius and
