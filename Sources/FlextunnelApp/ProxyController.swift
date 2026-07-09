@@ -92,6 +92,30 @@ final class ProxyController: ObservableObject {
         }
     }
 
+    /// A single connection-path snapshot — one iroh path to the server — for the
+    /// on-demand "connection path" readout. Mirrors the desktop's `ConnPath` and
+    /// `ezvpn client status`; produced by `queryConnPath()`.
+    struct ConnPath: Identifiable {
+        var kind: Kind
+        /// Human line like `Direct 1.2.3.4:52186 (rtt 1ms)` or
+        /// `Relay https://… (rtt 42ms)`.
+        var display: String
+        /// Whether iroh currently routes traffic over this path.
+        var selected: Bool
+
+        var id: String { display }
+
+        enum Kind: String {
+            case direct, relay, other
+
+            /// Parse the FFI JSON token, defaulting to `.other` for anything
+            /// unrecognized (a missing/old field or a future value).
+            init(token: String?) {
+                self = token.flatMap(Kind.init(rawValue:)) ?? .other
+            }
+        }
+    }
+
     /// A reverse-routing (agent) alias plus the backing agent's live connection
     /// status as the core reports it: `connected`, `disconnected`, or `unknown`
     /// (the last when the tunnel is down or the heartbeat-fed view is stale).
@@ -362,6 +386,28 @@ final class ProxyController: ObservableObject {
             cidrs: obj["cidrs"] as? [String] ?? [],
             hostAliases: hostAliases,
             agentRoutes: agentRoutes)
+    }
+
+    /// One-shot snapshot of the live connection's iroh path(s) — a point-in-time
+    /// readout (relay/direct) for the "connection path" status sheet, mirroring
+    /// the desktop CTA. Empty while the tunnel link is down (the core routes over
+    /// no path then), so callers only offer it while `tunnelConnected`.
+    func queryConnPath() -> [ConnPath] {
+        guard let handle else { return [] }
+        var buf = [CChar](repeating: 0, count: 8 * 1024)
+        guard flextunnel_conn_path(handle, &buf, buf.count) == 1 else { return [] }
+        guard
+            let data = String(cString: buf).data(using: .utf8),
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let paths = obj["paths"] as? [[String: Any]]
+        else { return [] }
+        return paths.compactMap { entry in
+            guard let display = entry["display"] as? String else { return nil }
+            return ConnPath(
+                kind: .init(token: entry["kind"] as? String),
+                display: display,
+                selected: entry["selected"] as? Bool ?? false)
+        }
     }
 
     deinit {

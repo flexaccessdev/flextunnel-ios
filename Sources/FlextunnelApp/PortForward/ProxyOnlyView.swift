@@ -14,6 +14,8 @@ struct ProxyOnlyView: View {
     let onStop: () -> Void
 
     @State private var editingDraft: ForwardDraft?
+    /// Drives the on-demand connection-path snapshot sheet.
+    @State private var showingConnPath = false
 
     var body: some View {
         NavigationStack {
@@ -63,6 +65,9 @@ struct ProxyOnlyView: View {
                         }
                     })
             }
+            .sheet(isPresented: $showingConnPath) {
+                ConnPathSheet(query: { proxy.queryConnPath() })
+            }
         }
     }
 
@@ -98,6 +103,18 @@ struct ProxyOnlyView: View {
             }
 
             forwardedRoutesRows
+
+            // One-shot snapshot of the live iroh path, shown in its own sheet — a
+            // point-in-time check. Only offered while the link is up (the snapshot
+            // is empty otherwise), so it appears and disappears with the tunnel,
+            // mirroring the desktop CTA.
+            if proxy.tunnelConnected {
+                Button {
+                    showingConnPath = true
+                } label: {
+                    Label("Connection path", systemImage: "point.3.connected.trianglepath.dotted")
+                }
+            }
 
             if let error = proxy.lastError {
                 InfoRow("Last error", error, valueColor: .red)

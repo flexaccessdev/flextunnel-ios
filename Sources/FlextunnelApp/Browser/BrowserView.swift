@@ -1060,6 +1060,9 @@ private struct TunnelStatusPopover: View {
         proxy.socksAlive && !proxy.tunnelConnected
     }
 
+    /// Drives the on-demand connection-path snapshot sheet.
+    @State private var showingConnPath = false
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -1101,6 +1104,20 @@ private struct TunnelStatusPopover: View {
                 }
 
                 Divider()
+
+                // A one-shot readout of the live iroh path, shown in its own sheet
+                // — a point-in-time check rather than a live field. Only offered
+                // while the link is up (the snapshot is empty otherwise), so it
+                // appears and disappears with the tunnel, mirroring the desktop CTA.
+                if proxy.tunnelConnected {
+                    Button {
+                        showingConnPath = true
+                    } label: {
+                        Label("Connection path", systemImage: "point.3.connected.trianglepath.dotted")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.bordered)
+                }
 
                 // Tunnel status lives here in the popover so the page underneath
                 // is never disturbed. While the link is down the core reconnects on
@@ -1147,6 +1164,9 @@ private struct TunnelStatusPopover: View {
             .padding()
         }
         .frame(minWidth: 300, idealWidth: 340, maxHeight: 520)
+        .sheet(isPresented: $showingConnPath) {
+            ConnPathSheet(query: { proxy.queryConnPath() })
+        }
     }
 
     /// The tunnel set the server pushed: the domains/CIDRs routed through the
