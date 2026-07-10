@@ -156,7 +156,7 @@ struct ProxyOnlyView: View {
                 InfoRow(
                     "DNS forwards",
                     routes.dnsForwards
-                        .map { "\($0.suffix) → \($0.servers.joined(separator: ", "))" }
+                        .map { "\($0.suffix) (+ subdomains) → \($0.servers.joined(separator: ", "))" }
                         .joined(separator: "\n"),
                     monospace: true)
             }
