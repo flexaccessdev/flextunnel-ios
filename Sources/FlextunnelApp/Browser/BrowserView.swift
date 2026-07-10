@@ -1093,7 +1093,7 @@ private struct TunnelStatusPopover: View {
                     if let summary = proxy.connectionSummary {
                         DetailRow("Server node id", summary.serverNodeID, monospace: true)
                         DetailRow("Relay URLs", relayURLsText(summary.relayURLs))
-                        DetailRow("DNS discovery", summary.dnsServer ?? "iroh discovery")
+                        DetailRow("iroh DNS discovery", summary.dnsServer ?? "iroh discovery")
                     }
 
                     forwardedRoutesRows
