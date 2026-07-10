@@ -1191,6 +1191,14 @@ private struct TunnelStatusPopover: View {
                     routes.hostAliases.map { "\($0.alias) → \($0.target)" }.joined(separator: "\n"),
                     monospace: true)
             }
+            if !routes.dnsForwards.isEmpty {
+                DetailRow(
+                    "DNS forwards",
+                    routes.dnsForwards
+                        .map { "\($0.suffix) → \($0.servers.joined(separator: ", "))" }
+                        .joined(separator: "\n"),
+                    monospace: true)
+            }
             if !routes.agentRoutes.isEmpty {
                 DetailRow(
                     "Agent routes",
