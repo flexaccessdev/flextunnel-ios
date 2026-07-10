@@ -1175,9 +1175,7 @@ private struct TunnelStatusPopover: View {
             if !routes.bridges.isEmpty {
                 DetailRow(
                     "Bridge routes",
-                    routes.bridges
-                        .map { "\($0.name) [\($0.rules.joined(separator: ", "))] → \($0.endpointID)" }
-                        .joined(separator: "\n"),
+                    routes.bridges.map(\.summary).joined(separator: "\n\n"),
                     monospace: true)
             }
             if !routes.agentRoutes.isEmpty {

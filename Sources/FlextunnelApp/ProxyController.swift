@@ -229,8 +229,20 @@ final class ProxyController: ObservableObject {
 
         var id: String { name }
 
-        /// The bridge's match rules (domains then CIDRs) for a compact display.
-        var rules: [String] { domains + cidrs }
+        /// A structured, multi-line summary for the status views: the bridge name,
+        /// then its endpoint id and the routed domains/CIDRs as bulleted lists.
+        var summary: String {
+            var lines = ["\(name):", "  endpoint id: \(endpointID)"]
+            if !domains.isEmpty {
+                lines.append("  routed domains:")
+                lines.append(contentsOf: domains.map { "    - \($0)" })
+            }
+            if !cidrs.isEmpty {
+                lines.append("  routed CIDRs:")
+                lines.append(contentsOf: cidrs.map { "    - \($0)" })
+            }
+            return lines.joined(separator: "\n")
+        }
     }
 
     /// True when everything is routed through the tunnel (full-tunnel set), so a
