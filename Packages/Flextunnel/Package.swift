@@ -26,8 +26,8 @@ func localBinaryTarget() -> Target? {
 
 let binaryTarget = localBinaryTarget() ?? .binaryTarget(
     name: "libflextunnel",
-    url: "https://github.com/andrewtheguy/flextunnel/releases/download/v0.0.44/libflextunnel-ios.xcframework.zip",
-    checksum: "686255fb169e70c05b8db954047e77888cce0731390f7625d86c13758b47ee7a"
+    url: "https://github.com/andrewtheguy/flextunnel/releases/download/v0.0.45/libflextunnel-ios.xcframework.zip",
+    checksum: "3227b5020da47eac39983c94d6938625acf776cc1d32abc5e61b11197feae778"
 )
 
 let package = Package(

@@ -160,6 +160,14 @@ struct ProxyOnlyView: View {
                         .joined(separator: "\n"),
                     monospace: true)
             }
+            if !routes.bridges.isEmpty {
+                InfoRow(
+                    "Bridge routes",
+                    routes.bridges
+                        .map { "\($0.name) [\($0.rules.joined(separator: ", "))] → \($0.endpointID)" }
+                        .joined(separator: "\n"),
+                    monospace: true)
+            }
             if !routes.agentRoutes.isEmpty {
                 InfoRow(
                     "Agent routes",

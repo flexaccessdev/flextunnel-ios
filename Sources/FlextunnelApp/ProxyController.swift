@@ -132,6 +132,11 @@ final class ProxyController: ObservableObject {
         /// names under `suffix` resolve via `servers` on the server side; shown
         /// in the status popover like the server status page shows them.
         var dnsForwards: [(suffix: String, servers: [String])]
+        /// Server-to-server bridge routes, informational only — targets matching
+        /// a bridge's domains/CIDRs are forwarded to another flextunnel server.
+        /// The rules are already part of the routed set, so nothing is enforced
+        /// caller-side; shown in the status popover like the server status page.
+        var bridges: [BridgeRoute]
 
         /// A `*` domain or a default-route CIDR means everything is tunneled, so a
         /// tunnel drop is a full outage (nothing is off-list to browse directly).
@@ -184,6 +189,21 @@ final class ProxyController: ObservableObject {
                 self = token.flatMap(Status.init(rawValue:)) ?? .unknown
             }
         }
+    }
+
+    /// A server-to-server bridge route: targets matching `domains`/`cidrs` are
+    /// forwarded to another flextunnel server (identified by `endpointID`).
+    /// Informational only — the rules are already part of the routed set.
+    struct BridgeRoute: Identifiable {
+        var name: String
+        var endpointID: String
+        var domains: [String]
+        var cidrs: [String]
+
+        var id: String { name }
+
+        /// The bridge's match rules (domains then CIDRs) for a compact display.
+        var rules: [String] { domains + cidrs }
     }
 
     /// True when everything is routed through the tunnel (full-tunnel set), so a
@@ -458,13 +478,24 @@ final class ProxyController: ObservableObject {
                 guard let suffix = entry["suffix"] as? String else { return nil }
                 return (suffix: suffix, servers: entry["servers"] as? [String] ?? [])
             }
+        // bridges is a JSON array of {"name","endpoint_id","domains","cidrs"}.
+        let bridges = (obj["bridges"] as? [[String: Any]] ?? [])
+            .compactMap { entry -> BridgeRoute? in
+                guard let name = entry["name"] as? String else { return nil }
+                return BridgeRoute(
+                    name: name,
+                    endpointID: entry["endpoint_id"] as? String ?? "",
+                    domains: entry["domains"] as? [String] ?? [],
+                    cidrs: entry["cidrs"] as? [String] ?? [])
+            }
         forwardedRoutes = ForwardedRoutes(
             connected: obj["connected"] as? Bool ?? false,
             domains: obj["domains"] as? [String] ?? [],
             cidrs: obj["cidrs"] as? [String] ?? [],
             hostAliases: hostAliases,
             agentRoutes: agentRoutes,
-            dnsForwards: dnsForwards)
+            dnsForwards: dnsForwards,
+            bridges: bridges)
     }
 
     /// One-shot snapshot of the live connection's iroh path(s) — a point-in-time
