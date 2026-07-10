@@ -1093,7 +1093,7 @@ private struct TunnelStatusPopover: View {
                     if let summary = proxy.connectionSummary {
                         DetailRow("Server node id", summary.serverNodeID, monospace: true)
                         DetailRow("Relay URLs", relayURLsText(summary.relayURLs))
-                        DetailRow("DNS discovery", summary.dnsServer ?? "iroh discovery")
+                        DetailRow("iroh DNS discovery", summary.dnsServer ?? "iroh discovery")
                     }
 
                     forwardedRoutesRows
@@ -1189,6 +1189,14 @@ private struct TunnelStatusPopover: View {
                 DetailRow(
                     "Host aliases",
                     routes.hostAliases.map { "\($0.alias) → \($0.target)" }.joined(separator: "\n"),
+                    monospace: true)
+            }
+            if !routes.dnsForwards.isEmpty {
+                DetailRow(
+                    "DNS forwards",
+                    routes.dnsForwards
+                        .map { "\($0.suffix) → \($0.servers.joined(separator: ", "))" }
+                        .joined(separator: "\n"),
                     monospace: true)
             }
             if !routes.agentRoutes.isEmpty {

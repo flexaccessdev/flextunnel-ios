@@ -128,6 +128,10 @@ final class ProxyController: ObservableObject {
         /// Reverse-routing (agent) routes, informational only. Each carries a
         /// live connection status the core refreshes over the heartbeat.
         var agentRoutes: [AgentRoute]
+        /// Server-side conditional DNS forwards (split-DNS), informational only —
+        /// names under `suffix` resolve via `servers` on the server side; shown
+        /// in the status popover like the server status page shows them.
+        var dnsForwards: [(suffix: String, servers: [String])]
 
         /// A `*` domain or a default-route CIDR means everything is tunneled, so a
         /// tunnel drop is a full outage (nothing is off-list to browse directly).
@@ -448,12 +452,19 @@ final class ProxyController: ObservableObject {
                     name: name,
                     status: .init(token: entry["status"] as? String))
             }
+        // dns_forwards is a JSON array of {"suffix","servers"} objects.
+        let dnsForwards = (obj["dns_forwards"] as? [[String: Any]] ?? [])
+            .compactMap { entry -> (suffix: String, servers: [String])? in
+                guard let suffix = entry["suffix"] as? String else { return nil }
+                return (suffix: suffix, servers: entry["servers"] as? [String] ?? [])
+            }
         forwardedRoutes = ForwardedRoutes(
             connected: obj["connected"] as? Bool ?? false,
             domains: obj["domains"] as? [String] ?? [],
             cidrs: obj["cidrs"] as? [String] ?? [],
             hostAliases: hostAliases,
-            agentRoutes: agentRoutes)
+            agentRoutes: agentRoutes,
+            dnsForwards: dnsForwards)
     }
 
     /// One-shot snapshot of the live connection's iroh path(s) — a point-in-time

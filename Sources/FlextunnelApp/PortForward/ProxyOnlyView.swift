@@ -99,7 +99,7 @@ struct ProxyOnlyView: View {
                 InfoRow("Relay URLs", summary.relayURLs.isEmpty
                     ? "iroh defaults"
                     : summary.relayURLs.joined(separator: "\n"))
-                InfoRow("DNS discovery", summary.dnsServer ?? "iroh discovery")
+                InfoRow("iroh DNS discovery", summary.dnsServer ?? "iroh discovery")
             }
 
             forwardedRoutesRows
@@ -150,6 +150,14 @@ struct ProxyOnlyView: View {
                 InfoRow(
                     "Host aliases",
                     routes.hostAliases.map { "\($0.alias) → \($0.target)" }.joined(separator: "\n"),
+                    monospace: true)
+            }
+            if !routes.dnsForwards.isEmpty {
+                InfoRow(
+                    "DNS forwards",
+                    routes.dnsForwards
+                        .map { "\($0.suffix) → \($0.servers.joined(separator: ", "))" }
+                        .joined(separator: "\n"),
                     monospace: true)
             }
             if !routes.agentRoutes.isEmpty {
