@@ -1,0 +1,98 @@
+name: Verify against flextunnel commit
+
+# Build the iOS app (+ embedded widget extension) against libflextunnel built
+# from a pinned flextunnel *source commit* (not a released xcframework).
+# flextunnel is checked out as a sibling directory and built with build-ios.sh,
+# then linked through the existing FLEXTUNNEL_LOCAL_XCFRAMEWORK local-build path
+# (the committed Packages/Flextunnel/local/libflextunnel.xcframework symlink ->
+# ../flextunnel/dist/ios/libflextunnel.xcframework).
+#
+# This exists so a not-yet-released flextunnel change can be validated against
+# this app before cutting a release and bumping the pinned artifact with
+# scripts/bump-xcframework.sh. The regular unsigned-ios.yml build tests the
+# pinned release download; this one tests the pinned commit — and, because it
+# runs on macOS, it is how a Linux/Windows dev verifies an iOS-affecting Rust
+# change actually compiles and links.
+
+on:
+  workflow_dispatch:
+    inputs:
+      flextunnel_ref:
+        description: "flextunnel git ref (commit SHA / branch / tag) to build against"
+        required: true
+        default: "main"
+      flextunnel_repo:
+        description: "flextunnel repository (owner/name)"
+        required: true
+        default: "flexaccessdev/flextunnel"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify (build against pinned flextunnel commit)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      # Link the locally built xcframework (../flextunnel/dist/ios) via the
+      # committed symlink instead of the pinned release download. Must be set for
+      # BOTH `xcodegen generate` and `xcodebuild` — SPM reads it at
+      # package-resolution time — so it is scoped to the whole job.
+      FLEXTUNNEL_LOCAL_XCFRAMEWORK: "1"
+    steps:
+      - name: Check out flextunnel-ios
+        uses: actions/checkout@v7
+        with:
+          path: flextunnel-ios
+
+      - name: Check out flextunnel (pinned) as sibling
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.flextunnel_repo }}
+          ref: ${{ inputs.flextunnel_ref }}
+          path: flextunnel
+          # flextunnel is public today, so the default token works. If it becomes
+          # private, add a repo secret FLEXTUNNEL_CHECKOUT_TOKEN (a PAT /
+          # fine-grained token with read access to flextunnel) and it will be used
+          # automatically.
+          token: ${{ secrets.FLEXTUNNEL_CHECKOUT_TOKEN || github.token }}
+
+      - name: Show build environment
+        run: |
+          uname -m
+          xcodebuild -version
+          swift --version
+          rustc --version
+          cargo --version
+          echo "flextunnel @ $(git -C flextunnel rev-parse HEAD)"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # Produces flextunnel/dist/ios/libflextunnel.xcframework, which the
+      # committed symlink resolves to. Must run before project generation / build
+      # so SPM finds the binary target.
+      - name: Build libflextunnel.xcframework from pinned flextunnel
+        working-directory: flextunnel
+        run: ./build-ios.sh release
+
+      - name: Generate Xcode project
+        working-directory: flextunnel-ios
+        run: xcodegen generate
+
+      - name: Build iOS app + widget extension (compile/link check)
+        working-directory: flextunnel-ios
+        run: |
+          xcodebuild build \
+            -project Flextunnel.xcodeproj \
+            -scheme FlextunnelApp \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -sdk iphoneos \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData-iOS" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM="" \
+            COMPILER_INDEX_STORE_ENABLE=NO
