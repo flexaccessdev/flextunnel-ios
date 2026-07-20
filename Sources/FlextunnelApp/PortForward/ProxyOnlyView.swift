@@ -95,9 +95,7 @@ struct ProxyOnlyView: View {
                 InfoRow("Relay URLs", summary.relayURLs.isEmpty
                     ? "iroh defaults"
                     : summary.relayURLs.joined(separator: "\n"))
-                InfoRow("iroh peer discovery", summary.relayURLs.isEmpty
-                    ? "enabled (n0 discovery)"
-                    : "disabled (custom relay)")
+                InfoRow("iroh peer discovery", "enabled (n0 discovery)")
             }
 
             forwardedRoutesRows
