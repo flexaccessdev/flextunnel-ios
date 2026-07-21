@@ -15,6 +15,7 @@ struct BrowserView: View {
     @State private var showBookmarkSaved = false
     @State private var showingFind = false
     @State private var addressBarFocused = false
+    @State private var addressQuery = ""
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -26,41 +27,55 @@ struct BrowserView: View {
                 tunnelStatusColor: tunnelStatusColor,
                 showingTunnelStatus: $showingTunnelStatus,
                 addressBarFocused: $addressBarFocused,
+                editText: $addressQuery,
                 onReconnect: { proxy.retryNow() },
                 onStopAndReconfigure: stopAndDismiss)
             Divider()
 
             if let tab = model.selectedTab {
-                if tab.isHome {
-                    BrowserHomeView(
-                        onOpen: openFromHome)
-                } else {
-                    // Keep the WebView mounted and layer the failure screen over
-                    // it, so retrying toggles an overlay instead of tearing down
-                    // and recreating the web view (which flickers).
-                    WebView(tab.page)
-                        .webViewBackForwardNavigationGestures(.enabled)
-                        .findNavigator(isPresented: $showingFind)
-                        .overlay(alignment: .top) { progressBar(for: tab.page) }
-                        .overlay {
-                            if let warning = tab.certificateWarning {
-                                BrowserCertificateWarningView(
-                                    warning: warning,
-                                    onProceed: { tab.resolveCertificateWarning(allow: true) },
-                                    onGoBack: { tab.resolveCertificateWarning(allow: false) })
-                            } else if let failure = tab.loadFailure {
-                                BrowserLoadFailureView(
-                                    failure: failure,
-                                    onRetry: { tab.retryFailedLoad() })
+                Group {
+                    if tab.isHome {
+                        BrowserHomeView(
+                            onOpen: openFromHome)
+                    } else {
+                        // Keep the WebView mounted and layer the failure screen over
+                        // it, so retrying toggles an overlay instead of tearing down
+                        // and recreating the web view (which flickers).
+                        WebView(tab.page)
+                            .webViewBackForwardNavigationGestures(.enabled)
+                            .findNavigator(isPresented: $showingFind)
+                            .overlay(alignment: .top) { progressBar(for: tab.page) }
+                            .overlay {
+                                if let warning = tab.certificateWarning {
+                                    BrowserCertificateWarningView(
+                                        warning: warning,
+                                        onProceed: { tab.resolveCertificateWarning(allow: true) },
+                                        onGoBack: { tab.resolveCertificateWarning(allow: false) })
+                                } else if let failure = tab.loadFailure {
+                                    BrowserLoadFailureView(
+                                        failure: failure,
+                                        onRetry: { tab.retryFailedLoad() })
+                                }
                             }
-                        }
-                        .overlay {
-                            if addressBarFocused {
-                                BrowserHomeView(
-                                    onOpen: openFromHome)
-                                    .transition(.opacity)
+                            .overlay {
+                                // Focusing the address bar over a loaded page shows
+                                // the home shortcuts — until the user types, when the
+                                // suggestions overlay below takes over instead.
+                                if addressBarFocused && addressSuggestions.isEmpty {
+                                    BrowserHomeView(
+                                        onOpen: openFromHome)
+                                        .transition(.opacity)
+                                }
                             }
-                        }
+                    }
+                }
+                .overlay {
+                    if addressBarFocused && !addressSuggestions.isEmpty {
+                        AddressSuggestionsView(
+                            entries: addressSuggestions,
+                            onOpen: openFromHome)
+                            .transition(.opacity)
+                    }
                 }
             } else {
                 EmptyBrowserView(
@@ -121,6 +136,33 @@ struct BrowserView: View {
     private func openFromHome(_ address: String) {
         addressBarFocused = false
         model.navigate(address)
+    }
+
+    /// Address-bar autosuggestions: recently visited pages — history is recorded
+    /// only when a load finishes successfully — whose host or URL matches what's
+    /// being typed. Host-prefix matches rank above substring matches; within each
+    /// group the store's newest-first order is preserved. De-duplicated by
+    /// host+path so query-string variants of one page collapse to the latest,
+    /// capped at a handful so the list stays a quick pick, not a history browser.
+    private var addressSuggestions: [HistoryEntry] {
+        let query = addressQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return [] }
+
+        var seen = Set<String>()
+        var prefixMatches: [HistoryEntry] = []
+        var substringMatches: [HistoryEntry] = []
+        for entry in model.library.history {
+            guard let host = entry.url.host?.lowercased() else { continue }
+            let bareHost = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            let path = entry.url.path.lowercased()
+            let isPrefix = host.hasPrefix(query) || bareHost.hasPrefix(query)
+            let isSubstring = host.contains(query) || path.contains(query)
+                || entry.url.absoluteString.lowercased().contains(query)
+            guard isPrefix || isSubstring else { continue }
+            guard seen.insert(host + path).inserted else { continue }
+            if isPrefix { prefixMatches.append(entry) } else { substringMatches.append(entry) }
+        }
+        return Array((prefixMatches + substringMatches).prefix(6))
     }
 
     private var tunnelStatusIcon: String {
@@ -326,6 +368,72 @@ private struct BrowserHomeView: View {
     }
 }
 
+/// Address-bar autosuggestion list, layered over the page while the user types.
+/// Each row is a previously visited page; tapping it navigates there.
+private struct AddressSuggestionsView: View {
+    let entries: [HistoryEntry]
+    let onOpen: (String) -> Void
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(entries) { entry in
+                    Button {
+                        onOpen(entry.url.absoluteString)
+                    } label: {
+                        row(for: entry)
+                    }
+                    .buttonStyle(.plain)
+
+                    Divider().padding(.leading, 52)
+                }
+            }
+        }
+        .scrollDismissesKeyboard(.never)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color(.systemBackground))
+    }
+
+    private func row(for entry: HistoryEntry) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 16))
+                .foregroundStyle(.secondary)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.title.isEmpty ? (entry.url.host() ?? entry.url.absoluteString) : entry.title)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Text(displayURL(entry.url))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+
+            Image(systemName: "arrow.up.left")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    /// Compact form without the scheme (e.g. `example.com/path`), matching how
+    /// mainstream browsers render suggestion subtitles.
+    private func displayURL(_ url: URL) -> String {
+        guard let host = url.host() else { return url.absoluteString }
+        let path = url.path
+        return path.isEmpty || path == "/" ? host : host + path
+    }
+}
+
 private struct EmptyBrowserView: View {
     let onNewTab: () -> Void
 
@@ -456,9 +564,9 @@ private struct AddressBarView: View {
     let tunnelStatusColor: Color
     @Binding var showingTunnelStatus: Bool
     @Binding var addressBarFocused: Bool
+    @Binding var editText: String
     let onReconnect: () -> Void
     let onStopAndReconfigure: () -> Void
-    @State private var editText = ""
     @State private var showingSiteSecurity = false
     @FocusState private var addressFocused: Bool
 
