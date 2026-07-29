@@ -233,8 +233,11 @@ struct ProxyOnlyView: View {
             return "iOS suspends the app about 30 seconds after backgrounding and forwards stop until you return. Turn on \"Keep alive in background\" on the start screen before connecting."
         case .denied:
             return "Location access is denied, so the keep-alive can't run: iOS suspends the app about 30 seconds after backgrounding and forwards stop until you return."
+        case .timedOut:
+            return "The keep-alive hit its \(keepAlive.timeoutLabel.lowercased()) inactivity limit and let go, so iOS suspended the app and forwards stopped. They rebind automatically now that you're back."
         case .pending, .active:
-            return "A coarse location session (fixes are discarded, nothing is stored or sent) keeps iOS from suspending the app, so forwards stay reachable while you use other apps. It stops when you stop forwarding."
+            return "A coarse location session (nothing is stored or sent) keeps iOS from suspending the app, so forwards stay reachable while you use other apps. It stops when you stop forwarding."
+                + " It also lets go after \(keepAlive.timeoutLabel.lowercased()) with no movement, no open forward connection and the app not in front — set the limit on the start screen."
         }
     }
 

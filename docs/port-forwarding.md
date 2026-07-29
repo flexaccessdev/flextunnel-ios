@@ -93,8 +93,12 @@ reports its live status read-only.
 
 What matters specifically for forwards:
 
-- **With it on**, the SOCKS listener and every forward stay reachable
-  indefinitely while you use other apps.
+- **With it on**, the SOCKS listener and every forward stay reachable while you
+  use other apps — until the keep-alive's **inactivity limit** (30 minutes by
+  default). A forward carrying an open connection counts as activity and keeps
+  postponing it, so a session in active use isn't dropped for sitting still;
+  reaching the limit falls back to the suspension case below, and returning to
+  the app rebinds everything.
 - **With it off or location denied**, extended execution keeps serving for
   roughly **30 seconds** after backgrounding, then iOS suspends the process and
   defuncts the forward listeners. On return the session is **relaunched
@@ -123,4 +127,4 @@ cannot — rewrite what flows through it:
 | client connects, then immediately drops | Target rejected through the tunnel (not in the server's routed set server-side), or unreachable. Check the badge and the server's `routed_domains`/`routed_cidrs`. |
 | tunneled forward stalls, direct ones fine | Tunnel link is reconnecting — see the status header. On-list targets need the link; off-list ones don't. |
 | web page shows a CDN error (e.g. 1003) | Host-header mismatch by design — see "What forwards are good for" above. |
-| forward dead after returning to the app | iOS suspended the process — usually because keep-alive is off or location permission is denied (see "Background behavior"), so only the ~30 s grace applied. The session relaunches automatically on return; give the handshake a moment and reconnect the client. To hold sessions across backgrounding, stop and restart with "Keep alive in background" on (start screen). |
+| forward dead after returning to the app | iOS suspended the process — because keep-alive is off or location permission is denied (only the ~30 s grace applied), or the keep-alive hit its inactivity limit while nothing was connected (the Background section reads `timed out`). Either way the session relaunches automatically on return; give the handshake a moment and reconnect the client. To hold sessions across backgrounding, stop and restart with "Keep alive in background" on, and raise its time limit (start screen). |

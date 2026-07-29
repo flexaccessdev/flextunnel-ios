@@ -15,6 +15,13 @@ final class PortForwardController: ObservableObject {
     @Published private(set) var forwards: [PortForward]
     @Published private(set) var runtime: [UUID: RuntimeStatus] = [:]
 
+    /// Any forward is carrying traffic right now. The keep-alive treats that as
+    /// activity, so a session in active use is never dropped by its inactivity
+    /// limit just because the device is sitting still.
+    var hasOpenConnections: Bool {
+        runtime.values.contains { $0.connectionCount > 0 }
+    }
+
     private weak var proxy: ProxyController?
     private var sessionID: UUID?
     /// A setup failure auto-disables only if the native listener never reached
