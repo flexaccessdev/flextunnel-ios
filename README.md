@@ -39,7 +39,8 @@ There are two ways to use the tunnel, chosen on the setup screen:
   what forwards are good for, and troubleshooting.
 - [Background keep-alive](docs/background-keep-alive.md) — the opt-in location
   session that keeps a session (browsing or forwarding) alive while backgrounded,
-  where the decision is made, and the ~30 s fallback without it.
+  where the decision is made, its inactivity limit, and the ~30 s fallback
+  without it.
 - [Local FFI development](docs/local-ffi-development.md) — building against a
   local `../flextunnel` Rust checkout instead of the pinned release.
 - [Sign an unsigned IPA](docs/signing-unsigned-ipa.md) — verify a prerelease,

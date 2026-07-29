@@ -260,7 +260,14 @@ struct ContentView: View {
                 // Background refreshes must not create an activity — Activity.request
                 // is foreground-only — so they only update/end an existing one.
                 proxy.onBackgroundLiveActivityRefresh = { syncLiveActivity(allowCreate: false) }
-                proxy.onForwardStatusRefresh = { portForwards.refreshRuntime() }
+                proxy.onForwardStatusRefresh = {
+                    portForwards.refreshRuntime()
+                    // A forward carrying traffic is activity: it postpones the
+                    // keep-alive's inactivity limit (and revives it if reached),
+                    // so a stationary session in active use isn't dropped.
+                    if portForwards.hasOpenConnections { keepAlive.noteActivity() }
+                }
+                keepAlive.onTimeout = { handleKeepAliveTimeout() }
                 // Reconcile any Live Activity the controller reattached to on
                 // launch with the real state (ends a leftover banner while idle).
                 syncLiveActivity()
@@ -276,6 +283,15 @@ struct ContentView: View {
         Section {
             Toggle("Keep alive in background", isOn: $keepAlive.enabled)
                 .disabled(proxy.phase == .connecting)
+            if keepAlive.enabled {
+                Picker("Time limit", selection: $keepAlive.timeoutMinutes) {
+                    ForEach(BackgroundKeepAlive.timeoutChoices, id: \.self) { minutes in
+                        Text(BackgroundKeepAlive.timeoutLabel(minutes)).tag(minutes)
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(proxy.phase == .connecting)
+            }
             if keepAlive.enabled, keepAlive.denied {
                 Text("Location access is denied, so iOS suspends the app about 30 seconds after backgrounding and the session stops until you return.")
                     .font(.footnote)
@@ -291,10 +307,17 @@ struct ContentView: View {
         } header: {
             Text("Background")
         } footer: {
-            Text(keepAlive.enabled
-                ? "A coarse location session (fixes are discarded, nothing is stored or sent) keeps iOS from suspending the app, so the tunnel — and any port forwards — keep running while you use other apps. It starts with the session and stops when you stop it. Expect the location indicator and some extra battery use."
-                : "iOS suspends the app about 30 seconds after backgrounding; the session stops until you return.")
+            Text(keepAlive.enabled ? enabledBackgroundFooter : disabledBackgroundFooter)
         }
+    }
+
+    private var disabledBackgroundFooter: String {
+        "iOS suspends the app about 30 seconds after backgrounding; the session stops until you return."
+    }
+
+    private var enabledBackgroundFooter: String {
+        "A coarse location session (nothing is stored or sent) keeps iOS from suspending the app, so the tunnel — and any port forwards — keep running while you use other apps. It starts with the session and stops when you stop it. Expect the location indicator and some extra battery use."
+            + " After \(keepAlive.timeoutLabel.lowercased()) with no movement, no open forward connection and the app not in front, it lets go: iOS then suspends the app, and the session comes back automatically when you return."
     }
 
     private var browserIsPresented: Binding<Bool> {
@@ -469,6 +492,10 @@ struct ContentView: View {
             endBackgroundTask()
             proxy.backgroundLiveActivityRefreshEnabled = false
             proxy.noteForegrounded()
+            // Using the app is activity: refill the keep-alive's inactivity
+            // window (and revive it if the limit was reached while away), so the
+            // limit caps one stretch of backgrounded time.
+            keepAlive.noteActivity()
             // Revive an expired banner (via start()) so a still-connected session
             // is glanceable again on return.
             syncLiveActivity()
@@ -478,6 +505,28 @@ struct ContentView: View {
             }
         default:
             break
+        }
+    }
+
+    /// The keep-alive reached its inactivity limit and is about to drop the
+    /// location session, so iOS will suspend us exactly as it does with the
+    /// keep-alive off — while we're still alive here, arm the same on-return
+    /// recovery and dismiss the banner we can no longer keep fresh. Without the
+    /// `wasSuspended` flag the app would come back with defunct sockets that
+    /// still read "connected".
+    private func handleKeepAliveTimeout() {
+        // The limit can only be reached while away (foregrounding is activity);
+        // if we are in front, nothing is about to be suspended.
+        guard scenePhase != .active else { return }
+        wasSuspended = true
+        proxy.backgroundLiveActivityRefreshEnabled = false
+        // Its own assertion: the backgrounding grace expired long ago, so
+        // `backgroundTask` is spent. Held until the async dismissal registers,
+        // otherwise the app can suspend first and leave the banner behind.
+        let task = UIApplication.shared.beginBackgroundTask(withName: "flextunnel-keepalive-timeout")
+        Task {
+            await liveActivity.endNow()
+            if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
         }
     }
 

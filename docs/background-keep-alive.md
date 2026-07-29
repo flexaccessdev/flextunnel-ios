@@ -26,8 +26,45 @@ Once a session is running, the screens report it read-only:
 - browsing → the same row in the tunnel-status popover (the shield icon).
 
 Values are `off`, `needs location access`, `starts with the session` (opted in,
-permitted, session not up yet) and `active` (the location session is running).
-To change it, stop the session and use the start screen.
+permitted, session not up yet), `active` (the location session is running) and
+`timed out` (the inactivity limit below was reached). To change it, stop the
+session and use the start screen.
+
+## Inactivity limit
+
+Directly under the toggle is a **Time limit** picker — 15 minutes, **30 minutes**
+(default), 1 hour or 2 hours — capping how long an *inactive* session is held
+alive. Without it, an app left in the background holds the location session (and
+the battery cost, and the location indicator) until the user comes back.
+
+The window is refilled by any of:
+
+- **movement** — a fix at least 500 m from the last one. Fixes at 100 km desired
+  accuracy are tower-grade, so anything smaller is jitter; this is roughly Core
+  Location's own significant-change distance. Nothing about the location
+  configuration changes for this, so the timeout costs no extra battery;
+- **an open port-forward connection** — while any forward is carrying traffic
+  (already polled at 1 Hz), the session is in use even if the device is sitting
+  still, e.g. SSH from a desk;
+- **the app coming to the front** — so the limit caps one stretch of backgrounded
+  time rather than the whole session.
+
+The window is checked once a minute against a wall clock (not armed as a one-shot
+at the deadline), so a coalesced timer fire can't silently extend it and a
+changed limit applies on the next tick.
+
+When it expires, flextunnel **stops the location session and lets iOS suspend the
+app by itself** — it does not tear the session down. That is deliberately the
+same path as having the keep-alive off: the Live Activity is dismissed while the
+app is still alive, iOS suspends the process, and returning to the app relaunches
+the session automatically (`recoverFromSuspension`, see below) and refills the
+window. So the visible effect of hitting the limit is a brief "connecting" on
+return, not a dead screen.
+
+There is deliberately **no unbounded option**: the two activity signals above
+already postpone the limit indefinitely for a session that is being used, so an
+"off" setting would only serve sessions nobody is using. A stored limit that is
+no longer on offer falls back to the default.
 
 ## How it works
 
@@ -37,8 +74,10 @@ To change it, stop the session and use the start screen.
   granting it is all the setup there is;
 - accuracy is deliberately coarse (100 km, like Blink's `geo track`) so fixes
   come from cell towers rather than the GPS radio — the battery cost is small;
-- every fix is **discarded**: nothing is stored or sent anywhere; the location
-  session exists purely so iOS keeps the process running;
+- no fix is stored or sent anywhere: the location session exists purely so iOS
+  keeps the process running, and a fix is only compared against the last one (one
+  in-memory coordinate) to tell whether the device moved — see the inactivity
+  limit above;
 - it starts and stops with the session (`setSessionActive`), so the system's
   location indicator never outlives the tunnel — turning the toggle on at the
   start screen starts no location session by itself;
@@ -81,4 +120,5 @@ The tunnel-status Live Activity (lock screen / Dynamic Island) accompanies
 sessions in both modes and is **UX only** — it neither grants nor relies on
 background execution. Under the keep-alive the 1 Hz health poll keeps refreshing
 it while backgrounded; without it, the banner is dismissed when the grace expires
-and the app suspends.
+and the app suspends. Reaching the inactivity limit dismisses it the same way,
+since the app is about to stop being able to refresh it.
