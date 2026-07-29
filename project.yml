@@ -97,8 +97,8 @@ targets:
         # (cleartext http:// is blocked by default, which silently fails loads
         # like http://server.ezvpn:8000 before they ever reach the proxy).
         INFOPLIST_FILE: Sources/FlextunnelApp/Info.plist
-        MARKETING_VERSION: "0.0.1"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.0.2"
+        CURRENT_PROJECT_VERSION: "2"
         SWIFT_OBJC_BRIDGING_HEADER: Sources/FlextunnelApp/Bridging-Header.h
         # No HEADER_SEARCH_PATHS needed: SPM puts the binary target's embedded
         # Headers/ dir on the consumer's search path, so the bridging header's
@@ -126,5 +126,5 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.flexaccess.flextunnel.widgets
         INFOPLIST_FILE: Sources/FlextunnelWidgets/Info.plist
-        MARKETING_VERSION: "0.0.1"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.0.2"
+        CURRENT_PROJECT_VERSION: "2"
