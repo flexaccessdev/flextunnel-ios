@@ -124,12 +124,14 @@ it while backgrounded; without it, the banner is dismissed when the grace expire
 and the app suspends. Reaching the inactivity limit dismisses it the same way,
 since the app is about to stop being able to refresh it.
 
-While the keep-alive is holding a session, the banner also shows an **est.
-countdown to the limit** (`timer` glyph). The app pushes a *deadline*, not a
-rendered number, and the widget counts it down itself — so it stays right between
-the app's refreshes (roughly once a minute while backgrounded, driven by
-`ProxyController.backgroundRefreshInterval`), and a window refilled by movement or
-an open forward connection is reflected on the next refresh. It reads "est."
-because expiry is noticed on a periodic check, so the real stop lands at or
-shortly after zero. No countdown is shown when nothing is holding the session, or
+While the keep-alive is holding a session, the banner also shows
+**`est. 12m till disconnect`** (`timer` glyph). The app pushes a *deadline*, not a
+rendered number, and the widget converts it to whole minutes at render time — so
+it can't disagree with the clock even if a refresh is late. It steps with the
+app's refreshes (at least once a minute while backgrounded, driven by
+`ProxyController.backgroundRefreshInterval`), which is the right granularity for a
+minute-resolution figure, and a window refilled by movement or an open forward
+connection is reflected on the next one. It reads "est." because expiry is noticed
+on a periodic check, so the real stop lands at or shortly after zero. Nothing is
+shown when no keep-alive is holding the session, once the deadline has passed, or
 once the banner has gone stale.

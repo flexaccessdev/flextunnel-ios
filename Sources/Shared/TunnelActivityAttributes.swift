@@ -21,11 +21,11 @@ struct TunnelActivityAttributes: ActivityAttributes {
         /// connection, or opening the app). Nil when no keep-alive is holding the
         /// app — then there is no limit worth showing, only the ~30s grace.
         ///
-        /// A date rather than a rendered string on purpose: the widget counts it
-        /// down itself, so the banner stays right between the app's refreshes
-        /// (about once a minute while backgrounded). Estimated because expiry is
-        /// detected on a periodic check, so the real stop lands at or shortly
-        /// after this.
+        /// A date rather than a rendered string on purpose: the widget turns it
+        /// into minutes at render time, so it can't disagree with the clock even
+        /// if a refresh is late. Estimated because expiry is detected on a
+        /// periodic check, so the real stop lands at or shortly after this — and
+        /// because any activity refills the window and pushes it out.
         var keepAliveDeadline: Date?
     }
 

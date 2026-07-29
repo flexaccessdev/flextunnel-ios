@@ -34,7 +34,7 @@ struct TunnelLiveActivity: Widget {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                         Spacer(minLength: 0)
-                        KeepAliveCountdown(state: context.state, isStale: context.isStale)
+                        KeepAliveRemaining(state: context.state, isStale: context.isStale)
                     }
                 }
             } compactLeading: {
@@ -70,7 +70,7 @@ private struct LockScreenView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                KeepAliveCountdown(state: state, isStale: isStale)
+                KeepAliveRemaining(state: state, isStale: isStale)
             }
             Spacer(minLength: 8)
             StatusPill(state: state, isStale: isStale)
@@ -78,29 +78,38 @@ private struct LockScreenView: View {
     }
 }
 
-/// How much longer the background keep-alive holds the session, counted down by
-/// the system so it stays right between the app's refreshes. Shown only while
-/// something is actually holding the app: no deadline (keep-alive off or already
-/// let go) or a stale banner means there is nothing trustworthy to count.
-private struct KeepAliveCountdown: View {
+/// How much longer the background keep-alive holds the session before iOS
+/// suspends it. Shown only while something is actually holding the app: no
+/// deadline (keep-alive off or already let go) or a stale banner means there is
+/// nothing trustworthy to report.
+private struct KeepAliveRemaining: View {
     let state: TunnelActivityAttributes.ContentState
     let isStale: Bool
 
     var body: some View {
-        if !isStale, let deadline = state.keepAliveDeadline, deadline > .now {
+        if !isStale, let remaining = remainingText(state) {
             HStack(spacing: 3) {
                 Image(systemName: "timer")
-                // Estimated: expiry is detected on a periodic check, so the real
-                // stop is at or shortly after this.
-                Text("est.")
-                Text(timerInterval: Date.now...deadline, countsDown: true)
-                    .monospacedDigit()
+                Text(verbatim: remaining)
             }
             .font(.caption2)
             .foregroundStyle(.tertiary)
             .lineLimit(1)
         }
     }
+}
+
+/// "est. 12m till disconnect" — minutes only, evaluated at render, so it steps
+/// with the app's refreshes (at least once a minute) instead of ticking every
+/// second. Estimated twice over: expiry is noticed on a periodic check, so the
+/// real stop is at or shortly after the deadline, and the window is refilled
+/// whenever the session sees activity. Nil once the deadline has passed — the
+/// app is about to stop refreshing this banner at all.
+private func remainingText(_ state: TunnelActivityAttributes.ContentState) -> String? {
+    guard let deadline = state.keepAliveDeadline else { return nil }
+    let remaining = deadline.timeIntervalSince(.now)
+    guard remaining > 0 else { return nil }
+    return "est. \(Int(ceil(remaining / 60)))m till disconnect"
 }
 
 private struct StatusPill: View {
