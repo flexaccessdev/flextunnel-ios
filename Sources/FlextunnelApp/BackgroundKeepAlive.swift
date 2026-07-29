@@ -158,6 +158,16 @@ final class BackgroundKeepAlive: NSObject, ObservableObject {
     /// The current limit, for the picker and the screens that name it.
     var timeoutLabel: String { Self.timeoutLabel(timeoutMinutes) }
 
+    /// When the inactivity limit will be reached if nothing resets the window
+    /// first — nil unless the location session is actually holding the app, so
+    /// callers can treat it as "how much longer this session is held". Estimated:
+    /// expiry is noticed on a periodic check, so the stop lands at or shortly
+    /// after this. Fed to the Live Activity, which counts it down itself.
+    var deadline: Date? {
+        guard isRunning else { return nil }
+        return lastActivity.addingTimeInterval(Double(timeoutMinutes) * 60)
+    }
+
     static func timeoutLabel(_ minutes: Int) -> String {
         switch minutes {
         case 1: return "1 minute"

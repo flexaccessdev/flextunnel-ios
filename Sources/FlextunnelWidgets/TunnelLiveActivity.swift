@@ -28,9 +28,14 @@ struct TunnelLiveActivity: Widget {
                     StatusPill(state: context.state, isStale: context.isStale)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    Text(context.isStale ? "Open app to refresh" : context.attributes.subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Text(context.isStale ? "Open app to refresh" : context.attributes.subtitle)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        KeepAliveCountdown(state: context.state, isStale: context.isStale)
+                    }
                 }
             } compactLeading: {
                 Image(systemName: "lock.shield.fill")
@@ -65,9 +70,35 @@ private struct LockScreenView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                KeepAliveCountdown(state: state, isStale: isStale)
             }
             Spacer(minLength: 8)
             StatusPill(state: state, isStale: isStale)
+        }
+    }
+}
+
+/// How much longer the background keep-alive holds the session, counted down by
+/// the system so it stays right between the app's refreshes. Shown only while
+/// something is actually holding the app: no deadline (keep-alive off or already
+/// let go) or a stale banner means there is nothing trustworthy to count.
+private struct KeepAliveCountdown: View {
+    let state: TunnelActivityAttributes.ContentState
+    let isStale: Bool
+
+    var body: some View {
+        if !isStale, let deadline = state.keepAliveDeadline, deadline > .now {
+            HStack(spacing: 3) {
+                Image(systemName: "timer")
+                // Estimated: expiry is detected on a periodic check, so the real
+                // stop is at or shortly after this.
+                Text("est.")
+                Text(timerInterval: Date.now...deadline, countsDown: true)
+                    .monospacedDigit()
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
         }
     }
 }

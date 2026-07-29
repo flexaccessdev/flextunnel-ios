@@ -16,6 +16,17 @@ struct TunnelActivityAttributes: ActivityAttributes {
         var socksAlive: Bool
         /// Short human status, e.g. "Connected" / "Reconnecting…".
         var statusText: String
+        /// Estimated moment the background keep-alive lets go of the session if
+        /// nothing resets its inactivity window first (movement, an open forward
+        /// connection, or opening the app). Nil when no keep-alive is holding the
+        /// app — then there is no limit worth showing, only the ~30s grace.
+        ///
+        /// A date rather than a rendered string on purpose: the widget counts it
+        /// down itself, so the banner stays right between the app's refreshes
+        /// (about once a minute while backgrounded). Estimated because expiry is
+        /// detected on a periodic check, so the real stop lands at or shortly
+        /// after this.
+        var keepAliveDeadline: Date?
     }
 
     /// Static part: fixed for the life of the activity. The title is always

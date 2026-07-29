@@ -460,6 +460,10 @@ struct ContentView: View {
     private func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
         case .background:
+            // Time spent in the app doesn't eat the keep-alive's inactivity
+            // window: start it when the app actually goes away, so what the Live
+            // Activity counts down from here is the full limit.
+            keepAlive.noteActivity()
             // While the location keep-alive holds the process, the poll loop keeps
             // running: let it refresh the Live Activity in the background (SwiftUI's
             // .onChange handlers are paused now). Otherwise the banner is left live
@@ -563,7 +567,10 @@ struct ContentView: View {
             let state = TunnelActivityAttributes.ContentState(
                 tunnelConnected: proxy.tunnelConnected,
                 socksAlive: proxy.sessionAlive,
-                statusText: liveActivityStatusText
+                statusText: liveActivityStatusText,
+                // Counted down by the widget itself, so it stays right between
+                // refreshes (about once a minute while backgrounded).
+                keepAliveDeadline: keepAlive.deadline
             )
             if allowCreate {
                 liveActivity.start(subtitle: sessionMode.liveActivitySubtitle, state: state)
@@ -578,7 +585,8 @@ struct ContentView: View {
             liveActivity.update(TunnelActivityAttributes.ContentState(
                 tunnelConnected: false,
                 socksAlive: proxy.sessionAlive,
-                statusText: "Reconnecting…"
+                statusText: "Reconnecting…",
+                keepAliveDeadline: keepAlive.deadline
             ))
         case .idle, .failed:
             liveActivity.end()

@@ -46,8 +46,9 @@ The window is refilled by any of:
 - **an open port-forward connection** — while any forward is carrying traffic
   (already polled at 1 Hz), the session is in use even if the device is sitting
   still, e.g. SSH from a desk;
-- **the app coming to the front** — so the limit caps one stretch of backgrounded
-  time rather than the whole session.
+- **the app coming to the front, or going away** — so time spent in the app never
+  eats the window and the limit caps one stretch of backgrounded time rather than
+  the whole session.
 
 The window is checked once a minute against a wall clock (not armed as a one-shot
 at the deadline), so a coalesced timer fire can't silently extend it and a
@@ -122,3 +123,13 @@ background execution. Under the keep-alive the 1 Hz health poll keeps refreshing
 it while backgrounded; without it, the banner is dismissed when the grace expires
 and the app suspends. Reaching the inactivity limit dismisses it the same way,
 since the app is about to stop being able to refresh it.
+
+While the keep-alive is holding a session, the banner also shows an **est.
+countdown to the limit** (`timer` glyph). The app pushes a *deadline*, not a
+rendered number, and the widget counts it down itself — so it stays right between
+the app's refreshes (roughly once a minute while backgrounded, driven by
+`ProxyController.backgroundRefreshInterval`), and a window refilled by movement or
+an open forward connection is reflected on the next refresh. It reads "est."
+because expiry is noticed on a periodic check, so the real stop lands at or
+shortly after zero. No countdown is shown when nothing is holding the session, or
+once the banner has gone stale.
