@@ -3,10 +3,10 @@ import UIKit
 
 /// Full-screen forwarding-only session: tunnel status and server-direct local
 /// forwards, with no browser and no SOCKS5 listener. Other apps on the device
-/// reach the configured forwards at localhost while this app is alive;
-/// the location keep-alive (see `BackgroundKeepAlive`) holds the session in the
-/// background, falling back to best-effort (~30s before suspension) when
-/// location permission is denied.
+/// reach the configured forwards at localhost while this app is alive; when the
+/// keep-alive was opted into on the start screen, the location session (see
+/// `BackgroundKeepAlive`) holds this one in the background, otherwise it is
+/// best-effort (~30s before suspension).
 struct ProxyOnlyView: View {
     @ObservedObject var proxy: ProxyController
     @ObservedObject var store: PortForwardController
@@ -203,36 +203,38 @@ struct ProxyOnlyView: View {
 
     // MARK: - Background keep-alive
 
-    /// The keep-alive setting, its live status, and — when location permission
-    /// is missing — the path to fix it.
+    /// Read-only: the keep-alive is a top-level decision taken on the start screen
+    /// before connecting, so this reports its live status and — when location
+    /// permission is missing — the path to fix it.
     private var backgroundSection: some View {
         Section {
-            Toggle("Keep alive in background", isOn: $keepAlive.enabled)
-            if keepAlive.enabled {
-                if keepAlive.denied {
-                    Text("Location access is denied, so iOS suspends the app about 30 seconds after backgrounding and forwards stop until you return.")
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                    Button {
-                        if let url = URL(string: UIApplication.openSettingsURLString) {
-                            UIApplication.shared.open(url)
-                        }
-                    } label: {
-                        Label("Allow location in Settings", systemImage: "location.slash")
+            InfoRow(
+                "Background keep-alive", keepAlive.statusLabel,
+                valueColor: keepAlive.statusColor)
+            if keepAlive.enabled, keepAlive.denied {
+                Button {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
                     }
-                } else {
-                    InfoRow(
-                        "Background keep-alive",
-                        keepAlive.isRunning ? "active" : "starts with the session",
-                        valueColor: keepAlive.isRunning ? .green : nil)
+                } label: {
+                    Label("Allow location in Settings", systemImage: "location.slash")
                 }
             }
         } header: {
             Text("Background")
         } footer: {
-            Text(keepAlive.enabled
-                ? "A coarse location session (fixes are discarded, nothing is stored or sent) keeps iOS from suspending the app, so forwards stay reachable while you use other apps. It stops when you stop the proxy. Expect the location indicator and some extra battery use."
-                : "iOS suspends the app about 30 seconds after backgrounding; forwards stop until you return.")
+            Text(backgroundFooter)
+        }
+    }
+
+    private var backgroundFooter: String {
+        switch keepAlive.status {
+        case .off:
+            return "iOS suspends the app about 30 seconds after backgrounding and forwards stop until you return. Turn on \"Keep alive in background\" on the start screen before connecting."
+        case .denied:
+            return "Location access is denied, so the keep-alive can't run: iOS suspends the app about 30 seconds after backgrounding and forwards stop until you return."
+        case .pending, .active:
+            return "A coarse location session (fixes are discarded, nothing is stored or sent) keeps iOS from suspending the app, so forwards stay reachable while you use other apps. It stops when you stop forwarding."
         }
     }
 
