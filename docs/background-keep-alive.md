@@ -32,8 +32,7 @@ session and use the start screen.
 
 ## Inactivity limit
 
-Directly under the toggle is a **Time limit** picker — 15 minutes, **30 minutes**
-(default), 1 hour or 2 hours — capping how long an *inactive* session is held
+Directly under the toggle is a **Time limit** picker — under `flextunnel-ios/Sources/FlextunnelApp/BackgroundKeepAlive.swift` — capping how long an *inactive* session is held
 alive. Without it, an app left in the background holds the location session (and
 the battery cost, and the location indicator) until the user comes back.
 

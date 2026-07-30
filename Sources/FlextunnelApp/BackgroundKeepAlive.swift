@@ -72,7 +72,7 @@ final class BackgroundKeepAlive: NSObject, ObservableObject {
     /// The offered limits, in the picker's order. There is deliberately no
     /// unbounded option: using the app and carrying traffic through a forward
     /// both postpone the limit indefinitely, so a session in use never needs one.
-    static let timeoutChoices = [15, 30, 60, 120]
+    static let timeoutChoices = [5, 15, 30, 60]
     private static let defaultTimeoutMinutes = 30
     private static let defaultsKey = "keepAliveInBackground"
     private static let timeoutKey = "keepAliveTimeoutMinutes"
