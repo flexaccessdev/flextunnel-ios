@@ -43,6 +43,9 @@ There are two ways to use the tunnel, chosen on the setup screen:
   without it.
 - [Local FFI development](docs/local-ffi-development.md) — building against a
   local `../flextunnel` Rust checkout instead of the pinned release.
+- [Building in a macOS VM](docs/deploy-from-a-vm.md) — why a UTM/Tart guest can
+  never install onto a physical device, and the build-in-the-VM /
+  install-from-the-host split that works instead.
 - [Sign an unsigned IPA](docs/signing-unsigned-ipa.md) — verify a prerelease,
   apply team-owned bundle IDs, sign the widget and app with separate profiles,
   and preserve the background location configuration.
