@@ -37,12 +37,13 @@ because it is the most convenient way to move the built app to the host.
 
 ## What this means for `scripts/run-device-ios.sh`
 
-That script builds, installs, and launches in one pass, and it validates the
-device id against the paired-device list up front. **In the VM it will fail at
-that validation**, because no device is paired there and
-`scripts/list-devices-ios.sh` returns nothing.
+That script normally builds, installs, and launches in one pass, and it
+validates the device id against the paired-device list up front — which in a
+guest always comes back empty. Pass **`--build-only`** to stop after the build:
+it requires no device id, skips the pairing check and the install/launch steps,
+and prints the product path.
 
-Use it unchanged **on the host**. In the VM, run only the build half, below.
+Use the script unchanged **on the host**; use `--build-only` in the VM.
 
 ## 1. In the VM: build the device slice
 
@@ -54,11 +55,19 @@ cp Developer.local.xcconfig.sample Developer.local.xcconfig
 # then edit it and set DEVELOPMENT_TEAM
 ```
 
-A VM is usually a fresh checkout without the sibling `../flextunnel` Rust
-repo, so leave `FLEXTUNNEL_LOCAL_XCFRAMEWORK` **unset** and let Swift Package
-Manager download the pinned release zip. (Setting it without the sibling present
-fails: the `Packages/Flextunnel/local/libflextunnel.xcframework` symlink would
-dangle.) Generating and building needs network access for that download.
+Then generate the project and build:
+
+```sh
+scripts/run-device-ios.sh --build-only --pinned
+```
+
+`--pinned` matters here. The script defaults to linking a *locally* built
+xcframework from the sibling `../flextunnel` Rust repo, which a VM checkout
+usually doesn't have — without `--pinned` it stops with `local xcframework not
+found`. Passing it lets Swift Package Manager download the pinned release zip
+instead, so the build needs network access but no sibling repo.
+
+The equivalent by hand, if you'd rather not use the script:
 
 ```sh
 xcodegen generate

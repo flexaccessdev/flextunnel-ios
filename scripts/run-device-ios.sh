@@ -8,6 +8,11 @@ set -euo pipefail
 #     scripts/list-devices-ios.sh
 # and pass the IDENTIFIER column (the CoreDevice UUID, not the hardware UDID).
 #
+# The exception is --build-only, which stops after the build and needs no device
+# at all. That is the mode to use in a macOS VM: a guest can build the device
+# slice but can never pair with hardware, so install/launch has to happen on the
+# host — see docs/deploy-from-a-vm.md.
+#
 # By default this links a LOCALLY built libflextunnel.xcframework
 # (FLEXTUNNEL_LOCAL_XCFRAMEWORK=1) so you test the Rust FFI in ../flextunnel as
 # it stands on disk — build it first with `(cd ../flextunnel && ./build-ios.sh
@@ -29,12 +34,18 @@ usage() {
 Usage:
   scripts/run-device-ios.sh <DEVICE_ID> [options]
   scripts/run-device-ios.sh --device <DEVICE_ID> [options]
+  scripts/run-device-ios.sh --build-only [options]
 
 Builds FlextunnelApp, installs it on the given paired device, and launches it.
 Find DEVICE_ID (the CoreDevice IDENTIFIER) with scripts/list-devices-ios.sh.
 
 Options:
-  -d, --device DEVICE_ID      CoreDevice identifier of the target device (required).
+  -d, --device DEVICE_ID      CoreDevice identifier of the target device.
+                              Required unless --build-only.
+      --build-only            Build the device .app and stop — no device needed,
+                              nothing installed. Prints the product path. Use this
+                              in a macOS VM, which can build but can never pair
+                              with hardware (docs/deploy-from-a-vm.md).
   -t, --team-id TEAM_ID       Developer Team ID.
                               Defaults to DEVELOPMENT_TEAM from Developer.local.xcconfig.
   -c, --configuration NAME    Build configuration. Defaults to Debug.
@@ -62,6 +73,7 @@ CONFIGURATION="${CONFIGURATION:-Debug}"
 USE_LOCAL_XCFRAMEWORK=1
 GENERATE=1
 LAUNCH=1
+BUILD_ONLY=0
 ALLOW_PROVISIONING_UPDATES=1
 
 while [[ $# -gt 0 ]]; do
@@ -78,6 +90,7 @@ while [[ $# -gt 0 ]]; do
     --pinned)        USE_LOCAL_XCFRAMEWORK=0; shift ;;
     --no-generate)   GENERATE=0; shift ;;
     --no-launch)     LAUNCH=0; shift ;;
+    --build-only)    BUILD_ONLY=1; shift ;;
     --allow-provisioning-updates) ALLOW_PROVISIONING_UPDATES=1; shift ;;
     -h|--help)       usage; exit 0 ;;
     -*)              usage >&2; die "unknown option: $1" ;;
@@ -87,10 +100,17 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$DEVICE_ID" ]] || {
-  usage >&2
-  die "a device identifier is required — list them with scripts/list-devices-ios.sh"
-}
+if [[ "$BUILD_ONLY" == "1" ]]; then
+  # Refusing both together follows the same rule as requiring an explicit id:
+  # silently ignoring one of two contradictory flags is worse than saying so.
+  [[ -z "$DEVICE_ID" ]] || \
+    die "--build-only never installs, so a device identifier is meaningless — pass one or the other"
+else
+  [[ -n "$DEVICE_ID" ]] || {
+    usage >&2
+    die "a device identifier is required — list them with scripts/list-devices-ios.sh, or pass --build-only to stop after the build"
+  }
+fi
 
 # Reuse the same DEVELOPMENT_TEAM detection as create-archive-ios.sh.
 detect_project_team_id() {
@@ -116,9 +136,10 @@ fi
 }
 
 # Validate the id against the paired-device list so a typo fails fast with the
-# available choices, rather than deep in an xcodebuild/devicectl error.
+# available choices, rather than deep in an xcodebuild/devicectl error. Skipped
+# for --build-only: there is no id to check, and on a VM the list is always empty.
 LIST_SCRIPT="$PROJECT_ROOT/scripts/list-devices-ios.sh"
-if [[ -x "$LIST_SCRIPT" ]]; then
+if [[ "$BUILD_ONLY" != "1" && -x "$LIST_SCRIPT" ]]; then
   if ! "$LIST_SCRIPT" --identifiers | /usr/bin/grep -qxF "$DEVICE_ID"; then
     echo "Paired devices:" >&2
     "$LIST_SCRIPT" >&2 || true
@@ -155,7 +176,11 @@ provisioning_args=()
 echo "Building ${SCHEME}:"
 printf '  configuration: %s\n' "$CONFIGURATION"
 printf '  team:          %s\n' "$TEAM_ID"
-printf '  device:        %s\n' "$DEVICE_ID"
+if [[ "$BUILD_ONLY" == "1" ]]; then
+  printf '  device:        (none — build only)\n'
+else
+  printf '  device:        %s\n' "$DEVICE_ID"
+fi
 
 # generic/platform=iOS + -sdk iphoneos builds the device arm64 slice without
 # needing the hardware UDID; devicectl then installs by CoreDevice identifier.
@@ -170,6 +195,17 @@ printf '  device:        %s\n' "$DEVICE_ID"
     DEVELOPMENT_TEAM="$TEAM_ID" )
 
 [[ -d "$APP_PATH" ]] || die "build did not produce an app at $APP_PATH"
+
+if [[ "$BUILD_ONLY" == "1" ]]; then
+  echo "Built (not installed):"
+  echo "  $APP_PATH"
+  echo
+  echo "Copy it to a Mac the device is paired with, then install there:"
+  echo "  xcrun devicectl device install app --device <IDENTIFIER> ${PRODUCT_NAME}.app"
+  echo "  xcrun devicectl device process launch --device <IDENTIFIER> ${BUNDLE_ID}"
+  echo "See docs/deploy-from-a-vm.md for moving the build over a bridged adapter."
+  exit 0
+fi
 
 echo "Installing on $DEVICE_ID ..."
 xcrun devicectl device install app --device "$DEVICE_ID" "$APP_PATH"
