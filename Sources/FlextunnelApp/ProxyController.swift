@@ -99,18 +99,6 @@ final class ProxyController: ObservableObject {
     private var linkDownSince: Date?
     /// A link down longer than this stops reading as a transient reconnect.
     private static let reconnectGrace: TimeInterval = 30
-    /// Wall-clock stamp of the previous health poll. The 1 Hz timer can't tick
-    /// while the process is suspended, so a large poll-to-poll gap is the
-    /// reliable sign iOS suspended the app — which it can do even under a
-    /// running keep-alive (a locked device is the common case), defuncting
-    /// sockets exactly like the keep-alive-off suspension the background-task
-    /// expiration handler already flags.
-    private var lastPollDate: Date?
-    /// A poll gap proved the process was suspended; consumed on foreground.
-    private var sawSuspensionGap = false
-    /// Longer than any normal poll-to-poll interval (1 s timer plus coalescing
-    /// slack), shorter than any suspension worth recovering from.
-    private static let suspensionGapThreshold: TimeInterval = 10
     /// Last settings that drove a launch, replayed by the manual Reconnect.
     private var lastSettings: Settings?
     /// Bumped on every start and teardown so an in-flight async start whose FFI
@@ -337,8 +325,6 @@ final class ProxyController: ObservableObject {
         tunnelConnected = false
         linkDownSince = nil
         tunnelStuck = false
-        lastPollDate = nil
-        sawSuspensionGap = false
         connectionSummary = nil
         forwardedRoutes = nil
         phase = .connecting
@@ -436,19 +422,6 @@ final class ProxyController: ObservableObject {
         }
     }
 
-    /// Whether the process was suspended while backgrounded even though the
-    /// keep-alive was holding it — the case the background-task expiration
-    /// handler can't flag (it observes a running keep-alive and assumes no
-    /// suspension follows). True on a recorded poll gap, or on a poll stamp
-    /// still stale at the moment of return (the resumed timer may not have
-    /// ticked yet). Consuming clears the record.
-    func consumeSuspensionEvidence() -> Bool {
-        defer { sawSuspensionGap = false }
-        if sawSuspensionGap { return true }
-        guard healthTimer != nil, let last = lastPollDate else { return false }
-        return Date().timeIntervalSince(last) >= Self.suspensionGapThreshold
-    }
-
     private func stopPolling() {
         healthTimer?.invalidate()
         healthTimer = nil
@@ -470,8 +443,6 @@ final class ProxyController: ObservableObject {
         tunnelConnected = false
         linkDownSince = nil
         tunnelStuck = false
-        lastPollDate = nil
-        sawSuspensionGap = false
         connectionSummary = nil
         forwardedRoutes = nil
     }
@@ -496,16 +467,6 @@ final class ProxyController: ObservableObject {
 
     private func poll() {
         guard let handle else { return }
-
-        // Suspension detection, gated to the backgrounded-under-keep-alive stint
-        // so a foreground stall (e.g. the timer parked while a scroll holds the
-        // run loop in tracking mode) can't register a false gap.
-        let now = Date()
-        if backgroundLiveActivityRefreshEnabled, let last = lastPollDate,
-            now.timeIntervalSince(last) >= Self.suspensionGapThreshold {
-            sawSuspensionGap = true
-        }
-        lastPollDate = now
 
         // While the location keep-alive holds the app in the background, SwiftUI
         // stops firing the `.onChange` handlers that refresh the Live Activity —
