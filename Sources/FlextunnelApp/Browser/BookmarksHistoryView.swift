@@ -121,8 +121,12 @@ struct BookmarksHistoryView: View {
         .contentShape(Rectangle())
     }
 
+    /// Dismiss first, then navigate on the next runloop turn. Loading swaps the
+    /// tab out of its home state, which re-evaluates the browser body that owns
+    /// this sheet's `isPresented` state — doing that in the same transaction as
+    /// the dismissal loses it, leaving the library covering the page it opened.
     private func open(_ url: URL) {
-        model.navigate(url.absoluteString)
         dismiss()
+        DispatchQueue.main.async { model.navigate(url.absoluteString) }
     }
 }
