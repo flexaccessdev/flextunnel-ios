@@ -13,11 +13,14 @@ import SwiftUI
 /// preference is a top-level decision made on the home screen before starting,
 /// not a per-mode one — see docs/background-keep-alive.md.
 ///
-/// The accuracy is deliberately coarse (100 km, like Blink's `geo track`) so
-/// fixes come from cell towers rather than the GPS radio, and no fix is ever
-/// stored or sent — a fix is only compared against the last one to tell whether
-/// the device moved. The session stops with the session it holds up, so the
-/// location indicator never outlives it.
+/// Foreground fixes are deliberately coarse (100 km, like Blink's `geo track`)
+/// so they come from cell towers rather than the GPS radio; while backgrounded
+/// the session switches to hundred-meter accuracy, because since iOS 16.4 a
+/// coarser continuous session no longer holds the app — iOS suspends it once
+/// the device locks, which is exactly what this exists to prevent. No fix is
+/// ever stored or sent — a fix is only compared against the last one to tell
+/// whether the device moved. The session stops with the session it holds up,
+/// so the location indicator never outlives it.
 ///
 /// `timeoutMinutes` caps how long an *inactive* session is held: with nothing
 /// moving, nothing connected through a forward and the app not in front, the
@@ -76,17 +79,30 @@ final class BackgroundKeepAlive: NSObject, ObservableObject {
     private static let defaultTimeoutMinutes = 5
     private static let defaultsKey = "keepAliveInBackground"
     private static let timeoutKey = "keepAliveTimeoutMinutes"
-    /// How far a fix must be from the last one to count as movement. Fixes at
-    /// 100 km desired accuracy are tower-grade, so anything smaller is jitter;
-    /// this is roughly Core Location's own significant-change distance.
+    /// How far a fix must be from the last one to count as movement. Foreground
+    /// fixes are tower-grade, so anything smaller is jitter; this is roughly
+    /// Core Location's own significant-change distance.
     private static let movementThreshold: CLLocationDistance = 500
     /// The window is checked periodically against a wall clock rather than
     /// armed as a one-shot at the deadline, so a coalesced fire can't silently
     /// extend it and a changed limit applies on the next tick.
     private static let idleCheckInterval: TimeInterval = 60
+    /// Foreground accuracy: tower-grade on purpose (no GPS radio) — a
+    /// foreground app can't be suspended, so coarse costs nothing there.
+    private static let foregroundAccuracy: CLLocationAccuracy = 100_000
+    /// Background accuracy: the coarsest tier that still holds the process.
+    /// Since iOS 16.4 a continuous session asking for 1 km or worse no longer
+    /// prevents suspension (Apple requires hundred meters or better with no
+    /// distance filter) — a locked device is where that bites first. The
+    /// battery cost is bounded: the inactivity limit caps every background
+    /// stint spent at this accuracy.
+    private static let backgroundAccuracy = kCLLocationAccuracyHundredMeters
 
     private let manager: CLLocationManager
     private var sessionActive = false
+    /// Mirrors the app's foreground/background state (fed by `ContentView`'s
+    /// scene handler) so a running session's accuracy can follow it.
+    private var appInBackground = false
     private var lastActivity = Date()
     /// The last fix movement was measured from; moved only when the device
     /// actually moved, so slow drift accumulates instead of resetting per fix.
@@ -196,6 +212,15 @@ final class BackgroundKeepAlive: NSObject, ObservableObject {
         reconcile()
     }
 
+    /// The app moved between foreground and background: a backgrounded session
+    /// must ask for `backgroundAccuracy` or iOS suspends the app despite it
+    /// (see that constant); a foreground one drops back to tower-grade fixes.
+    func setAppBackgrounded(_ background: Bool) {
+        guard background != appInBackground else { return }
+        appInBackground = background
+        if isRunning { manager.desiredAccuracy = currentAccuracy }
+    }
+
     /// Something happened that means the session isn't idle: the device moved, a
     /// forward is carrying a connection, or the app came to the front. Restarts
     /// the location session if the limit had already been reached.
@@ -227,9 +252,18 @@ final class BackgroundKeepAlive: NSObject, ObservableObject {
         }
     }
 
+    private var currentAccuracy: CLLocationAccuracy {
+        appInBackground ? Self.backgroundAccuracy : Self.foregroundAccuracy
+    }
+
     private func startUpdates() {
         guard !isRunning else { return }
-        manager.desiredAccuracy = 100_000 // coarse on purpose: no GPS, minimal battery
+        manager.desiredAccuracy = currentAccuracy
+        // Both part of the iOS 16.4+ hold conditions (see `backgroundAccuracy`):
+        // the distance filter must be off, and the indicator is Apple's
+        // alternate condition for staying scheduled — and honest UX anyway.
+        manager.distanceFilter = kCLDistanceFilterNone
+        manager.showsBackgroundLocationIndicator = true
         manager.pausesLocationUpdatesAutomatically = false
         // Requires the `location` UIBackgroundModes entry in Info.plist.
         manager.allowsBackgroundLocationUpdates = true

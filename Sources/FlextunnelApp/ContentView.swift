@@ -460,6 +460,11 @@ struct ContentView: View {
     private func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
         case .background:
+            // Backgrounded (including the device locking): the keep-alive must
+            // switch to the accuracy tier that actually holds the process — a
+            // coarse session gets suspended despite running (see
+            // BackgroundKeepAlive.backgroundAccuracy).
+            keepAlive.setAppBackgrounded(true)
             // Time spent in the app doesn't eat the keep-alive's inactivity
             // window: start it when the app actually goes away, so what the Live
             // Activity counts down from here is the full limit.
@@ -493,6 +498,7 @@ struct ContentView: View {
                 }
             }
         case .active:
+            keepAlive.setAppBackgrounded(false)
             endBackgroundTask()
             proxy.backgroundLiveActivityRefreshEnabled = false
             proxy.noteForegrounded()
@@ -503,7 +509,11 @@ struct ContentView: View {
             // Revive an expired banner (via start()) so a still-connected session
             // is glanceable again on return.
             syncLiveActivity()
-            if wasSuspended {
+            // `wasSuspended` covers the suspensions the expiration handler saw
+            // coming; the poll-gap evidence covers the one it can't — iOS
+            // suspending the app under a running keep-alive (a locked device
+            // used to trigger this), which defuncts sockets all the same.
+            if wasSuspended || proxy.consumeSuspensionEvidence() {
                 wasSuspended = false
                 recoverFromSuspension()
             }

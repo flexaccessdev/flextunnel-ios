@@ -72,8 +72,20 @@ no longer on offer falls back to the default.
 
 - toggling it on requests **When In Use** location permission immediately;
   granting it is all the setup there is;
-- accuracy is deliberately coarse (100 km, like Blink's `geo track`) so fixes
-  come from cell towers rather than the GPS radio — the battery cost is small;
+- in the foreground, accuracy is deliberately coarse (100 km, like Blink's
+  `geo track`) so fixes come from cell towers rather than the GPS radio — a
+  foreground app can't be suspended, so coarse costs nothing there;
+- while backgrounded, the session switches to **hundred-meter accuracy** and
+  shows the background location indicator: since iOS 16.4 a continuous session
+  asking for 1 km or coarser **no longer prevents suspension** (Apple requires
+  hundred meters or better with no distance filter, or the indicator) — a
+  locked device is where that bites first, suspending the app minutes into a
+  session despite the keep-alive. The battery cost is bounded by the
+  inactivity limit, which caps every background stint;
+- if iOS suspends the process anyway, the app notices on return — the 1 Hz
+  health poll can't tick while suspended, so a poll gap is taken as proof
+  (`ProxyController.consumeSuspensionEvidence`) — and relaunches the session
+  exactly like the keep-alive-off recovery path below;
 - no fix is stored or sent anywhere: the location session exists purely so iOS
   keeps the process running, and a fix is only compared against the last one (one
   in-memory coordinate) to tell whether the device moved — see the inactivity
