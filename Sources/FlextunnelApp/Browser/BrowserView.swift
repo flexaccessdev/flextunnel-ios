@@ -63,8 +63,9 @@ struct BrowserView: View {
                             }
                             .overlay {
                                 // Focusing the address bar over a loaded page shows
-                                // the home shortcuts — until the user types, when the
-                                // suggestions overlay below takes over instead.
+                                // the home shortcuts only when there's nothing to
+                                // suggest — recents (or typed matches) take the
+                                // overlay below whenever history has something.
                                 if addressBarFocused && addressSuggestions.isEmpty {
                                     BrowserHomeView(
                                         onOpen: openFromHome)
@@ -148,9 +149,10 @@ struct BrowserView: View {
     /// group the store's newest-first order is preserved. De-duplicated by
     /// host+path so query-string variants of one page collapse to the latest,
     /// capped at a handful so the list stays a quick pick, not a history browser.
+    /// With nothing typed the list falls back to the most recent pages.
     private var addressSuggestions: [HistoryEntry] {
         let query = addressQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return [] }
+        guard !query.isEmpty else { return recentPages }
 
         var seen = Set<String>()
         var prefixMatches: [HistoryEntry] = []
@@ -168,8 +170,26 @@ struct BrowserView: View {
             guard seen.insert(host + path).inserted else { continue }
             if isPrefix { prefixMatches.append(entry) } else { substringMatches.append(entry) }
         }
-        return Array((prefixMatches + substringMatches).prefix(6))
+        return Array((prefixMatches + substringMatches).prefix(Self.suggestionLimit))
     }
+
+    /// Most recently visited pages, shown as soon as the address bar is focused
+    /// (or cleared) with nothing typed — the standard browser behavior of
+    /// offering where you've been rather than the new-tab shortcuts. De-duplicated
+    /// and capped like the typed-match list above.
+    private var recentPages: [HistoryEntry] {
+        var seen = Set<String>()
+        var recents: [HistoryEntry] = []
+        for entry in model.library.history {
+            guard let host = entry.url.host?.lowercased() else { continue }
+            guard seen.insert(host + entry.url.path).inserted else { continue }
+            recents.append(entry)
+            if recents.count == Self.suggestionLimit { break }
+        }
+        return recents
+    }
+
+    private static let suggestionLimit = 6
 
     private var tunnelStatusIcon: String {
         if proxy.socksPort == nil { return "bolt.horizontal.circle" }
@@ -374,7 +394,8 @@ private struct BrowserHomeView: View {
     }
 }
 
-/// Address-bar autosuggestion list, layered over the page while the user types.
+/// Address-bar autosuggestion list, layered over the page while the address bar
+/// is focused — typed matches, or the most recent pages when nothing is typed.
 /// Each row is a previously visited page; tapping it navigates there.
 private struct AddressSuggestionsView: View {
     let entries: [HistoryEntry]
