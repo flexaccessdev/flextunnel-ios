@@ -1,28 +1,34 @@
 import Foundation
 import Security
 
-/// Stores the proxy auth token in the iOS Keychain — encrypted, OS-managed
-/// storage for the one real secret in the app. Everything else (server node id,
-/// port) is non-sensitive and lives in UserDefaults via @AppStorage.
+/// Stores the app's secrets in the iOS Keychain — encrypted, OS-managed
+/// storage. Everything else (server node id, port) is non-sensitive and lives
+/// in UserDefaults via @AppStorage.
 ///
 /// Accessibility is `…AfterFirstUnlockThisDeviceOnly`: readable after the first
 /// unlock following a boot (so it survives backgrounding), never synced to
 /// iCloud, and never restored onto another device.
-enum TokenStore {
+enum SecretStore {
     private static let account = "default"
 
-    /// The proxy auth token — the primary credential.
-    static let authTokenService = "com.example.flextunnel.authToken"
+    /// The named client auth keys — the whole list as one JSON blob of
+    /// {id, name, secret} records (see `AuthKeyStore`). The derived public
+    /// halves are not stored: each is re-derived via the FFI on load.
+    static let authKeyService = "com.example.flextunnel.authKey"
     /// The shared bearer token for custom relays — a separate secret so it
-    /// survives launches alongside the auth token (custom relays only).
+    /// survives launches alongside the auth key (custom relays only).
     static let relayTokenService = "com.example.flextunnel.relayAuthToken"
 
-    /// Persist `token` under `service`, replacing any existing value. Empty
+    /// Persist `secret` under `service`, replacing any existing value. Empty
     /// strings are treated as a clear so we never store a blank secret.
-    static func save(_ token: String, service: String = authTokenService) {
-        guard !token.isEmpty, let data = token.data(using: .utf8) else {
-            clear(service: service)
-            return
+    /// Returns the Keychain status, so callers that must not silently lose a
+    /// secret can report a failed write.
+    @discardableResult
+    static func save(_ secret: String, service: String) -> OSStatus {
+        guard !secret.isEmpty, let data = secret.data(using: .utf8) else {
+            let status = clear(service: service)
+            // Nothing stored is the intended end state of a clear.
+            return status == errSecItemNotFound ? errSecSuccess : status
         }
 
         let query: [String: Any] = [
@@ -37,12 +43,13 @@ enum TokenStore {
 
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
-            SecItemAdd(query.merging(attributes) { $1 } as CFDictionary, nil)
+            return SecItemAdd(query.merging(attributes) { $1 } as CFDictionary, nil)
         }
+        return status
     }
 
-    /// Read back the token stored under `service`, or nil if none is set.
-    static func load(service: String = authTokenService) -> String? {
+    /// Read back the secret stored under `service`, or nil if none is set.
+    static func load(service: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -54,20 +61,21 @@ enum TokenStore {
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
               let data = item as? Data,
-              let token = String(data: data, encoding: .utf8)
+              let secret = String(data: data, encoding: .utf8)
         else {
             return nil
         }
-        return token
+        return secret
     }
 
-    /// Remove the token stored under `service`.
-    static func clear(service: String = authTokenService) {
+    /// Remove the secret stored under `service`.
+    @discardableResult
+    static func clear(service: String) -> OSStatus {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        SecItemDelete(query as CFDictionary)
+        return SecItemDelete(query as CFDictionary)
     }
 }

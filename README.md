@@ -91,7 +91,10 @@ no vendored copy to stage. To move to a new release, run
 
 3. **Run** on a device or the Simulator. Enter:
    - *Server node id* — the flextunnel server's iroh endpoint id.
-   - *Auth token* — a token the server accepts (stored in the Keychain).
+   - *Auth key* — pick from a named key list (Manage… to generate one on the
+     device, paste an existing secret key, or export one); the secrets stay in
+     the Keychain, and the shown public key goes on the server's
+     `authorized_keys_file`.
    - *Relay URLs* — optional hints; leave blank for iroh defaults.
    - *SOCKS bind port* — the loopback port the core binds.
 

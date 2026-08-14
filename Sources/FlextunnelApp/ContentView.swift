@@ -67,7 +67,13 @@ struct ContentView: View {
     @StateObject private var keepAlive = BackgroundKeepAlive()
 
     @AppStorage("lastServerNodeID") private var serverNodeID = ""
-    @State private var authToken = ""
+    // The named client auth keys (Keychain-backed; see AuthKeyStore) and the
+    // plain reference to the picked one. Keys persist the moment they're
+    // generated or imported — unlike the relay token there is no "known-good"
+    // moment to wait for: the public key must be on the server's
+    // authorized-keys file before the first connect can succeed.
+    @StateObject private var authKeys = AuthKeyStore()
+    @AppStorage("selectedAuthKeyID") private var selectedAuthKeyID = ""
     @AppStorage("lastRelayURLs") private var relayURLs = ""
     @State private var relayAuthToken = ""
     // Browser mode's loopback SOCKS5 port. Forwarding-only mode has no SOCKS5
@@ -77,10 +83,11 @@ struct ContentView: View {
     // open tab. Nil while no browser session is running; regenerated per session.
     @State private var browserSessionPort: UInt16?
     @State private var browserModel: BrowserModel?
-    @State private var didLoadToken = false
+    @State private var didLoadSecrets = false
     // The immutable settings snapshot handed to `proxy.start`, so the Keychain
-    // save on `.connected` persists the exact token that authenticated — not
-    // whatever the (still-editable) field holds by the time the handshake lands.
+    // save on `.connected` persists the exact relay token that authenticated —
+    // not whatever the (still-editable) field holds by the time the handshake
+    // lands. (The auth key is saved at generation/import instead.)
     @State private var connectingSettings: ProxyController.Settings?
     // Remembered across launches: both modes share the config above, so the
     // choice is sticky and only the single CTA's label follows it.
@@ -117,10 +124,7 @@ struct ContentView: View {
                         TextField("", text: $serverNodeID)
                             .autocorrectionDisabled().textInputAutocapitalization(.never)
                     }
-                    LabeledField("Auth token") {
-                        SecureField("", text: $authToken)
-                            .autocorrectionDisabled().textInputAutocapitalization(.never)
-                    }
+                    authKeyRow
                     LabeledField("Relay URLs", hint: "comma-separated, optional") {
                         TextField("", text: $relayURLs)
                             .autocorrectionDisabled().textInputAutocapitalization(.never)
@@ -203,16 +207,15 @@ struct ContentView: View {
                     .interactiveDismissDisabled(proxy.sessionAlive)
             }
             .onChange(of: proxy.phase) { _, newPhase in
-                // Persist the token only once it has actually authenticated, so a
-                // typo'd credential (which starts fine but fails the handshake)
-                // never overwrites a good one. Save the token from the snapshot the
-                // connection used, not the live (still-editable) field.
+                // Persist the relay token only once it has actually authenticated,
+                // so a typo'd credential (which starts fine but fails the handshake)
+                // never overwrites a good one. Save it from the snapshot the
+                // connection used, not the live (still-editable) field. Empty
+                // clears it (save treats "" as a clear). The auth key was already
+                // saved at generation/import.
                 if newPhase == .connected, let settings = connectingSettings {
-                    TokenStore.save(settings.authToken)
-                    // The relay token is a secret like the auth token, so it goes
-                    // to the Keychain (not @AppStorage) and only after a successful
-                    // handshake. Empty clears it (save treats "" as a clear).
-                    TokenStore.save(settings.relayAuthToken, service: TokenStore.relayTokenService)
+                    SecretStore.save(
+                        settings.relayAuthToken, service: SecretStore.relayTokenService)
                 }
                 syncSessionPresentation()
                 syncLiveActivity()
@@ -251,7 +254,14 @@ struct ContentView: View {
                 handleScenePhase(phase)
             }
             .onAppear {
-                loadStoredToken()
+                loadStoredSecrets()
+                // The remembered key can be gone by now — dropped as corrupt on
+                // load, or deleted on a previous run. Clear the dangling
+                // reference so the Picker has a tag it can match ("") and shows
+                // "Pick a key…" rather than a blank selection.
+                if !selectedAuthKeyID.isEmpty, selectedKey == nil {
+                    selectedAuthKeyID = ""
+                }
                 syncSessionPresentation()
                 syncForwards()
                 syncKeepAlive()
@@ -271,6 +281,74 @@ struct ContentView: View {
                 // Reconcile any Live Activity the controller reattached to on
                 // launch with the real state (ends a leftover banner while idle).
                 syncLiveActivity()
+            }
+        }
+    }
+
+    /// The key the connection authenticates with; nil until one is picked
+    /// (or after the picked key was deleted).
+    private var selectedKey: AuthKeyStore.Key? {
+        authKeys.key(id: selectedAuthKeyID)
+    }
+
+    /// The auth-key setup row: a picker over the named key list plus the
+    /// picked key's public half — shown unmasked on purpose, it's what goes
+    /// on the server's authorized-keys file. Everything else (generate,
+    /// import, export, rename, delete) lives on the Keys screen.
+    private var authKeyRow: some View {
+        LabeledField(
+            "Auth key",
+            hint: selectedKey != nil ? "public key — give it to the server operator" : nil
+        ) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    if authKeys.keys.isEmpty {
+                        Text("No keys yet")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Picker("Auth key", selection: $selectedAuthKeyID) {
+                            if selectedKey == nil {
+                                Text("Pick a key…").tag("")
+                            }
+                            ForEach(authKeys.keys) { key in
+                                Text(key.name).tag(key.id)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .disabled(proxy.phase == .connecting)
+                    }
+                    Spacer(minLength: 4)
+                    NavigationLink {
+                        KeysView(store: authKeys, selectedKeyID: $selectedAuthKeyID)
+                    } label: {
+                        Text("Manage…")
+                            .font(.footnote)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                if let key = selectedKey {
+                    HStack(spacing: 8) {
+                        Text(key.publicKey)
+                            .font(.footnote.monospaced())
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 4)
+                        Button {
+                            UIPasteboard.general.string = key.publicKey
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Copy public key")
+                    }
+                } else if authKeys.keys.isEmpty {
+                    Text("Add one under Manage, then put its public key on the "
+                        + "server's authorized-keys file.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -366,18 +444,16 @@ struct ContentView: View {
         serverNodeID.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var trimmedAuthToken: String {
-        authToken.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private var canStartProxy: Bool {
-        !trimmedServerNodeID.isEmpty && !trimmedAuthToken.isEmpty
+        // A listed key always has a parsing secret (the store drops corrupt
+        // records on load), so picked means usable.
+        !trimmedServerNodeID.isEmpty && selectedKey != nil
     }
 
     private func currentSettings() -> ProxyController.Settings {
         ProxyController.Settings(
             serverNodeID: trimmedServerNodeID,
-            authToken: trimmedAuthToken,
+            authKey: selectedKey?.secret ?? "",
             // Forwarding-only sessions have no SOCKS listener. Browser mode's
             // random port is held across reconnects.
             socksPort: sessionMode == .browser ? (browserSessionPort ?? 0) : nil,
@@ -392,15 +468,13 @@ struct ContentView: View {
             .filter { !$0.isEmpty }
     }
 
-    /// Prefill the Keychain-backed secrets (auth token, relay token) on first
-    /// appearance. The relay URLs are non-secret and restore via @AppStorage.
-    private func loadStoredToken() {
-        guard !didLoadToken else { return }
-        didLoadToken = true
-        if let token = TokenStore.load() {
-            authToken = token
-        }
-        if let relayToken = TokenStore.load(service: TokenStore.relayTokenService) {
+    /// Prefill the Keychain-backed relay token on first appearance (the auth
+    /// keys load themselves in `AuthKeyStore.init`). The relay URLs are
+    /// non-secret and restore via @AppStorage.
+    private func loadStoredSecrets() {
+        guard !didLoadSecrets else { return }
+        didLoadSecrets = true
+        if let relayToken = SecretStore.load(service: SecretStore.relayTokenService) {
             relayAuthToken = relayToken
         }
     }
