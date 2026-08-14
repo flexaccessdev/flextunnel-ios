@@ -108,7 +108,9 @@ final class ProxyController: ObservableObject {
     /// Connection parameters entered in the UI.
     struct Settings {
         var serverNodeID: String
-        var authToken: String
+        /// The client auth secret key ("flextunnelsecretv1:…"); its public
+        /// half must be on the server's authorized-keys file.
+        var authKey: String
         /// Loopback SOCKS5 port for browser mode. `nil` means a forwarding-only
         /// session with no SOCKS5 listener; `0` requests an ephemeral port.
         var socksPort: UInt16?
@@ -311,7 +313,7 @@ final class ProxyController: ObservableObject {
         let relayAuthToken = s.relayAuthToken.trimmingCharacters(in: .whitespacesAndNewlines)
         let configDict: [String: Any] = [
             "server_node_id": s.serverNodeID,
-            "auth_token": s.authToken,
+            "auth_key": s.authKey,
             "socks_port": s.socksPort.map { Int($0) } ?? NSNull(),
             "relay_urls": s.relayURLs,
             "relay_auth_token": relayAuthToken.isEmpty ? NSNull() : relayAuthToken,
