@@ -7,6 +7,23 @@ is to split the work: the **VM builds**, the **host installs**. This is the same
 split Tart-based CI and device farms use, and it is why those farms keep the
 phones attached to bare metal.
 
+## The one-command version
+
+Everything below is automated by `ci/device.sh`, which builds and signs here,
+ships the `.app` to the `machost` ssh alias, and installs and launches it on the
+paired iPhone:
+
+```sh
+ci/device.sh            # build, ship, install, launch
+ci/device.sh doctor     # what that host has paired, and whether it can see the phone
+```
+
+Read on for what it is doing and why the split exists at all; see
+[Running CI locally](local-ci.md) for the rest of the local checks. The manual
+route below is still the one to follow when the far end is not that host — a
+colleague's Mac, a different network — or when a step misbehaves and you want to
+run it by hand.
+
 ## Why the device is unreachable from the VM
 
 Three independent walls, in the order you hit them:
