@@ -113,8 +113,9 @@ shipping anything and says to attach it by USB, or wake and unlock it on the
 same network. Note that `tunnelState` is *not* that signal: a perfectly reachable
 device sits at `disconnected` until a tunnel is actually needed.
 
-A locked phone accepts the install and refuses the launch; that is reported as a
-hint, not a failure.
+A locked phone accepts the install and refuses the launch. The install still
+stands, and the message says so — but the run **exits 1**, because the app it was
+asked to launch is not running. Unlock the phone and retry, or tap the app.
 
 ## Where things land on the host
 

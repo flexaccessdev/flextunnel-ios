@@ -46,7 +46,8 @@ There are two ways to use the tunnel, chosen on the setup screen:
 - [Running CI locally](docs/local-ci.md) — `ci/ci.sh` runs the workflows' checks
   against the working tree here (Simulator build, a launch smoke test, the
   unsigned-archive assertions, the signed device slice); `ci/device.sh` ships
-  that signed build to the Mac the iPhone is attached to and installs it there.
+  that signed build to the Mac the iPhone is attached to, then installs and
+  launches it on the phone from there.
 - [Building in a macOS VM](docs/deploy-from-a-vm.md) — why a UTM/Tart guest can
   never install onto a physical device, and the build-in-the-VM /
   install-from-the-host split that works instead.

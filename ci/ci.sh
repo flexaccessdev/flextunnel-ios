@@ -228,6 +228,7 @@ job_ffi() {
 
     step 'build against the local xcframework'
     generate local
+    local status=0
     FLEXTUNNEL_LOCAL_XCFRAMEWORK=1 xcodebuild build \
         -project Flextunnel.xcodeproj \
         -scheme FlextunnelApp \
@@ -238,11 +239,14 @@ job_ffi() {
         CODE_SIGNING_ALLOWED=NO \
         CODE_SIGNING_REQUIRED=NO \
         DEVELOPMENT_TEAM= \
-        COMPILER_INDEX_STORE_ENABLE=NO
+        COMPILER_INDEX_STORE_ENABLE=NO || status=$?
 
-    # Leave the project pointing at the pinned release again: a generated project
-    # wired to a local build is a trap for the next plain `xcodebuild` here.
+    # Leave the project pointing at the pinned release again — on the failing path
+    # especially, since that is the one you go back to Xcode after: a generated
+    # project wired to a local build is a trap for the next plain `xcodebuild`
+    # here. The build's status is re-raised after the cleanup, not swallowed.
     generate pinned
+    return "$status"
 }
 
 info "jobs: ${jobs[*]}"
