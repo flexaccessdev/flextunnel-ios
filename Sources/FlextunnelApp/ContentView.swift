@@ -211,7 +211,7 @@ struct ContentView: View {
                     + "Paste it into another device's key import.")
             }
             .alert("Enter existing key", isPresented: $showEnterKeyAlert) {
-                SecureField("flextunnelsecretv1:…", text: $enteredSecretKey)
+                SecureField("flxtsecretv1:…", text: $enteredSecretKey)
                 Button("Use Key") { importAuthKey() }
                 Button("Cancel", role: .cancel) { enteredSecretKey = "" }
             } message: {
@@ -383,7 +383,7 @@ struct ContentView: View {
         let secret = enteredSecretKey.trimmingCharacters(in: .whitespacesAndNewlines)
         enteredSecretKey = ""
         guard let publicKey = AuthKey.publicKey(forSecret: secret) else {
-            authKeyError = "Not a valid secret key (expected flextunnelsecretv1:…)."
+            authKeyError = "Not a valid secret key (expected flxtsecretv1:…)."
             return
         }
         setAuthKey(secret, publicKey: publicKey)

@@ -1,9 +1,9 @@
 import Foundation
 
 /// The device's client auth keypair, via the Rust FFI. The secret key
-/// ("flextunnelsecretv1:…") lives in the Keychain (`SecretStore.authKeyService`)
+/// ("flxtsecretv1:…") lives in the Keychain (`SecretStore.authKeyService`)
 /// and authenticates the tunnel handshake; the public key
-/// ("flextunnelpubv1:…") is not a secret — it's what the user puts on the
+/// ("flxtpubv1:…") is not a secret — it's what the user puts on the
 /// server's authorized-keys file, and it's re-derived from the secret whenever
 /// the UI needs to show it rather than stored separately.
 enum AuthKey {

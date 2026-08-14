@@ -11,7 +11,7 @@ import Security
 enum SecretStore {
     private static let account = "default"
 
-    /// The client auth secret key ("flextunnelsecretv1:…") — the primary
+    /// The client auth secret key ("flxtsecretv1:…") — the primary
     /// credential. Its derived public half is not stored: it's re-derived via
     /// the FFI whenever the UI needs to show it.
     static let authKeyService = "com.example.flextunnel.authKey"
