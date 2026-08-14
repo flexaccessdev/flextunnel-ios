@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// The key management screen — the iOS mirror of the desktop Keys pane: a
 /// named list to pick the connection's identity from, with generate, import,
@@ -97,7 +98,7 @@ struct KeysView: View {
             titleVisibility: .visible,
             presenting: exportTarget
         ) { key in
-            Button("Copy Secret Key") { UIPasteboard.general.string = key.secret }
+            Button("Copy Secret Key") { copySecret(key.secret) }
         } message: { key in
             Text("Anyone holding the secret key can connect as \"\(key.name)\". "
                 + "Paste it into another device's key import.")
@@ -109,8 +110,9 @@ struct KeysView: View {
             presenting: deleteTarget
         ) { key in
             Button("Delete \"\(key.name)\"", role: .destructive) {
-                store.delete(id: key.id)
-                if selectedKeyID == key.id {
+                if let error = store.delete(id: key.id) {
+                    errorMessage = error.message
+                } else if selectedKeyID == key.id {
                     selectedKeyID = ""
                 }
             }
@@ -183,6 +185,20 @@ struct KeysView: View {
             .buttonStyle(.borderless)
         }
     }
+
+    /// Copy a secret key with an expiry, so the most sensitive thing this app
+    /// holds doesn't sit on the pasteboard (readable by every app that comes to
+    /// the foreground) until something else replaces it. Left syncable on
+    /// purpose: pasting into another device's key import is what export is for.
+    private func copySecret(_ secret: String) {
+        UIPasteboard.general.setItems(
+            [[UTType.utf8PlainText.identifier: secret]],
+            options: [.expirationDate: Date().addingTimeInterval(secretPasteboardLifetime)])
+    }
+
+    /// Long enough to reach for the other device and paste, short enough that a
+    /// forgotten copy doesn't linger.
+    private var secretPasteboardLifetime: TimeInterval { 5 * 60 }
 
     private func generateKey() {
         guard let pair = AuthKey.generate() else {

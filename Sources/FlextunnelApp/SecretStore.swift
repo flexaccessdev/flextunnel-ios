@@ -21,10 +21,14 @@ enum SecretStore {
 
     /// Persist `secret` under `service`, replacing any existing value. Empty
     /// strings are treated as a clear so we never store a blank secret.
-    static func save(_ secret: String, service: String) {
+    /// Returns the Keychain status, so callers that must not silently lose a
+    /// secret can report a failed write.
+    @discardableResult
+    static func save(_ secret: String, service: String) -> OSStatus {
         guard !secret.isEmpty, let data = secret.data(using: .utf8) else {
-            clear(service: service)
-            return
+            let status = clear(service: service)
+            // Nothing stored is the intended end state of a clear.
+            return status == errSecItemNotFound ? errSecSuccess : status
         }
 
         let query: [String: Any] = [
@@ -39,8 +43,9 @@ enum SecretStore {
 
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
-            SecItemAdd(query.merging(attributes) { $1 } as CFDictionary, nil)
+            return SecItemAdd(query.merging(attributes) { $1 } as CFDictionary, nil)
         }
+        return status
     }
 
     /// Read back the secret stored under `service`, or nil if none is set.
@@ -64,12 +69,13 @@ enum SecretStore {
     }
 
     /// Remove the secret stored under `service`.
-    static func clear(service: String) {
+    @discardableResult
+    static func clear(service: String) -> OSStatus {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        SecItemDelete(query as CFDictionary)
+        return SecItemDelete(query as CFDictionary)
     }
 }

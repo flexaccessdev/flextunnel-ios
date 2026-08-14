@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Security
 
 /// The shared, named client auth keys — the iOS mirror of the desktop app's
 /// Keys pane. The whole list persists as one JSON blob in the Keychain entry
@@ -18,8 +19,8 @@ final class AuthKeyStore: ObservableObject {
         var publicKey: String
     }
 
-    /// A user-facing validation failure (name rules, invalid or duplicate
-    /// secret).
+    /// A user-facing failure: the name rules, an invalid or duplicate secret,
+    /// or a Keychain write that didn't land.
     struct ValidationError: Error {
         let message: String
     }
@@ -45,6 +46,10 @@ final class AuthKeyStore: ObservableObject {
                 Key(id: record.id, name: record.name, secret: record.secret, publicKey: $0)
             }
         }
+        // Make the pruning stick, so a corrupt record doesn't sit in the
+        // Keychain until the next add/rename/delete happens to rewrite it.
+        // Nothing to surface this early — a failed write just leaves it there.
+        if keys.count != stored.count { persist() }
     }
 
     func key(id: String) -> Key? {
@@ -70,7 +75,12 @@ final class AuthKeyStore: ObservableObject {
         }
         let key = Key(id: UUID().uuidString, name: name, secret: secret, publicKey: publicKey)
         keys.append(key)
-        persist()
+        // A failed write means the key would vanish on relaunch — roll the list
+        // back so what's on screen is what's actually stored, and say so.
+        if let error = persist() {
+            keys.removeLast()
+            return .failure(error)
+        }
         return .success(key)
     }
 
@@ -79,17 +89,28 @@ final class AuthKeyStore: ObservableObject {
         guard let index = keys.firstIndex(where: { $0.id == id }) else { return nil }
         switch validated(name: newName, excluding: id) {
         case .success(let name):
+            let previous = keys[index].name
             keys[index].name = name
-            persist()
+            if let error = persist() {
+                keys[index].name = previous
+                return error
+            }
             return nil
         case .failure(let error):
             return error
         }
     }
 
-    func delete(id: String) {
-        keys.removeAll { $0.id == id }
-        persist()
+    /// Delete `id`; returns a user-facing error when the removal couldn't be
+    /// written back (the key stays listed then, since it's still stored).
+    func delete(id: String) -> ValidationError? {
+        guard let index = keys.firstIndex(where: { $0.id == id }) else { return nil }
+        let removed = keys.remove(at: index)
+        if let error = persist() {
+            keys.insert(removed, at: index)
+            return error
+        }
+        return nil
     }
 
     /// Normalize (whitespace runs collapse to single spaces, ends trimmed)
@@ -110,11 +131,21 @@ final class AuthKeyStore: ObservableObject {
         return .success(name)
     }
 
-    private func persist() {
+    /// Write the whole list back to the Keychain, returning a user-facing
+    /// error when it didn't land — a silently dropped write would lose keys
+    /// at the next launch.
+    @discardableResult
+    private func persist() -> ValidationError? {
         let stored = keys.map { StoredKey(id: $0.id, name: $0.name, secret: $0.secret) }
         guard let data = try? JSONEncoder().encode(stored),
               let json = String(data: data, encoding: .utf8)
-        else { return }
-        SecretStore.save(json, service: SecretStore.authKeyService)
+        else {
+            return .init(message: "Couldn't encode the key list.")
+        }
+        let status = SecretStore.save(json, service: SecretStore.authKeyService)
+        guard status == errSecSuccess else {
+            return .init(message: "Couldn't save the key to the Keychain (error \(status)).")
+        }
+        return nil
     }
 }

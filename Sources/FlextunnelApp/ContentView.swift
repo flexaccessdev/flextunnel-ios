@@ -255,6 +255,13 @@ struct ContentView: View {
             }
             .onAppear {
                 loadStoredSecrets()
+                // The remembered key can be gone by now — dropped as corrupt on
+                // load, or deleted on a previous run. Clear the dangling
+                // reference so the Picker has a tag it can match ("") and shows
+                // "Pick a key…" rather than a blank selection.
+                if !selectedAuthKeyID.isEmpty, selectedKey == nil {
+                    selectedAuthKeyID = ""
+                }
                 syncSessionPresentation()
                 syncForwards()
                 syncKeepAlive()
