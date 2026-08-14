@@ -75,6 +75,7 @@ struct ContentView: View {
     @State private var authPublicKey: String?
     @State private var authKeyError: String?
     @State private var showReplaceKeyDialog = false
+    @State private var showExportKeyDialog = false
     @State private var showEnterKeyAlert = false
     @State private var enteredSecretKey = ""
     @AppStorage("lastRelayURLs") private var relayURLs = ""
@@ -199,6 +200,16 @@ struct ContentView: View {
                 Text("The server rejects this device until the new public key replaces "
                     + "the old one on its authorized-keys file.")
             }
+            .confirmationDialog(
+                "Copy the secret key?",
+                isPresented: $showExportKeyDialog,
+                titleVisibility: .visible
+            ) {
+                Button("Copy Secret Key") { UIPasteboard.general.string = authKey }
+            } message: {
+                Text("Anyone holding the secret key can connect as this device. "
+                    + "Paste it into another device's key import.")
+            }
             .alert("Enter existing key", isPresented: $showEnterKeyAlert) {
                 SecureField("flextunnelsecretv1:…", text: $enteredSecretKey)
                 Button("Use Key") { importAuthKey() }
@@ -300,9 +311,10 @@ struct ContentView: View {
     }
 
     /// The auth-key setup row: the public key (never the secret) with a Copy
-    /// button once a key exists, plus the generate / import controls. The
-    /// public half is shown unmasked on purpose — it's what goes on the
-    /// server's authorized-keys file.
+    /// button once a key exists, plus the generate / import / export controls.
+    /// The public half is shown unmasked on purpose — it's what goes on the
+    /// server's authorized-keys file. Export never displays the secret either:
+    /// it goes straight to the pasteboard, behind a confirmation.
     private var authKeyRow: some View {
         LabeledField(
             "Auth key",
@@ -339,6 +351,9 @@ struct ContentView: View {
                     Button("Enter Existing…") {
                         enteredSecretKey = ""
                         showEnterKeyAlert = true
+                    }
+                    if authPublicKey != nil {
+                        Button("Export…") { showExportKeyDialog = true }
                     }
                 }
                 .font(.footnote)
