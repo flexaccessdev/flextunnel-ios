@@ -66,15 +66,18 @@ struct ContentView: View {
     // BackgroundKeepAlive.swift and docs/background-keep-alive.md).
     @StateObject private var keepAlive = BackgroundKeepAlive()
 
-    @AppStorage("lastServerNodeID") private var serverNodeID = ""
-    // The named client auth keys (Keychain-backed; see AuthKeyStore) and the
-    // plain reference to the picked one. Keys persist the moment they're
-    // generated or imported — unlike the relay token there is no "known-good"
-    // moment to wait for: the public key must be on the server's
-    // authorized-keys file before the first connect can succeed.
+    // The saved connection profiles. Every field in Setup below edits the
+    // selected one, so pointing the app at another server is a pick rather
+    // than a retype. Only the selected profile connects — one session at a
+    // time, unlike the desktop.
+    @StateObject private var profiles = ProfileStore()
+    // The named client auth keys (Keychain-backed; see AuthKeyStore), one
+    // shared list across profiles; each profile references a key by id. Keys
+    // persist the moment they're generated or imported — unlike the relay
+    // token there is no "known-good" moment to wait for: the public key must
+    // be on the server's authorized-keys file before the first connect can
+    // succeed.
     @StateObject private var authKeys = AuthKeyStore()
-    @AppStorage("selectedAuthKeyID") private var selectedAuthKeyID = ""
-    @AppStorage("lastRelayURLs") private var relayURLs = ""
     @State private var relayAuthToken = ""
     // Browser mode's loopback SOCKS5 port. Forwarding-only mode has no SOCKS5
     // listener. This is picked at random (private/dynamic range) once per session and
@@ -89,6 +92,10 @@ struct ContentView: View {
     // not whatever the (still-editable) field holds by the time the handshake
     // lands. (The auth key is saved at generation/import instead.)
     @State private var connectingSettings: ProxyController.Settings?
+    // Which profile that snapshot belongs to, so the token lands in the
+    // Keychain account of the profile that authenticated with it even if the
+    // selection moved on meanwhile.
+    @State private var connectingProfileID = ""
     // Remembered across launches: both modes share the config above, so the
     // choice is sticky and only the single CTA's label follows it.
     @AppStorage("lastSessionMode") private var sessionModeRaw = SessionMode.browser.rawValue
@@ -119,14 +126,24 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    profileRow
+                } header: {
+                    Text("Profile")
+                } footer: {
+                    Text("Each profile remembers its own server, auth key, relays and "
+                        + "port forwards. Switching profiles here is only about not "
+                        + "retyping them — one profile connects at a time.")
+                }
+
                 Section("Setup") {
                     LabeledField("Server node id") {
-                        TextField("", text: $serverNodeID)
+                        TextField("", text: $profiles.selected.serverNodeID)
                             .autocorrectionDisabled().textInputAutocapitalization(.never)
                     }
                     authKeyRow
                     LabeledField("Relay URLs", hint: "comma-separated, optional") {
-                        TextField("", text: $relayURLs)
+                        TextField("", text: $profiles.selected.relayURLs)
                             .autocorrectionDisabled().textInputAutocapitalization(.never)
                     }
                     LabeledField("Relay auth token", hint: "optional, custom relays only") {
@@ -215,7 +232,9 @@ struct ContentView: View {
                 // saved at generation/import.
                 if newPhase == .connected, let settings = connectingSettings {
                     SecretStore.save(
-                        settings.relayAuthToken, service: SecretStore.relayTokenService)
+                        settings.relayAuthToken,
+                        service: SecretStore.relayTokenService,
+                        account: connectingProfileID)
                 }
                 syncSessionPresentation()
                 syncLiveActivity()
@@ -253,15 +272,25 @@ struct ContentView: View {
             .onChange(of: scenePhase) { _, phase in
                 handleScenePhase(phase)
             }
+            // Switching profiles swaps everything the setup screen shows: the
+            // fields follow `selected` on their own, these don't.
+            .onChange(of: profiles.selectedID) { _, id in
+                // Anything typed into the token field and not yet connected
+                // with is dropped here on purpose — it is only persisted once
+                // it has authenticated, so it would be lost at relaunch too.
+                relayAuthToken = storedRelayToken(for: id)
+                clearDanglingAuthKey()
+                portForwards.setProfile(id)
+            }
+            // A profile deleted on the manage screen leaves its forwards behind.
+            .onChange(of: profiles.profiles.map(\.id)) { _, ids in
+                portForwards.pruneProfiles(keeping: Set(ids))
+            }
             .onAppear {
                 loadStoredSecrets()
-                // The remembered key can be gone by now — dropped as corrupt on
-                // load, or deleted on a previous run. Clear the dangling
-                // reference so the Picker has a tag it can match ("") and shows
-                // "Pick a key…" rather than a blank selection.
-                if !selectedAuthKeyID.isEmpty, selectedKey == nil {
-                    selectedAuthKeyID = ""
-                }
+                clearDanglingAuthKey()
+                portForwards.setProfile(profiles.selectedID)
+                portForwards.pruneProfiles(keeping: Set(profiles.profiles.map(\.id)))
                 syncSessionPresentation()
                 syncForwards()
                 syncKeepAlive()
@@ -285,10 +314,53 @@ struct ContentView: View {
         }
     }
 
-    /// The key the connection authenticates with; nil until one is picked
+    /// The key the selected profile authenticates with; nil until one is picked
     /// (or after the picked key was deleted).
     private var selectedKey: AuthKeyStore.Key? {
-        authKeys.key(id: selectedAuthKeyID)
+        authKeys.key(id: profiles.selected.authKeyID)
+    }
+
+    /// Drop a reference to a key that is gone — deleted on the Keys screen, or
+    /// dropped as corrupt on load — so the Picker has a tag it can match ("")
+    /// and shows "Pick a key…" rather than a blank selection. Only the selected
+    /// profile is swept, and that is enough: nothing reads another profile's
+    /// reference until it is selected, which runs this again.
+    private func clearDanglingAuthKey() {
+        if !profiles.selected.authKeyID.isEmpty, selectedKey == nil {
+            profiles.selected.authKeyID = ""
+        }
+    }
+
+    /// The profile's own relay token, from its own Keychain account.
+    private func storedRelayToken(for profileID: String) -> String {
+        SecretStore.load(
+            service: SecretStore.relayTokenService, account: profileID) ?? ""
+    }
+
+    /// The profile picker and the way to the manage screen. Everything else
+    /// about a profile is edited in Setup below, for the picked one.
+    private var profileRow: some View {
+        HStack(spacing: 8) {
+            Picker("Profile", selection: $profiles.selectedID) {
+                ForEach(profiles.profiles) { profile in
+                    Text(profile.name).tag(profile.id)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .disabled(proxy.phase == .connecting)
+            Spacer(minLength: 4)
+            NavigationLink {
+                ProfilesView(store: profiles)
+            } label: {
+                Text("Manage…")
+                    .font(.footnote)
+            }
+            .buttonStyle(.borderless)
+            // Two rows on this screen show "Manage…"; spell out which is which
+            // for VoiceOver, where the surrounding label isn't read with it.
+            .accessibilityLabel("Manage profiles")
+        }
     }
 
     /// The auth-key setup row: a picker over the named key list plus the
@@ -307,7 +379,7 @@ struct ContentView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     } else {
-                        Picker("Auth key", selection: $selectedAuthKeyID) {
+                        Picker("Auth key", selection: $profiles.selected.authKeyID) {
                             if selectedKey == nil {
                                 Text("Pick a key…").tag("")
                             }
@@ -321,12 +393,13 @@ struct ContentView: View {
                     }
                     Spacer(minLength: 4)
                     NavigationLink {
-                        KeysView(store: authKeys, selectedKeyID: $selectedAuthKeyID)
+                        KeysView(store: authKeys, selectedKeyID: $profiles.selected.authKeyID)
                     } label: {
                         Text("Manage…")
                             .font(.footnote)
                     }
                     .buttonStyle(.borderless)
+                    .accessibilityLabel("Manage auth keys")
                 }
                 if let key = selectedKey {
                     HStack(spacing: 8) {
@@ -437,11 +510,12 @@ struct ContentView: View {
         }
         let settings = currentSettings()
         connectingSettings = settings
+        connectingProfileID = profiles.selectedID
         proxy.start(settings)
     }
 
     private var trimmedServerNodeID: String {
-        serverNodeID.trimmingCharacters(in: .whitespacesAndNewlines)
+        profiles.selected.serverNodeID.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var canStartProxy: Bool {
@@ -457,7 +531,7 @@ struct ContentView: View {
             // Forwarding-only sessions have no SOCKS listener. Browser mode's
             // random port is held across reconnects.
             socksPort: sessionMode == .browser ? (browserSessionPort ?? 0) : nil,
-            relayURLs: splitCSV(relayURLs),
+            relayURLs: splitCSV(profiles.selected.relayURLs),
             relayAuthToken: relayAuthToken
         )
     }
@@ -468,15 +542,15 @@ struct ContentView: View {
             .filter { !$0.isEmpty }
     }
 
-    /// Prefill the Keychain-backed relay token on first appearance (the auth
-    /// keys load themselves in `AuthKeyStore.init`). The relay URLs are
-    /// non-secret and restore via @AppStorage.
+    /// Prefill the selected profile's Keychain-backed relay token on first
+    /// appearance (the auth keys load themselves in `AuthKeyStore.init`).
+    /// Everything else the profile holds is non-secret and loads with it.
+    /// Guarded, so coming back from a pushed screen can't clobber a token that
+    /// has been typed but not connected with yet.
     private func loadStoredSecrets() {
         guard !didLoadSecrets else { return }
         didLoadSecrets = true
-        if let relayToken = SecretStore.load(service: SecretStore.relayTokenService) {
-            relayAuthToken = relayToken
-        }
+        relayAuthToken = storedRelayToken(for: profiles.selectedID)
     }
 
     /// Present-only: reveal the mode's screen once the handshake lands and never

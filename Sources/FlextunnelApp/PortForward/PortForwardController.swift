@@ -4,6 +4,12 @@ import Combine
 /// Owns persisted forward definitions and reconciles them with the Rust core's
 /// server-direct listener manager. Forward definitions persist; enablement is
 /// per-session and is never encoded by `PortForward`.
+///
+/// Definitions are kept **per connection profile** (see `ProfileStore`): a
+/// forward names a host behind one particular server, so it would mean nothing
+/// under another profile. `forwards` is the selected profile's set; the rest
+/// sit in the same file, keyed by profile id, waiting for that profile to be
+/// picked again.
 @MainActor
 final class PortForwardController: ObservableObject {
     struct RuntimeStatus: Equatable {
@@ -24,6 +30,10 @@ final class PortForwardController: ObservableObject {
 
     private weak var proxy: ProxyController?
     private var sessionID: UUID?
+    /// Every profile's definitions, keyed by profile id. `forwards` is the
+    /// live copy of `byProfile[profileID]`; `persist()` folds it back in.
+    private var byProfile: [String: [PortForward]]
+    private var profileID = ""
     /// A setup failure auto-disables only if the native listener never reached
     /// `.listening` during this start attempt.
     private var everListened: Set<UUID> = []
@@ -32,10 +42,39 @@ final class PortForwardController: ObservableObject {
     private let fileURL: URL
 
     init(directory: URL? = nil) {
-        let dir = directory ?? Self.defaultDirectory()
-        Self.prepareDirectory(dir)
-        fileURL = dir.appendingPathComponent("forwards.json")
-        forwards = Self.load([PortForward].self, from: fileURL) ?? []
+        fileURL = (directory ?? JSONStore.directory(named: "PortForwards"))
+            .appendingPathComponent("forwards.json")
+        byProfile = JSONStore.load([String: [PortForward]].self, from: fileURL) ?? [:]
+        // Empty until a profile is selected — `setProfile` fills it.
+        forwards = []
+    }
+
+    // MARK: - Profiles
+
+    /// Show `id`'s forwards. Profiles are only switched from the setup screen,
+    /// with no session up, so there is normally nothing to reconcile — the
+    /// per-session bookkeeping is reset and the set reapplied anyway, so that a
+    /// session that somehow is alive gets this profile's forwards rather than
+    /// keeping the previous profile's listeners.
+    func setProfile(_ id: String) {
+        guard id != profileID else { return }
+        profileID = id
+        forwards = byProfile[id] ?? []
+        everListened.removeAll()
+        retainedSetupErrors.removeAll()
+        runtime = forwards.reduce(into: [:]) { $0[$1.id] = RuntimeStatus() }
+        applyDesired()
+    }
+
+    /// Drop the forwards of profiles that no longer exist, so a deleted
+    /// profile doesn't leave its definitions behind in the file forever.
+    func pruneProfiles(keeping ids: Set<String>) {
+        let stale = byProfile.keys.filter { !ids.contains($0) }
+        guard !stale.isEmpty else { return }
+        for id in stale {
+            byProfile[id] = nil
+        }
+        persist()
     }
 
     // MARK: - Tunnel lifecycle
@@ -183,43 +222,14 @@ final class PortForwardController: ObservableObject {
 
     // MARK: - Persistence
 
-    /// Serial queue for the atomic disk write, so writes stay ordered and the
-    /// file I/O never blocks the main thread — `disableAll()` persists on every
-    /// start tap, and the write carries file-protection attributes.
-    private static let ioQueue = DispatchQueue(
-        label: "dev.flexaccess.flextunnel.portforward-io", qos: .utility)
-
+    /// Fold the live set back into the per-profile map and write the lot. The
+    /// selected profile is the only one that can have changed — except in
+    /// `pruneProfiles`, which can run before a profile is selected and must
+    /// not invent a bucket for the empty id.
     private func persist() {
-        // Encode on the main actor (a deterministic snapshot of current state),
-        // then hand the bytes to the serial queue to write off the main thread.
-        guard let data = try? JSONEncoder().encode(forwards) else { return }
-        let url = fileURL
-        Self.ioQueue.async {
-            try? data.write(
-                to: url,
-                options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        if !profileID.isEmpty {
+            byProfile[profileID] = forwards
         }
-    }
-
-    private static func defaultDirectory() -> URL {
-        let base = (try? FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true)) ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("PortForwards", isDirectory: true)
-    }
-
-    private static func prepareDirectory(_ dir: URL) {
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        var dir = dir
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        try? dir.setResourceValues(values)
-    }
-
-    private static func load<T: Decodable>(_ type: T.Type, from url: URL) -> T? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
+        JSONStore.save(byProfile, to: fileURL)
     }
 }
