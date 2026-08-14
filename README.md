@@ -90,13 +90,18 @@ no vendored copy to stage. To move to a new release, run
    just pick a Team on the `FlextunnelApp` target in Xcode instead.
 
 3. **Run** on a device or the Simulator. Enter:
+   - *Profile* — which saved connection the fields below belong to. Manage… to
+     add, rename or delete one. Each profile keeps its own server, auth key,
+     relays and port forwards, so pointing the app at another server is a pick
+     rather than a retype — but only the selected profile connects, one session
+     at a time (unlike the desktop, where every profile can be up at once).
    - *Server node id* — the flextunnel server's iroh endpoint id.
    - *Auth key* — pick from a named key list (Manage… to generate one on the
      device, paste an existing secret key, or export one); the secrets stay in
      the Keychain, and the shown public key goes on the server's
-     `authorized_keys_file`.
+     `authorized_keys_file`. The list is shared across profiles — the same
+     keypair can authenticate several of them.
    - *Relay URLs* — optional hints; leave blank for iroh defaults.
-   - *SOCKS bind port* — the loopback port the core binds.
 
    Pick **Browse the web** or **Forward ports**, then tap the start button.
    Tunnel health, the bound port, and the active split-tunnel set are shown

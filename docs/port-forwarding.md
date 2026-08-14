@@ -77,7 +77,10 @@ The status line under each enabled forward is live: `listening`,
 `port 8080 is in use`.
 
 Forward definitions persist across launches (as JSON in the app container,
-with the same at-rest protections as bookmarks/history); the toggle state is
+with the same at-rest protections as bookmarks/history) and belong to the
+**connection profile** they were added under — a forward names a host behind
+one particular server, so switching profiles swaps the list and deleting a
+profile takes its forwards with it. The toggle state is
 deliberately **not** part of that — it is runtime-only, so forwards never
 auto-start with a session. Once switched on they work in browser-mode sessions
 too; the management UI just lives in proxy-only mode.
