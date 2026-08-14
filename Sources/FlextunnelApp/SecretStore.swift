@@ -11,9 +11,9 @@ import Security
 enum SecretStore {
     private static let account = "default"
 
-    /// The client auth secret key ("flxtsecretv1:…") — the primary
-    /// credential. Its derived public half is not stored: it's re-derived via
-    /// the FFI whenever the UI needs to show it.
+    /// The named client auth keys — the whole list as one JSON blob of
+    /// {id, name, secret} records (see `AuthKeyStore`). The derived public
+    /// halves are not stored: each is re-derived via the FFI on load.
     static let authKeyService = "com.example.flextunnel.authKey"
     /// The shared bearer token for custom relays — a separate secret so it
     /// survives launches alongside the auth key (custom relays only).

@@ -67,17 +67,13 @@ struct ContentView: View {
     @StateObject private var keepAlive = BackgroundKeepAlive()
 
     @AppStorage("lastServerNodeID") private var serverNodeID = ""
-    // The client auth secret key (Keychain-backed) and its derived public half.
-    // Persisted the moment it's generated or imported — unlike the relay token
-    // there is no "known-good" moment to wait for: the public key must be on
-    // the server's authorized-keys file before the first connect can succeed.
-    @State private var authKey = ""
-    @State private var authPublicKey: String?
-    @State private var authKeyError: String?
-    @State private var showReplaceKeyDialog = false
-    @State private var showExportKeyDialog = false
-    @State private var showEnterKeyAlert = false
-    @State private var enteredSecretKey = ""
+    // The named client auth keys (Keychain-backed; see AuthKeyStore) and the
+    // plain reference to the picked one. Keys persist the moment they're
+    // generated or imported — unlike the relay token there is no "known-good"
+    // moment to wait for: the public key must be on the server's
+    // authorized-keys file before the first connect can succeed.
+    @StateObject private var authKeys = AuthKeyStore()
+    @AppStorage("selectedAuthKeyID") private var selectedAuthKeyID = ""
     @AppStorage("lastRelayURLs") private var relayURLs = ""
     @State private var relayAuthToken = ""
     // Browser mode's loopback SOCKS5 port. Forwarding-only mode has no SOCKS5
@@ -190,34 +186,6 @@ struct ContentView: View {
             }
             .navigationTitle("flextunnel")
             .scrollDismissesKeyboard(.interactively)
-            .confirmationDialog(
-                "Replace the auth key?",
-                isPresented: $showReplaceKeyDialog,
-                titleVisibility: .visible
-            ) {
-                Button("Generate New Key", role: .destructive) { generateAuthKey() }
-            } message: {
-                Text("The server rejects this device until the new public key replaces "
-                    + "the old one on its authorized-keys file.")
-            }
-            .confirmationDialog(
-                "Copy the secret key?",
-                isPresented: $showExportKeyDialog,
-                titleVisibility: .visible
-            ) {
-                Button("Copy Secret Key") { UIPasteboard.general.string = authKey }
-            } message: {
-                Text("Anyone holding the secret key can connect as this device. "
-                    + "Paste it into another device's key import.")
-            }
-            .alert("Enter existing key", isPresented: $showEnterKeyAlert) {
-                SecureField("flxtsecretv1:…", text: $enteredSecretKey)
-                Button("Use Key") { importAuthKey() }
-                Button("Cancel", role: .cancel) { enteredSecretKey = "" }
-            } message: {
-                Text("Paste a secret key generated elsewhere (e.g. by "
-                    + "\"flextunnel generate-auth-private-key\") to reuse its identity.")
-            }
             .fullScreenCover(isPresented: browserIsPresented) {
                 if let browserModel {
                     BrowserView(model: browserModel, proxy: proxy, keepAlive: keepAlive)
@@ -310,90 +278,72 @@ struct ContentView: View {
         }
     }
 
-    /// The auth-key setup row: the public key (never the secret) with a Copy
-    /// button once a key exists, plus the generate / import / export controls.
-    /// The public half is shown unmasked on purpose — it's what goes on the
-    /// server's authorized-keys file. Export never displays the secret either:
-    /// it goes straight to the pasteboard, behind a confirmation.
+    /// The key the connection authenticates with; nil until one is picked
+    /// (or after the picked key was deleted).
+    private var selectedKey: AuthKeyStore.Key? {
+        authKeys.key(id: selectedAuthKeyID)
+    }
+
+    /// The auth-key setup row: a picker over the named key list plus the
+    /// picked key's public half — shown unmasked on purpose, it's what goes
+    /// on the server's authorized-keys file. Everything else (generate,
+    /// import, export, rename, delete) lives on the Keys screen.
     private var authKeyRow: some View {
         LabeledField(
             "Auth key",
-            hint: authPublicKey != nil ? "public key — give it to the server operator" : nil
+            hint: selectedKey != nil ? "public key — give it to the server operator" : nil
         ) {
             VStack(alignment: .leading, spacing: 8) {
-                if let publicKey = authPublicKey {
+                HStack(spacing: 8) {
+                    if authKeys.keys.isEmpty {
+                        Text("No keys yet")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Picker("Auth key", selection: $selectedAuthKeyID) {
+                            if selectedKey == nil {
+                                Text("Pick a key…").tag("")
+                            }
+                            ForEach(authKeys.keys) { key in
+                                Text(key.name).tag(key.id)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .disabled(proxy.phase == .connecting)
+                    }
+                    Spacer(minLength: 4)
+                    NavigationLink {
+                        KeysView(store: authKeys, selectedKeyID: $selectedAuthKeyID)
+                    } label: {
+                        Text("Manage…")
+                            .font(.footnote)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                if let key = selectedKey {
                     HStack(spacing: 8) {
-                        Text(publicKey)
+                        Text(key.publicKey)
                             .font(.footnote.monospaced())
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer(minLength: 4)
                         Button {
-                            UIPasteboard.general.string = publicKey
+                            UIPasteboard.general.string = key.publicKey
                         } label: {
                             Image(systemName: "doc.on.doc")
                         }
                         .buttonStyle(.borderless)
                         .accessibilityLabel("Copy public key")
                     }
-                } else {
-                    Text("No key yet — generate one, then put its public key on the "
+                } else if authKeys.keys.isEmpty {
+                    Text("Add one under Manage, then put its public key on the "
                         + "server's authorized-keys file.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                HStack(spacing: 12) {
-                    if authPublicKey == nil {
-                        Button("Generate Key") { generateAuthKey() }
-                    } else {
-                        Button("Replace…") { showReplaceKeyDialog = true }
-                    }
-                    Button("Enter Existing…") {
-                        enteredSecretKey = ""
-                        showEnterKeyAlert = true
-                    }
-                    if authPublicKey != nil {
-                        Button("Export…") { showExportKeyDialog = true }
-                    }
-                }
-                .font(.footnote)
-                .buttonStyle(.borderless)
-                .disabled(proxy.phase == .connecting)
-                if let authKeyError {
-                    Text(authKeyError)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
             }
         }
-    }
-
-    /// Mint a fresh keypair and make it the device's identity (replacing any
-    /// previous one — gated by the confirmation dialog when one exists).
-    private func generateAuthKey() {
-        guard let pair = AuthKey.generate() else {
-            authKeyError = "Key generation failed."
-            return
-        }
-        setAuthKey(pair.secretKey, publicKey: pair.publicKey)
-    }
-
-    /// Adopt a pasted secret key after validating it by deriving its public half.
-    private func importAuthKey() {
-        let secret = enteredSecretKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        enteredSecretKey = ""
-        guard let publicKey = AuthKey.publicKey(forSecret: secret) else {
-            authKeyError = "Not a valid secret key (expected flxtsecretv1:…)."
-            return
-        }
-        setAuthKey(secret, publicKey: publicKey)
-    }
-
-    private func setAuthKey(_ secret: String, publicKey: String) {
-        authKey = secret
-        authPublicKey = publicKey
-        authKeyError = nil
-        SecretStore.save(secret, service: SecretStore.authKeyService)
     }
 
     /// The keep-alive opt-in: a top-level decision for whichever mode is
@@ -488,14 +438,15 @@ struct ContentView: View {
     }
 
     private var canStartProxy: Bool {
-        // A non-nil public key implies the secret parsed, so the key is usable.
-        !trimmedServerNodeID.isEmpty && authPublicKey != nil
+        // A listed key always has a parsing secret (the store drops corrupt
+        // records on load), so picked means usable.
+        !trimmedServerNodeID.isEmpty && selectedKey != nil
     }
 
     private func currentSettings() -> ProxyController.Settings {
         ProxyController.Settings(
             serverNodeID: trimmedServerNodeID,
-            authKey: authKey,
+            authKey: selectedKey?.secret ?? "",
             // Forwarding-only sessions have no SOCKS listener. Browser mode's
             // random port is held across reconnects.
             socksPort: sessionMode == .browser ? (browserSessionPort ?? 0) : nil,
@@ -510,17 +461,12 @@ struct ContentView: View {
             .filter { !$0.isEmpty }
     }
 
-    /// Prefill the Keychain-backed secrets (auth key, relay token) on first
-    /// appearance. The relay URLs are non-secret and restore via @AppStorage.
-    /// A stored secret that no longer derives a public key (corrupt entry)
-    /// leaves `authPublicKey` nil, so the UI falls back to the generate flow.
+    /// Prefill the Keychain-backed relay token on first appearance (the auth
+    /// keys load themselves in `AuthKeyStore.init`). The relay URLs are
+    /// non-secret and restore via @AppStorage.
     private func loadStoredSecrets() {
         guard !didLoadSecrets else { return }
         didLoadSecrets = true
-        if let secret = SecretStore.load(service: SecretStore.authKeyService) {
-            authKey = secret
-            authPublicKey = AuthKey.publicKey(forSecret: secret)
-        }
         if let relayToken = SecretStore.load(service: SecretStore.relayTokenService) {
             relayAuthToken = relayToken
         }

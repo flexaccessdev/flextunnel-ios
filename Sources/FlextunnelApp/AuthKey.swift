@@ -1,11 +1,11 @@
 import Foundation
 
-/// The device's client auth keypair, via the Rust FFI. The secret key
-/// ("flxtsecretv1:…") lives in the Keychain (`SecretStore.authKeyService`)
-/// and authenticates the tunnel handshake; the public key
+/// Client auth keypair primitives, via the Rust FFI. A secret key
+/// ("flxtsecretv1:…") authenticates the tunnel handshake; its public key
 /// ("flxtpubv1:…") is not a secret — it's what the user puts on the
-/// server's authorized-keys file, and it's re-derived from the secret whenever
-/// the UI needs to show it rather than stored separately.
+/// server's authorized-keys file, and it's re-derived from the secret
+/// whenever needed rather than stored. The app's named key list lives in
+/// `AuthKeyStore`.
 enum AuthKey {
     struct Keypair {
         let secretKey: String
