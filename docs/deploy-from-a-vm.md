@@ -9,13 +9,13 @@ phones attached to bare metal.
 
 ## The one-command version
 
-Everything below is automated by `ci/device.sh`, which builds and signs here,
+Everything below is automated by `scripts/run-device-ios-host.sh`, which builds and signs here,
 ships the `.app` to the `machost` ssh alias, and installs and launches it on the
 paired iPhone:
 
 ```sh
-ci/device.sh            # build, ship, install, launch
-ci/device.sh doctor     # what that host has paired, and whether it can see the phone
+scripts/run-device-ios-host.sh            # build, ship, install, launch
+scripts/run-device-ios-host.sh doctor     # what that host has paired, and whether it can see the phone
 ```
 
 Read on for what it is doing and why the split exists at all; see

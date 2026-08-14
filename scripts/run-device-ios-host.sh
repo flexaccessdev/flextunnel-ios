@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Build here, run on the phone over there.
 #
-#   ci/device.sh                 # build, install and launch on the paired iPhone
-#   ci/device.sh install         # same, without launching
-#   ci/device.sh devices         # what the host Mac has paired
-#   ci/device.sh doctor          # report on the host, change nothing
-#   ci/device.sh clean           # drop the staging directory on the host
+# run-device-ios.sh's twin for a phone this machine cannot reach: same build,
+# same install and launch, with an ssh hop to the Mac that is paired with the
+# device in between. Use the plain one when the phone is on this machine's USB
+# bus; use this one from the VM.
+#
+#   scripts/run-device-ios-host.sh                 # build, install and launch on the paired iPhone
+#   scripts/run-device-ios-host.sh install         # same, without launching
+#   scripts/run-device-ios-host.sh devices         # what the host Mac has paired
+#   scripts/run-device-ios-host.sh doctor          # report on the host, change nothing
+#   scripts/run-device-ios-host.sh clean           # drop the staging directory on the host
 #
 # This checkout normally lives in a macOS VM, which can do everything except
 # touch the hardware: it compiles, it signs (the phone's UDID is in the
@@ -15,16 +20,27 @@
 # only be bootstrapped over USB, and the pairing records are sealed in a data
 # vault that cannot be copied out. docs/deploy-from-a-vm.md has the long version.
 #
-# So the split is not build-vs-build. Everything is built and signed *here*, by
-# ci/ci.sh's `device` job; the host Mac is only ever handed a finished .app to
-# install and launch. That keeps the toolchain in one place — the host needs no
-# xcodegen, no Rust, no checkout of this repo.
+# So the split is not build-vs-build. Everything is built and signed *here*; the
+# host Mac is only ever handed a finished .app to install and launch. That keeps
+# the toolchain in one place — the host needs no xcodegen, no Rust, no checkout
+# of this repo.
+#
+# The build is the one scripts/run-device-ios.sh makes — regenerate from
+# project.yml, then xcodebuild against generic/platform=iOS with -sdk iphoneos,
+# signing automatically off DEVELOPMENT_TEAM — at Release rather than Debug. This
+# is what goes on real hardware, so it is the optimised build: Debug's -Onone
+# changes how anything timing-sensitive in the tunnel behaves. ci/ci.sh's `device`
+# job stays Debug; it is a compile-and-sign check that nobody runs on a phone.
+# Pass --configuration Debug when you want a debuggable slice instead.
 #
 # Overrides:
 #   FLEXTUNNEL_IOS_HOST     ssh target        (default: the 'machost' alias)
 #   FLEXTUNNEL_IOS_DEVICE   device selector   (default: iPhone) — matched against
 #                           the CoreDevice identifier, the hardware UDID, or the
 #                           device name, and required to match exactly one
+#   FLEXTUNNEL_IOS_CONFIG   build configuration  (default: Release)
+#   FLEXTUNNEL_IOS_TEAM     signing team      (default: DEVELOPMENT_TEAM out of
+#                           Developer.local.xcconfig)
 #   FLEXTUNNEL_IOS_STAGING  staging area on the host
 #                           (default: codes/staging-area under its login home)
 set -euo pipefail
@@ -35,11 +51,15 @@ BUNDLE_ID=dev.flexaccess.flextunnel
 # PRODUCT_NAME, which project.yml keeps deliberately distinct from the target and
 # scheme name (FlextunnelApp).
 PRODUCT_APP=Flextunnel.app
-APP_PATH=build/ci/DerivedData-device/Build/Products/Debug-iphoneos/$PRODUCT_APP
+SCHEME=FlextunnelApp
+# Its own DerivedData: ci/ci.sh keeps its Debug device build under build/ci and
+# run-device-ios.sh uses build/DerivedData, and none of the three should be
+# overwriting another's products.
+DERIVED_DATA=build/DerivedData-device
 
 usage() {
     cat >&2 <<'USAGE'
-usage: ci/device.sh [options] [run|install|status|devices|doctor|clean]
+usage: scripts/run-device-ios-host.sh [options] [run|install|status|devices|doctor|clean]
 
   run       build, ship, install, launch   (default)
   install   build, ship, install
@@ -50,8 +70,13 @@ usage: ci/device.sh [options] [run|install|status|devices|doctor|clean]
 
 options:
   --device SELECTOR   identifier, UDID or name of the target device
+  -c, --configuration NAME
+                      build configuration (default: Release)
+  --local             link the local ../flextunnel build instead of the pinned
+                      xcframework release
+  --team TEAM_ID      signing team (default: from Developer.local.xcconfig)
   --no-build          ship the existing build instead of rebuilding
-  --app PATH          ship this .app instead of the one ci/ci.sh device builds
+  --app PATH          ship this .app instead of the one this script builds
   --console           launch attached, streaming the app's stdout/stderr here
 USAGE
     exit 2
@@ -59,14 +84,21 @@ USAGE
 
 target=${FLEXTUNNEL_IOS_HOST:-machost}
 selector=${FLEXTUNNEL_IOS_DEVICE:-iPhone}
+configuration=${FLEXTUNNEL_IOS_CONFIG:-Release}
+team=${FLEXTUNNEL_IOS_TEAM:-}
+xcframework=pinned
 build=1
 console=0
-app=$APP_PATH
+app=
 command=
 
 while [ $# -gt 0 ]; do
     case $1 in
         --device) selector=${2:-}; [ -n "$selector" ] || usage; shift 2 ;;
+        -c|--configuration)
+                  configuration=${2:-}; [ -n "$configuration" ] || usage; shift 2 ;;
+        --team)   team=${2:-}; [ -n "$team" ] || usage; shift 2 ;;
+        --local)  xcframework=local; shift ;;
         --app)    app=${2:-}; [ -n "$app" ] || usage; build=0; shift 2 ;;
         --no-build) build=0; shift ;;
         --console)  console=1; shift ;;
@@ -78,9 +110,47 @@ while [ $# -gt 0 ]; do
     esac
 done
 command=${command:-run}
+# Follows --configuration, so --no-build after it picks up the right slice.
+app=${app:-$DERIVED_DATA/Build/Products/$configuration-iphoneos/$PRODUCT_APP}
 
 info() { echo "[device] $*"; }
 die() { echo "[device] error: $*" >&2; exit 1; }
+
+# The signed device slice, built the way scripts/run-device-ios.sh builds it.
+# generic/platform=iOS + -sdk iphoneos produces the arm64 device build without
+# the hardware UDID — which is what makes a device-less build machine work: the
+# phone's UDID only has to be in the provisioning profile, not on this machine's
+# USB bus. Which xcframework gets linked is baked in at generation time, not
+# build time, so the mode is chosen here rather than passed to xcodebuild.
+build_app() {
+    command -v xcodegen >/dev/null || die 'xcodegen not found (brew install xcodegen)'
+    command -v xcodebuild >/dev/null || die 'xcodebuild not found — install Xcode and run xcode-select'
+    if [ -z "$team" ]; then
+        team=$(awk -F= '/^[[:space:]]*DEVELOPMENT_TEAM[[:space:]]*=/ {
+            sub(/\/\/.*$/, "", $2); gsub(/[[:space:]"]/, "", $2); if ($2 != "") { print $2; exit } }' \
+            Developer.local.xcconfig 2>/dev/null || true)
+    fi
+    [ -n "$team" ] || die 'no DEVELOPMENT_TEAM — copy Developer.local.xcconfig.sample to Developer.local.xcconfig and fill it in, or pass --team'
+
+    info "building the signed device slice here: $configuration, team $team, $xcframework xcframework"
+    if [ "$xcframework" = local ]; then
+        [ -e Packages/Flextunnel/local/libflextunnel.xcframework ] \
+            || die 'local xcframework not found — run (cd ../flextunnel && ./build-ios.sh release)'
+        FLEXTUNNEL_LOCAL_XCFRAMEWORK=1 xcodegen generate
+    else
+        env -u FLEXTUNNEL_LOCAL_XCFRAMEWORK xcodegen generate
+    fi
+
+    xcodebuild build \
+        -project Flextunnel.xcodeproj \
+        -scheme "$SCHEME" \
+        -configuration "$configuration" \
+        -destination 'generic/platform=iOS' \
+        -sdk iphoneos \
+        -derivedDataPath "$DERIVED_DATA" \
+        -allowProvisioningUpdates \
+        DEVELOPMENT_TEAM="$team"
+}
 
 if [ -n "${FLEXTUNNEL_IOS_STAGING:-}" ]; then
     staging=$FLEXTUNNEL_IOS_STAGING
@@ -219,11 +289,18 @@ if [ "$command" = status ]; then
 fi
 
 if [ "$build" = 1 ]; then
-    info 'building the signed device slice here'
-    ./ci/ci.sh device
+    build_app
 fi
 [ -d "$app" ] || die "no app at $app — build it, or pass --app"
 codesign --verify --strict "$app" >/dev/null 2>&1 || die "$app is not validly signed"
+# Who signed it, before it leaves this machine — the one thing about the build
+# that decides whether the phone will accept it.
+# Captured whole and parsed after: a `| head -1` closes the pipe early and
+# SIGPIPEs codesign under pipefail. --verbose=2 because the default -dv does not
+# print the Authority chain at all.
+signature=$(codesign -dv --verbose=2 "$app" 2>&1)
+info "signed: $(awk -F= '/^Authority=/ { print $2; exit }' <<<"$signature") (team $(awk -F= '/^TeamIdentifier=/ { print $2; exit }' <<<"$signature"))"
+info "$app"
 
 # Claim the staging area: the workspace is single and shared, and a second run
 # would replace the .app a first one is mid-install from. mkdir on an existing
@@ -268,7 +345,7 @@ info "launching $BUNDLE_ID"
 launch_args="--device '$device_id' '$BUNDLE_ID'"
 # A locked phone refuses the launch (CoreDeviceError 10002) while the install
 # still stands, so the message below says as much. Note that a *successful*
-# launch does not wake a sleeping screen either — `ci/device.sh status` is how
+# launch does not wake a sleeping screen either — `scripts/run-device-ios-host.sh status` is how
 # you tell the two apart.
 if [ "$console" = 1 ]; then
     # -t: --console keeps streaming the app's output until interrupted, which

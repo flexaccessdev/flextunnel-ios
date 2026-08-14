@@ -8,15 +8,15 @@ is split along that line, and only along that line:
 | | Where | Entry point |
 | --- | --- | --- |
 | Build, Simulator, signing, the workflow checks | here, in the VM | `ci/ci.sh` |
-| Install and launch on the iPhone | `machost`, over ssh | `ci/device.sh` |
+| Install and launch on the iPhone | `machost`, over ssh | `scripts/run-device-ios-host.sh` |
 
 ```sh
 ci/ci.sh                # the default jobs, all local
 ci/ci.sh unsigned       # just one
 ci/ci.sh --list         # what jobs exist
 
-ci/device.sh            # build here, install + launch on the phone
-ci/device.sh doctor     # report on the host, change nothing
+scripts/run-device-ios-host.sh            # build here, install + launch on the phone
+scripts/run-device-ios-host.sh doctor     # report on the host, change nothing
 ```
 
 Both run against the working tree as it stands, uncommitted changes included —
@@ -60,9 +60,9 @@ that Actions does not bother with:
   profile baked in, and the background-location keys still in `Info.plist`. The
   packaging that workflow does after that (IPA, archive zip, checksums,
   prerelease) is release plumbing and is deliberately not repeated here.
-- **`device`** — the signed device slice. This is the artifact `ci/device.sh`
-  installs, and running the job on its own is a fast check that signing still
-  resolves.
+- **`device`** — the signed device slice, at Debug: a compile-and-sign check, so
+  running the job on its own tells you signing still resolves. It is not what
+  goes on the phone — `scripts/run-device-ios-host.sh` builds its own Release slice (below).
 - **`ffi`** — `.github/workflows/verify-flextunnel-commit.yml`, against the
   sibling `../flextunnel` **working tree** rather than a pinned commit: rebuild
   `libflextunnel.xcframework` with `build-ios.sh release`, regenerate with
@@ -80,13 +80,24 @@ enforces that.
 ## Running on the phone
 
 ```sh
-ci/device.sh                    # build, ship, install, launch
-ci/device.sh install            # stop after installing
-ci/device.sh status             # is it installed on the phone, and is it running
-ci/device.sh --console          # launch attached, app stdout/stderr streamed here
-ci/device.sh devices            # what machost has paired
-ci/device.sh clean              # drop the staging directory on machost
+scripts/run-device-ios-host.sh                    # build, ship, install, launch
+scripts/run-device-ios-host.sh install            # stop after installing
+scripts/run-device-ios-host.sh status             # is it installed on the phone, and is it running
+scripts/run-device-ios-host.sh --console          # launch attached, app stdout/stderr streamed here
+scripts/run-device-ios-host.sh devices            # what machost has paired
+scripts/run-device-ios-host.sh clean              # drop the staging directory on machost
+
+scripts/run-device-ios-host.sh -c Debug           # debuggable slice instead of the Release default
+scripts/run-device-ios-host.sh --local            # link the local ../flextunnel build (FFI dev)
 ```
+
+This builds **Release** — the same `xcodebuild` invocation
+`scripts/run-device-ios.sh` makes (`generic/platform=iOS`, `-sdk iphoneos`,
+automatic signing off `DEVELOPMENT_TEAM`), into its own
+`build/DerivedData-device`. What runs on real hardware should be the optimised
+build; Debug's `-Onone` changes how anything timing-sensitive in the tunnel
+behaves. `--no-build` ships whatever is already there, and `--app PATH` ships a
+bundle from somewhere else entirely.
 
 **A successful run is not necessarily visible on the phone.** `devicectl`
 launches the process but will not wake a sleeping screen, so over Wi-Fi an
@@ -94,7 +105,7 @@ install that worked looks exactly like one that did nothing until you unlock the
 device. That is what `status` is for: it reports the installed version and the
 running processes — the app and, separately, its widget extension.
 
-`run` builds via `ci/ci.sh device`, packs the `.app` with `ditto`, ships it to
+`run` builds the slice, packs the `.app` with `ditto`, ships it to
 `machost`, re-verifies the signature **on the far end** (a transfer that damaged
 the bundle shows up there, not as a cryptic `devicectl` error), then installs and
 launches by CoreDevice identifier.

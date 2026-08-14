@@ -9,7 +9,7 @@
 # device — which is the point, because this checkout usually lives in a macOS
 # VM. A guest can compile, sign, and run the Simulator (the Simulator is not a
 # virtual machine; it is a userspace runtime on this kernel), but it can never
-# pair with an iPhone. The half that needs the hardware is ci/device.sh, which
+# pair with an iPhone. The half that needs the hardware is scripts/run-device-ios-host.sh, which
 # hands the *signed build produced here* to the Mac the phone is attached to.
 # docs/local-ci.md draws the line; docs/deploy-from-a-vm.md explains why it is
 # where it is.
@@ -19,7 +19,7 @@
 #   smoke      boot a simulator, install the build, launch it, check it stays up
 #   unsigned   Release device archive with signing off, plus the bundle
 #              assertions from .github/workflows/unsigned-ios.yml
-#   device     signed device-slice .app — the artifact ci/device.sh installs
+#   device     signed device-slice .app — the artifact scripts/run-device-ios-host.sh installs
 #   ffi        rebuild libflextunnel from the sibling ../flextunnel working tree
 #              and link against it (.github/workflows/verify-flextunnel-commit.yml)
 #
