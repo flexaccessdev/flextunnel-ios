@@ -43,6 +43,10 @@ There are two ways to use the tunnel, chosen on the setup screen:
   without it.
 - [Local FFI development](docs/local-ffi-development.md) — building against a
   local `../flextunnel` Rust checkout instead of the pinned release.
+- [Running CI locally](docs/local-ci.md) — `ci/ci.sh` runs the workflows' checks
+  against the working tree here (Simulator build, a launch smoke test, the
+  unsigned-archive assertions, the signed device slice); `ci/device.sh` ships
+  that signed build to the Mac the iPhone is attached to and installs it there.
 - [Building in a macOS VM](docs/deploy-from-a-vm.md) — why a UTM/Tart guest can
   never install onto a physical device, and the build-in-the-VM /
   install-from-the-host split that works instead.
