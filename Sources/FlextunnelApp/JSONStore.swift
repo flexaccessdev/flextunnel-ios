@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The app's small on-disk JSON stores — connection profiles and port-forward
 /// definitions. Non-secret data only: secrets live in the Keychain
@@ -12,6 +13,13 @@ enum JSONStore {
     /// in a settings field and on every forward toggle.
     private static let ioQueue = DispatchQueue(
         label: "dev.flexaccess.flextunnel.json-store-io", qos: .utility)
+
+    /// A failed write is silent to the user — the setting is on screen, it just
+    /// won't survive the next launch — so the log is the only way to tell that
+    /// apart from a bug in the store. File names only: the container path
+    /// carries an install-specific UUID and says nothing useful.
+    private static let log = Logger(
+        subsystem: "dev.flexaccess.flextunnel", category: "storage")
 
     /// An Application Support subdirectory. Not created here — `save` creates
     /// it on the way to the first write.
@@ -32,7 +40,14 @@ enum JSONStore {
     /// Encode on the calling (main) actor — a deterministic snapshot of current
     /// state — then hand the bytes to the serial queue to write.
     static func save<T: Encodable>(_ value: T, to url: URL) {
-        guard let data = try? JSONEncoder().encode(value) else { return }
+        let name = url.lastPathComponent
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(value)
+        } catch {
+            log.error("Encoding \(name, privacy: .public) failed: \(error, privacy: .public)")
+            return
+        }
         ioQueue.async {
             var directory = url.deletingLastPathComponent()
             try? FileManager.default.createDirectory(
@@ -40,9 +55,13 @@ enum JSONStore {
             var values = URLResourceValues()
             values.isExcludedFromBackup = true
             try? directory.setResourceValues(values)
-            try? data.write(
-                to: url,
-                options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            do {
+                try data.write(
+                    to: url,
+                    options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            } catch {
+                log.error("Writing \(name, privacy: .public) failed: \(error, privacy: .public)")
+            }
         }
     }
 }

@@ -50,13 +50,11 @@ struct ProfilesView: View {
         ) { profile in
             TextField("Name", text: $nameField)
             Button("Rename") {
-                if let error = store.rename(id: profile.id, to: nameField) {
-                    errorMessage = error.message
-                }
+                guard let error = store.rename(id: profile.id, to: nameField) else { return }
+                renameTarget = nil
+                report(error.message)
             }
             Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("")
         }
         .confirmationDialog(
             "Delete this profile?",
@@ -65,9 +63,9 @@ struct ProfilesView: View {
             presenting: deleteTarget
         ) { profile in
             Button("Delete \"\(profile.name)\"", role: .destructive) {
-                if let error = store.delete(id: profile.id) {
-                    errorMessage = error.message
-                }
+                guard let error = store.delete(id: profile.id) else { return }
+                deleteTarget = nil
+                report(error.message)
             }
         } message: { _ in
             Text("Its server, relays, port forwards and relay auth token are "
@@ -132,9 +130,18 @@ struct ProfilesView: View {
     }
 
     private func addProfile() {
-        if case .failure(let error) = store.add(name: nameField) {
-            errorMessage = error.message
-        }
+        guard case .failure(let error) = store.add(name: nameField) else { return }
+        showAddAlert = false
+        report(error.message)
+    }
+
+    /// Surface a validation failure on the next main-actor turn, after the
+    /// alert or dialog it came from has been dismissed. Asking for a second
+    /// alert in the same update as the first one's dismissal drops it, and the
+    /// message would never appear — every caller clears its own presentation
+    /// state first, so the two are never requested together.
+    private func report(_ message: String) {
+        Task { @MainActor in errorMessage = message }
     }
 
     /// A presence binding for `.alert`/`.confirmationDialog(presenting:)`:

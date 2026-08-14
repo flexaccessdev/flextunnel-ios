@@ -357,6 +357,9 @@ struct ContentView: View {
                     .font(.footnote)
             }
             .buttonStyle(.borderless)
+            // Two rows on this screen show "Manage…"; spell out which is which
+            // for VoiceOver, where the surrounding label isn't read with it.
+            .accessibilityLabel("Manage profiles")
         }
     }
 
@@ -396,6 +399,7 @@ struct ContentView: View {
                             .font(.footnote)
                     }
                     .buttonStyle(.borderless)
+                    .accessibilityLabel("Manage auth keys")
                 }
                 if let key = selectedKey {
                     HStack(spacing: 8) {
