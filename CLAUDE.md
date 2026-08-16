@@ -7,3 +7,4 @@
 - target iOS 26 unless the webkit is downgraded to WKWebView
 - regenerate the project from project.yml after code changes (`xcodegen generate`)
 - build/verify against the simulator with arm64 forced, no device/OS pinned: `xcodebuild -project Flextunnel.xcodeproj -scheme FlextunnelApp -destination 'generic/platform=iOS Simulator' ARCHS=arm64 build` — the libflextunnel.xcframework is arm64-only, so a generic destination without `ARCHS=arm64` picks x86_64 and fails to link (`arch=` is not a valid destination key; only `ARCHS` works). To run on a booted simulator instead, name it: `-destination 'platform=iOS Simulator,name=iPhone 17'` (leave `OS=` off so it tracks whatever runtime is installed)
+- always use uv to run python scripts

@@ -45,9 +45,10 @@ The window is refilled by any of:
 - **an open port-forward connection** — while any forward is carrying traffic
   (already polled at 1 Hz), the session is in use even if the device is sitting
   still, e.g. SSH from a desk;
-- **the app coming to the front, or going away** — so time spent in the app never
-  eats the window and the limit caps one stretch of backgrounded time rather than
-  the whole session.
+- **the app being in front** — the window is refilled on every check while the
+  app is in the foreground (and once more on going away), so time spent in the
+  app never eats the window and the limit caps one stretch of backgrounded time
+  rather than the whole session.
 
 The window is checked once a minute against a wall clock (not armed as a one-shot
 at the deadline), so a coalesced timer fire can't silently extend it and a
@@ -81,6 +82,10 @@ no longer on offer falls back to the default.
 - it starts and stops with the session (`setSessionActive`), so the system's
   location indicator never outlives the tunnel — turning the toggle on at the
   start screen starts no location session by itself;
+- with When In Use authorization a location session only holds the process if it
+  was started in the foreground, so a start that would land while the app is
+  backgrounded is skipped (rather than claiming `active` while holding nothing)
+  and retried on the next foreground;
 - expect the location-in-use indicator while a session runs — that's iOS
   truthfully reporting the active location session.
 

@@ -1,6 +1,7 @@
 import CoreLocation
 import Foundation
 import SwiftUI
+import UIKit
 
 /// Location-based background keep-alive, common to both session modes — the
 /// same technique Termius and Blink use: while a continuous Core Location
@@ -92,6 +93,9 @@ final class BackgroundKeepAlive: NSObject, ObservableObject {
     /// actually moved, so slow drift accumulates instead of resetting per fix.
     private var movementAnchor: CLLocation?
     private var idleTimer: Timer?
+    /// Retries a start that was skipped because the app was backgrounded (see
+    /// `startUpdates`) once the app is in front again.
+    private var foregroundObserver: NSObjectProtocol?
 
     override init() {
         let manager = CLLocationManager()
@@ -104,6 +108,19 @@ final class BackgroundKeepAlive: NSObject, ObservableObject {
         authorization = manager.authorizationStatus
         super.init()
         manager.delegate = self
+        // A start can only take effect in the foreground (see `startUpdates`);
+        // one that was skipped while backgrounded is retried here.
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.reconcile() }
+        }
+    }
+
+    deinit {
+        if let foregroundObserver {
+            NotificationCenter.default.removeObserver(foregroundObserver)
+        }
     }
 
     /// Location permission is missing, so the session dies shortly after
@@ -229,6 +246,13 @@ final class BackgroundKeepAlive: NSObject, ObservableObject {
 
     private func startUpdates() {
         guard !isRunning else { return }
+        // With When In Use authorization, a location session only holds the
+        // process if it was started in the foreground — one started while the
+        // app is already backgrounded delivers nothing, yet `isRunning` would
+        // read true and `ContentView` would skip arming the on-return recovery
+        // (`wasSuspended`) on the strength of it. Skip instead, truthfully not
+        // running; the `didBecomeActive` observer retries once in front.
+        guard UIApplication.shared.applicationState != .background else { return }
         manager.desiredAccuracy = 100_000 // coarse on purpose: no GPS, minimal battery
         manager.pausesLocationUpdatesAutomatically = false
         // Requires the `location` UIBackgroundModes entry in Info.plist.
@@ -267,6 +291,15 @@ final class BackgroundKeepAlive: NSObject, ObservableObject {
 
     private func checkIdle() {
         guard isRunning else { return }
+        // The app being in front is activity in itself — browsing produces no
+        // other signal (no forward connections, movement only past 500 m) — so
+        // refill the window on every check rather than expiring a session the
+        // user is looking at. The scene-phase refills in `ContentView` cover
+        // the transitions; this covers a foreground stint longer than the limit.
+        if UIApplication.shared.applicationState == .active {
+            lastActivity = Date()
+            return
+        }
         guard Date().timeIntervalSince(lastActivity) >= Double(timeoutMinutes) * 60 else { return }
         timedOut = true
         // Before letting go: the app is still definitely alive here, which the
