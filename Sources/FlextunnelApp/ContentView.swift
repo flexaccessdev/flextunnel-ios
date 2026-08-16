@@ -667,8 +667,9 @@ struct ContentView: View {
     /// `wasSuspended` flag the app would come back with defunct sockets that
     /// still read "connected".
     private func handleKeepAliveTimeout() {
-        // The limit can only be reached while away (foregrounding is activity);
-        // if we are in front, nothing is about to be suspended.
+        // The limit can only be reached while away (the keep-alive's idle check
+        // refills the window whenever the app is in front); if we are in front
+        // anyway, nothing is about to be suspended.
         guard scenePhase != .active else { return }
         wasSuspended = true
         proxy.backgroundLiveActivityRefreshEnabled = false
