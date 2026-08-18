@@ -69,12 +69,12 @@ struct KeysView: View {
         }
         .alert("Enter existing key", isPresented: $showImportAlert) {
             TextField("Name (e.g. work laptop)", text: $nameField)
-            SecureField("flxtsecretv1:…", text: $secretField)
+            SecureField("ed25519-sec:…", text: $secretField)
             Button("Add Key") { importKey() }
             Button("Cancel", role: .cancel) { secretField = "" }
         } message: {
             Text("Paste a secret key generated elsewhere — exported from the "
-                + "desktop app, or by \"flextunnel generate-auth-private-key\" — "
+                + "desktop app, or by \"flexaccess-keys generate-auth-key\" — "
                 + "to reuse its identity.")
         }
         .alert(

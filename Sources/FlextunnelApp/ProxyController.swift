@@ -108,7 +108,7 @@ final class ProxyController: ObservableObject {
     /// Connection parameters entered in the UI.
     struct Settings {
         var serverNodeID: String
-        /// The client auth secret key ("flxtsecretv1:…"); its public
+        /// The client auth secret key ("ed25519-sec:…"); its public
         /// half must be on the server's authorized-keys file.
         var authKey: String
         /// Loopback SOCKS5 port for browser mode. `nil` means a forwarding-only
