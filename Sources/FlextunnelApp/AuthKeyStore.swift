@@ -68,7 +68,7 @@ final class AuthKeyStore: ObservableObject {
         }
         let secret = secret.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let publicKey = AuthKey.publicKey(forSecret: secret) else {
-            return .failure(.init(message: "Not a valid secret key (expected flxtsecretv1:…)."))
+            return .failure(.init(message: "Not a valid secret key (expected ed25519-sec:…)."))
         }
         if let other = keys.first(where: { $0.publicKey == publicKey }) {
             return .failure(.init(message: "Key \"\(other.name)\" already holds this secret."))

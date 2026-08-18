@@ -1,8 +1,8 @@
 import Foundation
 
 /// Client auth keypair primitives, via the Rust FFI. A secret key
-/// ("flxtsecretv1:…") authenticates the tunnel handshake; its public key
-/// ("flxtpubv1:…") is not a secret — it's what the user puts on the
+/// ("ed25519-sec:…") authenticates the tunnel handshake; its public key
+/// ("ed25519-pub:…") is not a secret — it's what the user puts on the
 /// server's authorized-keys file, and it's re-derived from the secret
 /// whenever needed rather than stored. The app's named key list lives in
 /// `AuthKeyStore`.
