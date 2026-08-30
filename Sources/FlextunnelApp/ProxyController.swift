@@ -400,6 +400,19 @@ final class ProxyController: ObservableObject {
         start(lastSettings)
     }
 
+    /// Suspension is imminent: close the core's local listeners (the SOCKS5
+    /// front-end and every forward listener) so local clients get an immediate
+    /// connection-refused instead of hanging in a frozen process's accept
+    /// backlog. One-way for this handle — the on-foreground recovery
+    /// (`recoverFromSuspension`) relaunches the session, which rebinds
+    /// everything. Guarded to `.connected` because that recovery only
+    /// relaunches connected sessions; pausing any other phase would orphan a
+    /// handle that never gets its listeners back.
+    func closeListenersForSuspension() {
+        guard phase == .connected, let handle else { return }
+        _ = flextunnel_close_listeners(handle)
+    }
+
     /// Called on return to foreground. `connectDeadline` is wall-clock, so time
     /// spent suspended would count against a still-pending first connect and
     /// fail it spuriously on the first resumed poll; grant a fresh window.

@@ -94,10 +94,14 @@ What matters specifically for forwards:
   reaching the limit falls back to the suspension case below, and returning to
   the app rebinds everything.
 - **With it off or location denied**, extended execution keeps serving for
-  roughly **30 seconds** after backgrounding, then iOS suspends the process and
-  defuncts the forward listeners. On return the session is **relaunched
-  automatically** — fresh tunnel connect, every enabled forward rebound — so
-  expect a brief "connecting", and clients that were connected must reconnect.
+  roughly **30 seconds** after backgrounding, then iOS suspends the process.
+  Just before that the app **closes every listener** (forwards and, in browser
+  sessions, the SOCKS front-end): a suspended process's listeners would keep
+  accepting into the kernel backlog and serve nothing, so closing turns a
+  client's hang into an immediate connection-refused. On return the session is
+  **relaunched automatically** — fresh tunnel connect, every enabled forward
+  rebound — so expect a brief "connecting", and clients that were connected
+  must reconnect.
 
 ## What forwards are (and aren't) good for
 

@@ -613,6 +613,11 @@ struct ContentView: View {
                 // next foreground rebinds them.
                 wasSuspended = !keepAlive.isRunning
                 if wasSuspended {
+                    // A suspended process's listeners keep accepting into the
+                    // kernel backlog and serve nothing; close them while we can
+                    // still run so local clients get refused instead of hanging.
+                    // The relaunch on return rebinds them.
+                    proxy.closeListenersForSuspension()
                     // Suspended: the banner can no longer be kept fresh, so dismiss
                     // it now (≈ the grace after backgrounding). Hold the task
                     // assertion until the async dismissal actually registers, then
@@ -659,6 +664,9 @@ struct ContentView: View {
         // anyway, nothing is about to be suspended.
         guard scenePhase != .active else { return }
         wasSuspended = true
+        // Same as the background-grace expiration handler: don't leave
+        // black-hole listeners behind while suspended.
+        proxy.closeListenersForSuspension()
         proxy.backgroundLiveActivityRefreshEnabled = false
         // Its own assertion: the backgrounding grace expired long ago, so
         // `backgroundTask` is spent. Held until the async dismissal registers,
