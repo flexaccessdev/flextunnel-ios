@@ -194,6 +194,8 @@ struct ContentView: View {
                             .font(.footnote)
                     }
                 }
+
+                AppVersionFooter()
             }
             .navigationTitle("flextunnel")
             .scrollDismissesKeyboard(.interactively)

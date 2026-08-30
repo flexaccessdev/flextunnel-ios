@@ -13,6 +13,7 @@ REPO="flexaccessdev/flextunnel"
 ASSET="libflextunnel-ios.xcframework.zip"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFEST="$SCRIPT_DIR/../Packages/Flextunnel/Package.swift"
+PROJECT_SPEC="$SCRIPT_DIR/../project.yml"
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -36,6 +37,14 @@ sed -E \
   "$MANIFEST" > "$TMP/Package.swift"
 mv "$TMP/Package.swift" "$MANIFEST"
 
-echo "Updated $MANIFEST:"
+# The app shows the linked core's version in its footer; that number lives in
+# project.yml (-> Info.plist FlextunnelCoreVersion) and is only right if it moves
+# with the pin above.
+sed -E "s/FLEXTUNNEL_CORE_VERSION: \"[^\"]*\"/FLEXTUNNEL_CORE_VERSION: \"${TAG#v}\"/" \
+  "$PROJECT_SPEC" > "$TMP/project.yml"
+mv "$TMP/project.yml" "$PROJECT_SPEC"
+
+echo "Updated $MANIFEST and $PROJECT_SPEC:"
 echo "  tag:      $TAG"
 echo "  checksum: $CHECKSUM"
+echo "  core version in footer: ${TAG#v}"

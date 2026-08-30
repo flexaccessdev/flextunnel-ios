@@ -39,6 +39,8 @@ struct ProxyOnlyView: View {
                         Label("Stop Forwarding", systemImage: "stop.circle")
                     }
                 }
+
+                AppVersionFooter()
             }
             .navigationTitle("Port Forwarding")
             .navigationBarTitleDisplayMode(.inline)

@@ -18,6 +18,11 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<!-- The flextunnel core (Rust xcframework) this build links, so the version
+	     footer can name it. Set from project.yml, which scripts/bump-xcframework.sh
+	     keeps in step with the release pinned in Packages/Flextunnel/Package.swift. -->
+	<key>FlextunnelCoreVersion</key>
+	<string>$(FLEXTUNNEL_CORE_VERSION)</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UIApplicationSceneManifest</key>

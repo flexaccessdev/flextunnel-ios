@@ -24,6 +24,8 @@ struct ProfilesView: View {
                     + "the one that connects. Its server, auth key, relays and "
                     + "port forwards are remembered separately from the others'.")
             }
+
+            AppVersionFooter()
         }
         .navigationTitle("Profiles")
         .toolbar {

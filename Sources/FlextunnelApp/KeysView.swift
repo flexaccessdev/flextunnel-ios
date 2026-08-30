@@ -38,6 +38,8 @@ struct KeysView: View {
                         + "Its public key goes on the server's authorized-keys file.")
                 }
             }
+
+            AppVersionFooter()
         }
         .navigationTitle("Auth Keys")
         .toolbar {
