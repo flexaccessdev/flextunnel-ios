@@ -79,12 +79,6 @@ struct ContentView: View {
     // succeed.
     @StateObject private var authKeys = AuthKeyStore()
     @State private var relayAuthToken = ""
-    // Browser mode's loopback SOCKS5 port. Forwarding-only mode has no SOCKS5
-    // listener. This is picked at random (private/dynamic range) once per session and
-    // held until the session exits, so it stays stable across the core's own
-    // reconnects — a moving port would rebuild `BrowserModel` and tear down every
-    // open tab. Nil while no browser session is running; regenerated per session.
-    @State private var browserSessionPort: UInt16?
     @State private var browserModel: BrowserModel?
     @State private var didLoadSecrets = false
     // The immutable settings snapshot handed to `proxy.start`, so the Keychain
@@ -477,9 +471,6 @@ struct ContentView: View {
         } set: { isPresented in
             if !isPresented, !proxy.sessionAlive {
                 browserModel = nil
-                // Session over: drop the port so the next browser session picks a
-                // fresh random one.
-                browserSessionPort = nil
             }
         }
     }
@@ -503,11 +494,6 @@ struct ContentView: View {
         // (Mid-session reconnects don't come through here, so they keep the
         // toggles as set.)
         portForwards.disableAll()
-        // Fix a random port for the whole browser session up front, so it survives
-        // reconnects (which replay these settings). Cleared when the session exits.
-        if mode == .browser, browserSessionPort == nil {
-            browserSessionPort = UInt16.random(in: 49152...65535)
-        }
         let settings = currentSettings()
         connectingSettings = settings
         connectingProfileID = profiles.selectedID
@@ -528,9 +514,10 @@ struct ContentView: View {
         ProxyController.Settings(
             serverNodeID: trimmedServerNodeID,
             authKey: selectedKey?.secret ?? "",
-            // Forwarding-only sessions have no SOCKS listener. Browser mode's
-            // random port is held across reconnects.
-            socksPort: sessionMode == .browser ? (browserSessionPort ?? 0) : nil,
+            // Forwarding-only sessions have no SOCKS listener. Browser mode
+            // asks for an OS-assigned port; ProxyController pins the assigned
+            // port into its replayed settings so reconnects keep it.
+            socksPort: sessionMode == .browser ? 0 : nil,
             relayURLs: splitCSV(profiles.selected.relayURLs),
             relayAuthToken: relayAuthToken
         )
@@ -626,6 +613,11 @@ struct ContentView: View {
                 // next foreground rebinds them.
                 wasSuspended = !keepAlive.isRunning
                 if wasSuspended {
+                    // A suspended process's listeners keep accepting into the
+                    // kernel backlog and serve nothing; close them while we can
+                    // still run so local clients get refused instead of hanging.
+                    // The relaunch on return rebinds them.
+                    proxy.closeListenersForSuspension()
                     // Suspended: the banner can no longer be kept fresh, so dismiss
                     // it now (≈ the grace after backgrounding). Hold the task
                     // assertion until the async dismissal actually registers, then
@@ -672,6 +664,9 @@ struct ContentView: View {
         // anyway, nothing is about to be suspended.
         guard scenePhase != .active else { return }
         wasSuspended = true
+        // Same as the background-grace expiration handler: don't leave
+        // black-hole listeners behind while suspended.
+        proxy.closeListenersForSuspension()
         proxy.backgroundLiveActivityRefreshEnabled = false
         // Its own assertion: the backgrounding grace expired long ago, so
         // `backgroundTask` is spent. Held until the async dismissal registers,

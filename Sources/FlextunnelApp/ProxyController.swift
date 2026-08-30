@@ -26,8 +26,9 @@ final class ProxyController: ObservableObject {
     /// Current lifecycle phase; drives whether the browser is presented.
     @Published private(set) var phase: Phase = .idle
     /// Loopback SOCKS5 port the core actually bound, or nil while stopped. In
-    /// browser mode this is a per-session random port (fixed for the session so
-    /// it survives reconnects); forwarding-only mode leaves it nil.
+    /// browser mode this is an OS-assigned ephemeral port, pinned into the
+    /// replayed settings so it survives reconnects; forwarding-only mode
+    /// leaves it nil.
     @Published var socksPort: UInt16?
     /// The native tunnel session is alive (FFI health == 1). In browser mode it
     /// also owns the SOCKS5 listener; forwarding-only mode has no proxy listener.
@@ -112,7 +113,9 @@ final class ProxyController: ObservableObject {
         /// half must be on the server's authorized-keys file.
         var authKey: String
         /// Loopback SOCKS5 port for browser mode. `nil` means a forwarding-only
-        /// session with no SOCKS5 listener; `0` requests an ephemeral port.
+        /// session with no SOCKS5 listener; `0` requests an OS-assigned
+        /// ephemeral port. Nonzero is a preference the core falls back from if
+        /// the port is taken; the bound port is published as `socksPort`.
         var socksPort: UInt16?
         var relayURLs: [String]
         /// Shared bearer token sent to every custom relay's WebSocket upgrade.
@@ -371,6 +374,11 @@ final class ProxyController: ObservableObject {
             serverNodeID: s.serverNodeID,
             relayURLs: s.relayURLs)
         socksPort = port
+        // Pin the OS-assigned SOCKS port so relaunches of this session (manual
+        // Reconnect, suspend recovery) prefer the same port and the browser's
+        // proxy config stays valid. If it gets stolen while suspended, the core
+        // falls back to a fresh port and the browser is rebuilt on the change.
+        lastSettings?.socksPort = port
         forwardingSessionID = UUID()
         // Not usable yet: the handle only means the listener bound and the connect
         // loop spawned. Stay in `.connecting` until the first handshake lands.
@@ -390,6 +398,19 @@ final class ProxyController: ObservableObject {
     func retryNow() {
         guard let lastSettings else { return }
         start(lastSettings)
+    }
+
+    /// Suspension is imminent: close the core's local listeners (the SOCKS5
+    /// front-end and every forward listener) so local clients get an immediate
+    /// connection-refused instead of hanging in a frozen process's accept
+    /// backlog. One-way for this handle — the on-foreground recovery
+    /// (`recoverFromSuspension`) relaunches the session, which rebinds
+    /// everything. Guarded to `.connected` because that recovery only
+    /// relaunches connected sessions; pausing any other phase would orphan a
+    /// handle that never gets its listeners back.
+    func closeListenersForSuspension() {
+        guard phase == .connected, let handle else { return }
+        _ = flextunnel_close_listeners(handle)
     }
 
     /// Called on return to foreground. `connectDeadline` is wall-clock, so time
@@ -570,11 +591,20 @@ final class ProxyController: ObservableObject {
         return result == 1 ? nil : String(cString: buf)
     }
 
-    /// Read the core-owned direct-forward listener states.
+    /// Read the core-owned direct-forward listener states. The FFI returns the
+    /// byte count the JSON needs (incl. NUL); a first buffer that turns out too
+    /// small is regrown to exactly that and the call repeated, so an oversized
+    /// snapshot delays a status refresh by one call instead of silently keeping
+    /// stale state forever.
     func portForwardStatuses() -> [UUID: NativeForwardStatus]? {
         guard let handle else { return nil }
-        var buf = [CChar](repeating: 0, count: 64 * 1024)
-        guard flextunnel_forward_statuses(handle, &buf, buf.count) == 1,
+        var buf = [CChar](repeating: 0, count: 4096)
+        var required = flextunnel_forward_statuses(handle, &buf, buf.count)
+        if required > buf.count {
+            buf = [CChar](repeating: 0, count: required)
+            required = flextunnel_forward_statuses(handle, &buf, buf.count)
+        }
+        guard required >= 0, required <= buf.count,
               let data = String(cString: buf).data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let entries = root["forwards"] as? [[String: Any]] else { return nil }
