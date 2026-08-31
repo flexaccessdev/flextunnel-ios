@@ -162,7 +162,7 @@ xcodebuild archive \
   -destination "generic/platform=iOS" \
   -sdk iphoneos \
   -archivePath "$ARCHIVE_PATH" \
-  "${provisioning_args[@]}" \
+  ${provisioning_args[@]+"${provisioning_args[@]}"} \
   DEVELOPMENT_TEAM="$TEAM_ID"
 
 /bin/mkdir -p "$EXPORT_PATH"
