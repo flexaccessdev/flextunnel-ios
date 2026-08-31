@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Build here, run on the phone over there.
+# Build here, run on the phone over there — MANUAL FALLBACK ONLY.
+#
+# The normal way to put a dev build on the iPhone needs no paired Mac at all:
+# scripts/create-archive-ios.sh then scripts/serve-ipa-ota.sh (over-the-air
+# install via ../devtools). Reach for this script only when OTA is unavailable,
+# and run it by hand — it is deliberately not part of the automated workflow.
 #
 # run-device-ios.sh's twin for a phone this machine cannot reach: same build,
 # same install and launch, with an ssh hop to the Mac that is paired with the
