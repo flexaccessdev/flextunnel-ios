@@ -646,6 +646,13 @@ struct ContentView: View {
             proxy.setBackgrounded(false)
             proxy.backgroundLiveActivityRefreshEnabled = false
             proxy.noteForegrounded()
+            // SwiftUI's .onChange handlers were paused while away, and a change
+            // that netted out (a background reconnect passing .connecting →
+            // .connected, a relaunched forwarding session) may never fire them
+            // on return — reconcile everything they drive explicitly.
+            syncSessionPresentation()
+            syncForwards()
+            syncKeepAlive()
             // Using the app is activity: refill the keep-alive's inactivity
             // window (and revive it if the limit was reached while away), so the
             // limit caps one stretch of backgrounded time.
