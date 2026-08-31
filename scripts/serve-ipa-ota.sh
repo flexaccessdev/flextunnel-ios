@@ -4,7 +4,7 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 devtools="${DEVTOOLS_DIR:-$repo_root/../devtools}"
-[ -f "$devtools/ios/create-archive-ios.sh" ] || {
+[ -f "$devtools/ios/serve-ipa-ota.sh" ] || {
   printf '%s\n' \
     "error: devtools not found at $devtools" \
     "  local machine: git clone git@github.com:andrewtheguy/devtools.git $repo_root/../devtools" \
@@ -12,4 +12,4 @@ devtools="${DEVTOOLS_DIR:-$repo_root/../devtools}"
     "  (or set DEVTOOLS_DIR)" >&2
   exit 1
 }
-DEVTOOLS_REPO_ROOT="$repo_root" exec "$devtools/ios/create-archive-ios.sh" "$@"
+DEVTOOLS_REPO_ROOT="$repo_root" exec "$devtools/ios/serve-ipa-ota.sh" "$@"
