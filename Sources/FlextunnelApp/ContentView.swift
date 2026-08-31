@@ -597,6 +597,11 @@ struct ContentView: View {
     private func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
         case .background:
+            // Pace for the background: the health poll drops to minute cadence
+            // and the core's heartbeat slows to 60s, so a held-alive idle
+            // session wakes the cellular radio once a minute instead of
+            // continuously.
+            proxy.setBackgrounded(true)
             // Time spent in the app doesn't eat the keep-alive's inactivity
             // window: start it when the app actually goes away, so what the Live
             // Activity counts down from here is the full limit.
@@ -636,6 +641,9 @@ struct ContentView: View {
             }
         case .active:
             endBackgroundTask()
+            // Snap the poll and the core's heartbeat back to foreground cadence
+            // (an overdue beat goes out immediately, and the poll refreshes now).
+            proxy.setBackgrounded(false)
             proxy.backgroundLiveActivityRefreshEnabled = false
             proxy.noteForegrounded()
             // Using the app is activity: refill the keep-alive's inactivity

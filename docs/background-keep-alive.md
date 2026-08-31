@@ -43,8 +43,9 @@ The window is refilled by any of:
   Location's own significant-change distance. Nothing about the location
   configuration changes for this, so the timeout costs no extra battery;
 - **an open port-forward connection** — while any forward is carrying traffic
-  (already polled at 1 Hz), the session is in use even if the device is sitting
-  still, e.g. SSH from a desk;
+  (sampled by the health poll: 1 Hz in the foreground, once a minute while
+  backgrounded), the session is in use even if the device is sitting still,
+  e.g. SSH from a desk;
 - **the app being in front** — the window is refilled on every check while the
   app is in the foreground (and once more on going away), so time spent in the
   app never eats the window and the limit caps one stretch of backgrounded time
@@ -99,6 +100,38 @@ material**: review requires location be used for user-visible location features,
 not as a keep-alive vehicle (Termius/Blink dress theirs up with geo-tagging and
 geo-fencing features for this reason).
 
+## Staying cheap while held alive
+
+The location session itself is nearly free (coarse fixes, no GPS). What costs
+battery is the work it protects: on cellular, **every transmission buys ~10
+seconds of high-power radio tail**, so anything periodic under ~15–20s keeps
+the radio at high power the whole time. While backgrounded the app therefore
+quiets everything periodic:
+
+- the core's app-level **heartbeat is the connection's only periodic traffic**
+  (there is no QUIC-level keep-alive; the QUIC idle timeout is 180s) and slows
+  from 10s to 60s while the app is backgrounded (`flextunnel_set_background`,
+  driven from the scene phase). One wake a minute keeps the radio in its
+  low-power state almost the whole time; the foreground flip snaps the cadence
+  back and sends any overdue beat immediately. Real forward/browsing traffic is
+  unaffected — when data is flowing the radio is up anyway;
+- the **health poll drops from 1 Hz to once a minute** while backgrounded
+  (backgrounded, it only feeds the Live Activity re-arm and the keep-alive's
+  activity sampling, both minute-granular). In the foreground Low Power Mode
+  halves it to every 2s. All periodic timers carry a 10% tolerance so the
+  system can coalesce their wakeups;
+- **reconnects are gated on the network path**: `NWPathMonitor` verdicts are
+  forwarded to the core (`flextunnel_set_network_available`), which parks its
+  reconnect loop with no timers at all while no path is usable — backoff
+  retries into a dead network detect nothing and wake the radio for nothing —
+  and reconnects immediately, with a fresh backoff series, when a path returns.
+
+To gauge the cost, the connection-path sheet shows the session's **UDP
+datagrams sent/received**; the sent count across a backgrounded stretch is the
+cheap proxy for radio wakes (an idle held-alive hour should be ~60 sends, one
+per heartbeat). For real measurements use iOS 26's on-device Power Profiler
+(Settings → Developer → Performance Trace) or MetricKit payloads.
+
 ## Without it: the ~30 s fallback
 
 When the keep-alive is off — or location permission is **denied**, which the
@@ -123,17 +156,18 @@ seconds** after backgrounding, then iOS suspends the process.
 
 The tunnel-status Live Activity (lock screen / Dynamic Island) accompanies
 sessions in both modes and is **UX only** — it neither grants nor relies on
-background execution. Under the keep-alive the 1 Hz health poll keeps refreshing
-it while backgrounded; without it, the banner is dismissed when the grace expires
-and the app suspends. Reaching the inactivity limit dismisses it the same way,
+background execution. Under the keep-alive the health poll (once a minute while
+backgrounded) keeps refreshing it; without it, the banner is dismissed when the
+grace expires and the app suspends. Reaching the inactivity limit dismisses it the same way,
 since the app is about to stop being able to refresh it.
 
 While the keep-alive is holding a session, the banner also shows
 **`est. 12m till disconnect`** (`timer` glyph). The app pushes a *deadline*, not a
 rendered number, and the widget converts it to whole minutes at render time — so
 it can't disagree with the clock even if a refresh is late. It steps with the
-app's refreshes (at least once a minute while backgrounded, driven by
-`ProxyController.backgroundRefreshInterval`), which is the right granularity for a
+app's refreshes (about once a minute while backgrounded — every backgrounded
+health poll re-arms it, see `ProxyController.backgroundRefreshInterval`), which
+is the right granularity for a
 minute-resolution figure, and a window refilled by movement or an open forward
 connection is reflected on the next one. It reads "est." because expiry is noticed
 on a periodic check, so the real stop lands at or shortly after zero. Nothing is

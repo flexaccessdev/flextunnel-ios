@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Network
 
 /// Drives the in-process flextunnel session via the Rust FFI
 /// (libflextunnel.a). Browser sessions expose a SOCKS5 port to WKWebView;
@@ -72,8 +73,11 @@ final class ProxyController: ObservableObject {
     /// Re-arm cadence for the background refresh — shorter than the Live
     /// Activity's stale window (`LiveActivityController.staleAfter`, 90s) so the
     /// banner never falsely reads stale while the app is genuinely running, yet
-    /// still goes stale within ~90s if the app actually stops updating.
-    private static let backgroundRefreshInterval: TimeInterval = 60
+    /// still goes stale within ~90s if the app actually stops updating. Kept
+    /// just under `backgroundPollInterval` so every backgrounded poll re-arms
+    /// the banner — at 60 the elapsed check could race the poll cadence and
+    /// skip to the next tick, ~120s later, past the stale window.
+    private static let backgroundRefreshInterval: TimeInterval = 50
 
     /// The subset of state the Live Activity reflects; compared across a poll to
     /// detect a meaningful change worth pushing to the banner.
@@ -93,6 +97,26 @@ final class ProxyController: ObservableObject {
 
     private var handle: OpaquePointer?
     private var healthTimer: Timer?
+    /// Health-poll cadence while the app is frontmost. Low Power Mode halves
+    /// the discretionary polling — the poll is pure status/UI work, so slower
+    /// updates are exactly the trade Low Power Mode asks for.
+    private var foregroundPollInterval: TimeInterval {
+        ProcessInfo.processInfo.isLowPowerModeEnabled ? 2.0 : 1.0
+    }
+    /// Health-poll cadence while backgrounded (under the location keep-alive —
+    /// without it the app is suspended shortly anyway). A 1 Hz poll with the
+    /// screen off is the classic energy anti-pattern: backgrounded, the poll
+    /// only feeds the Live Activity re-arm and the keep-alive's activity
+    /// sampling, both of which run at minute granularity.
+    private static let backgroundPollInterval: TimeInterval = 60
+    /// Mirrors the scene phase (set by `ContentView`); drives the poll cadence
+    /// here and the core's heartbeat cadence over the FFI.
+    private var isBackgrounded = false
+    /// Last path verdict from `NWPathMonitor`, forwarded to the core so its
+    /// reconnect loop parks while there is genuinely no network.
+    private var pathAvailable = true
+    private let pathMonitor = NWPathMonitor()
+    private var lowPowerObserver: NSObjectProtocol?
     /// Give up on a stalled first handshake after this long.
     private static let connectTimeout: TimeInterval = 20
     private var connectDeadline: Date?
@@ -225,6 +249,13 @@ final class ProxyController: ObservableObject {
     struct ConnectionSnapshot {
         var paths: [ConnPath] = []
         var customRelays: [CustomRelay] = []
+        /// UDP datagrams the live connection has sent/received since it was
+        /// established (0 while disconnected). On cellular, energy is
+        /// per-wakeup rather than per-byte, so the tx count sampled across an
+        /// interval — e.g. across a backgrounded stint — is the cheap proxy for
+        /// the tunnel's radio cost.
+        var udpTxDatagrams: UInt64 = 0
+        var udpRxDatagrams: UInt64 = 0
     }
 
     /// A server-to-server bridge route: targets matching `domains`/`cidrs` are
@@ -260,6 +291,48 @@ final class ProxyController: ObservableObject {
 
     init() {
         flextunnel_init_logging()
+        // Watch the device's network path for the whole controller lifetime and
+        // feed it to whichever session is live: while no path is usable the
+        // core parks its reconnect loop (no backoff timers into a dead
+        // network), and the path's return reconnects immediately.
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let available = path.status == .satisfied
+            Task { @MainActor in self?.notePathChanged(available) }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "flextunnel.path-monitor"))
+        // Low Power Mode only changes the discretionary poll cadence; it can
+        // flip while a session runs, so re-arm the timer when it does.
+        lowPowerObserver = NotificationCenter.default.addObserver(
+            forName: .NSProcessInfoPowerStateDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.reschedulePolling() }
+        }
+    }
+
+    /// Scene-phase mirror from `ContentView`. Backgrounded, the health poll
+    /// drops to minute cadence and the core slows its heartbeat (its only
+    /// periodic traffic) from 10s to 60s, so an idle held-alive session wakes
+    /// the cellular radio once a minute instead of continuously; foregrounded,
+    /// both snap back and an immediate poll refreshes the UI.
+    func setBackgrounded(_ backgrounded: Bool) {
+        guard backgrounded != isBackgrounded else { return }
+        isBackgrounded = backgrounded
+        if let handle { _ = flextunnel_set_background(handle, backgrounded ? 1 : 0) }
+        reschedulePolling()
+    }
+
+    private func notePathChanged(_ available: Bool) {
+        guard available != pathAvailable else { return }
+        pathAvailable = available
+        if let handle { _ = flextunnel_set_network_available(handle, available ? 1 : 0) }
+    }
+
+    /// Re-arm the poll timer at the cadence for the current scene phase and
+    /// power state — only if polling is running at all (a dead session's
+    /// stopped poll stays stopped).
+    private func reschedulePolling() {
+        guard healthTimer != nil else { return }
+        startHealthPolling()
     }
 
     /// Raw result of the blocking start FFI, handed back to the main actor.
@@ -370,6 +443,11 @@ final class ProxyController: ObservableObject {
         }
 
         self.handle = handle
+        // A fresh handle starts foregrounded-and-online in the core; replay the
+        // actual scene/path state so a session launched while backgrounded (the
+        // keep-alive's suspension recovery) or offline paces itself correctly.
+        _ = flextunnel_set_background(handle, isBackgrounded ? 1 : 0)
+        _ = flextunnel_set_network_available(handle, pathAvailable ? 1 : 0)
         connectionSummary = ConnectionSummary(
             serverNodeID: s.serverNodeID,
             relayURLs: s.relayURLs)
@@ -459,9 +537,14 @@ final class ProxyController: ObservableObject {
 
     private func startHealthPolling() {
         healthTimer?.invalidate()
-        healthTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        let interval = isBackgrounded ? Self.backgroundPollInterval : foregroundPollInterval
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }
+        // Let the system coalesce the fire with other wakeups; the poll reads
+        // state that is not deadline-sensitive at a 10% slip.
+        timer.tolerance = interval * 0.1
+        healthTimer = timer
         poll() // first read without waiting a full interval
     }
 
@@ -700,11 +783,19 @@ final class ProxyController: ObservableObject {
                 working: entry["working"] as? Bool,
                 error: entry["error"] as? String)
         }
-        return ConnectionSnapshot(paths: paths, customRelays: customRelays)
+        return ConnectionSnapshot(
+            paths: paths,
+            customRelays: customRelays,
+            udpTxDatagrams: (obj["udp_tx_datagrams"] as? NSNumber)?.uint64Value ?? 0,
+            udpRxDatagrams: (obj["udp_rx_datagrams"] as? NSNumber)?.uint64Value ?? 0)
     }
 
     deinit {
         healthTimer?.invalidate()
+        pathMonitor.cancel()
+        if let lowPowerObserver {
+            NotificationCenter.default.removeObserver(lowPowerObserver)
+        }
         if let handle { flextunnel_stop(handle) }
     }
 }

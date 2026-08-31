@@ -45,6 +45,19 @@ struct ConnPathSheet: View {
                         Text("Health is a one-shot check of each relay's /healthz endpoint. It confirms the relay is reachable, not that a relay auth token is accepted.")
                     }
                 }
+
+                if !snapshot.paths.isEmpty {
+                    Section {
+                        LabeledContent("UDP datagrams sent",
+                                       value: snapshot.udpTxDatagrams.formatted())
+                        LabeledContent("UDP datagrams received",
+                                       value: snapshot.udpRxDatagrams.formatted())
+                    } header: {
+                        Text("Traffic")
+                    } footer: {
+                        Text("Counted since this connection was established. On cellular, battery cost tracks how often the radio wakes, not bytes — compare the sent count across a backgrounded stretch to gauge the session's radio cost.")
+                    }
+                }
             }
             .navigationTitle("Connection path")
             .navigationBarTitleDisplayMode(.inline)

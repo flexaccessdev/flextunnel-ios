@@ -277,11 +277,15 @@ final class BackgroundKeepAlive: NSObject, ObservableObject {
 
     private func startIdleTimer() {
         stopIdleTimer()
-        idleTimer = Timer.scheduledTimer(
+        let timer = Timer.scheduledTimer(
             withTimeInterval: Self.idleCheckInterval, repeats: true
         ) { [weak self] _ in
             Task { @MainActor in self?.checkIdle() }
         }
+        // The check compares against a wall clock, so a coalesced fire can't
+        // extend the window — let the system batch it with other wakeups.
+        timer.tolerance = Self.idleCheckInterval * 0.1
+        idleTimer = timer
     }
 
     private func stopIdleTimer() {
