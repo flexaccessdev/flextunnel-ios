@@ -104,7 +104,7 @@ targets:
         # rewrites this alongside the url+checksum in Package.swift, so the two
         # cannot drift; a local FFI build (FLEXTUNNEL_LOCAL_XCFRAMEWORK) still
         # shows the pinned number, since the local artifact carries none.
-        FLEXTUNNEL_CORE_VERSION: "0.0.67"
+        FLEXTUNNEL_CORE_VERSION: "0.0.68"
         SWIFT_OBJC_BRIDGING_HEADER: Sources/FlextunnelApp/Bridging-Header.h
         # No HEADER_SEARCH_PATHS needed: SPM puts the binary target's embedded
         # Headers/ dir on the consumer's search path, so the bridging header's
