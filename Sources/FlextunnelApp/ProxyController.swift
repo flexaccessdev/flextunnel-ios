@@ -609,8 +609,10 @@ final class ProxyController: ObservableObject {
             }
         case .connected:
             // A tunnel-link drop is not a terminal session failure: the core
-            // reconnects on its own. Browser off-list traffic still works, while
-            // server-direct forwards and on-list tabs fail until it recovers.
+            // reconnects on its own. Browser off-list traffic still works, and
+            // on-list requests are held by the core for the reconnect (its 45s
+            // recovery hold) instead of failing outright; server-direct
+            // forwards fail until it recovers.
             if tunnelConnected {
                 status = connectedStatus
             } else if tunnelStuck {
