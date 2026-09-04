@@ -3,16 +3,15 @@ import Foundation
 import SwiftUI
 import UIKit
 
-/// Location-based background keep-alive, common to both session modes — the
-/// same technique Termius and Blink use: while a continuous Core Location
-/// session is running, iOS does not suspend the app, so the tunnel (and any
-/// server-direct port forwards other apps reach at localhost) stays up
-/// indefinitely instead of dying ~30s after backgrounding.
+/// Location-based background keep-alive for forwarding-only sessions — the same
+/// technique Termius and Blink use. While a continuous Core Location session is
+/// running, iOS does not suspend the app, so server-direct port forwards other
+/// apps reach at localhost stay up instead of dying ~30s after backgrounding.
 ///
-/// Runs while a session is up (`setSessionActive`) and the persisted `enabled`
-/// preference is on (off by default, like Termius's opt-in setting). The
-/// preference is a top-level decision made on the home screen before starting,
-/// not a per-mode one — see docs/background-keep-alive.md.
+/// Runs while a forwarding session is up (`setSessionActive`) and the persisted
+/// `enabled` preference is on (off by default, like Termius's opt-in setting).
+/// The preference is offered on the home screen only when Forward ports is
+/// selected. Browser sessions never activate it; see docs/background-keep-alive.md.
 ///
 /// The accuracy is deliberately coarse (100 km, like Blink's `geo track`) so
 /// fixes come from cell towers rather than the GPS radio, and no fix is ever
@@ -34,7 +33,7 @@ final class BackgroundKeepAlive: NSObject, ObservableObject {
         didSet {
             UserDefaults.standard.set(enabled, forKey: Self.defaultsKey)
             // Resolve permission at the decision point (the home screen, before
-            // any session): the prompt never lands mid-connect, and `denied` is
+            // forwarding): the prompt never lands mid-connect, and `denied` is
             // visible in time to matter. No location session starts here —
             // `reconcile` still requires an active session for that.
             if enabled, authorization == .notDetermined {
@@ -129,14 +128,14 @@ final class BackgroundKeepAlive: NSObject, ObservableObject {
         authorization == .denied || authorization == .restricted
     }
 
-    /// What the in-session screens read: the decision lives on the home screen,
-    /// so both the browser and the forwarding screen show this read-only.
+    /// What the forwarding screen reads: the decision lives on the home screen,
+    /// so the active forwarding session shows it read-only.
     enum Status {
         /// Opted out; iOS suspends the app shortly after backgrounding.
         case off
         /// Opted in, but location permission is missing — same outcome as `off`.
         case denied
-        /// Opted in and permitted; the location session starts with the tunnel.
+        /// Opted in and permitted; the location session starts with forwarding.
         case pending
         /// The location session is running: the app survives backgrounding.
         case active
@@ -155,14 +154,13 @@ final class BackgroundKeepAlive: NSObject, ObservableObject {
         switch status {
         case .off: return "off"
         case .denied: return "needs location access"
-        case .pending: return "starts with the session"
+        case .pending: return "starts with forwarding"
         case .active: return "active"
         case .timedOut: return "timed out"
         }
     }
 
-    /// Paired with `statusLabel` so the forwarding screen and the browser's
-    /// tunnel popover read the same, without each re-deriving the mapping.
+    /// Paired with `statusLabel` for the forwarding screen's status row.
     var statusColor: Color? {
         switch status {
         case .active: return .green
@@ -201,7 +199,7 @@ final class BackgroundKeepAlive: NSObject, ObservableObject {
         return minutes
     }
 
-    /// Follows the session (either mode): the keep-alive runs only while one is up.
+    /// Follows the forwarding session: the caller passes false for browser mode.
     func setSessionActive(_ active: Bool) {
         if active != sessionActive {
             sessionActive = active
@@ -295,11 +293,10 @@ final class BackgroundKeepAlive: NSObject, ObservableObject {
 
     private func checkIdle() {
         guard isRunning else { return }
-        // The app being in front is activity in itself — browsing produces no
-        // other signal (no forward connections, movement only past 500 m) — so
-        // refill the window on every check rather than expiring a session the
-        // user is looking at. The scene-phase refills in `ContentView` cover
-        // the transitions; this covers a foreground stint longer than the limit.
+        // The app being in front is activity in itself, so refill the window on
+        // every check rather than expiring a forwarding session the user is
+        // managing. The scene-phase refills in `ContentView` cover the
+        // transitions; this covers a foreground stint longer than the limit.
         if UIApplication.shared.applicationState == .active {
             lastActivity = Date()
             return

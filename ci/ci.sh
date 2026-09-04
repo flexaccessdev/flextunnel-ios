@@ -168,9 +168,9 @@ job_unsigned() {
     ! find "$app" -name embedded.mobileprovision -print -quit | grep -q . \
         || die 'the archived app unexpectedly embeds a profile'
 
-    # These two are what let the app hold a session alive in the background; a
-    # dropped Info.plist key compiles and links and then quietly breaks it on
-    # device only. See docs/background-keep-alive.md.
+    # These two are what let the app hold a forwarding session alive in the
+    # background; a dropped Info.plist key compiles and links and then quietly
+    # breaks it on device only. See docs/background-keep-alive.md.
     [ "$(plutil -extract UIBackgroundModes.0 raw -o - "$app/Info.plist")" = location ] \
         || die 'the archived app lost its background location mode'
     [ -n "$(plutil -extract NSLocationWhenInUseUsageDescription raw -o - "$app/Info.plist")" ] \

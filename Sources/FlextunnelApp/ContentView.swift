@@ -61,9 +61,10 @@ struct ContentView: View {
 
     @StateObject private var proxy = ProxyController()
     @StateObject private var portForwards = PortForwardController()
-    // Location-based background keep-alive, active while a session of either mode
-    // runs. Opting in is a top-level decision made below, before starting (see
-    // BackgroundKeepAlive.swift and docs/background-keep-alive.md).
+    // Location-based background keep-alive for forwarding-only sessions. Browser
+    // sessions follow WebKit/iOS background suspension normally; opting in is
+    // offered only when Forward ports is selected (see BackgroundKeepAlive.swift
+    // and docs/background-keep-alive.md).
     @StateObject private var keepAlive = BackgroundKeepAlive()
 
     // The saved connection profiles. Every field in Setup below edits the
@@ -100,8 +101,9 @@ struct ContentView: View {
         nonmutating set { sessionModeRaw = newValue.rawValue }
     }
 
-    // Best-effort background keep-alive: buys ~30s of runtime after backgrounding
-    // so the tunnel and port forwards outlive a brief app switch.
+    // Best-effort background grace: buys ~30s of runtime after backgrounding so
+    // the tunnel and port forwards outlive a brief app switch. This is separate
+    // from the forwarding-only location keep-alive.
     @Environment(\.scenePhase) private var scenePhase
     @State private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     // Set when the background grace expired with nothing holding the process
@@ -161,7 +163,9 @@ struct ContentView: View {
                     }
                 }
 
-                backgroundSection
+                if sessionMode == .proxyOnly {
+                    backgroundSection
+                }
 
                 Section {
                     if proxy.phase == .connecting {
@@ -201,7 +205,7 @@ struct ContentView: View {
             .scrollDismissesKeyboard(.interactively)
             .fullScreenCover(isPresented: browserIsPresented) {
                 if let browserModel {
-                    BrowserView(model: browserModel, proxy: proxy, keepAlive: keepAlive)
+                    BrowserView(model: browserModel, proxy: proxy)
                         .interactiveDismissDisabled(proxy.socksPort != nil)
                 }
             }
@@ -300,7 +304,9 @@ struct ContentView: View {
                     // A forward carrying traffic is activity: it postpones the
                     // keep-alive's inactivity limit (and revives it if reached),
                     // so a stationary session in active use isn't dropped.
-                    if portForwards.hasOpenConnections { keepAlive.noteActivity() }
+                    if proxyOnlyActive, portForwards.hasOpenConnections {
+                        keepAlive.noteActivity()
+                    }
                 }
                 keepAlive.onTimeout = { handleKeepAliveTimeout() }
                 // Reconcile any Live Activity the controller reattached to on
@@ -422,10 +428,9 @@ struct ContentView: View {
         }
     }
 
-    /// The keep-alive opt-in: a top-level decision for whichever mode is
-    /// started, made here rather than mid-session so the location prompt is
-    /// resolved (and a denial visible) before the tunnel comes up. The in-session
-    /// screens show it read-only.
+    /// The forwarding keep-alive opt-in, shown only while Forward ports is
+    /// selected. It is decided here rather than mid-session so the location
+    /// prompt is resolved (and a denial visible) before the tunnel comes up.
     private var backgroundSection: some View {
         Section {
             Toggle("Keep alive in background", isOn: $keepAlive.enabled)
@@ -440,7 +445,7 @@ struct ContentView: View {
                 .disabled(proxy.phase == .connecting)
             }
             if keepAlive.enabled, keepAlive.denied {
-                Text("Location access is denied, so iOS suspends the app about 30 seconds after backgrounding and the session stops until you return.")
+                Text("Location access is denied, so iOS suspends the app about 30 seconds after backgrounding and the port forwards stop until you return.")
                     .font(.footnote)
                     .foregroundStyle(.red)
                 Button {
@@ -459,12 +464,12 @@ struct ContentView: View {
     }
 
     private var disabledBackgroundFooter: String {
-        "iOS suspends the app about 30 seconds after backgrounding; the session stops until you return."
+        "iOS suspends the app about 30 seconds after backgrounding; port forwards stop until you return."
     }
 
     private var enabledBackgroundFooter: String {
-        "A coarse location session (nothing is stored or sent) keeps iOS from suspending the app, so the tunnel — and any port forwards — keep running while you use other apps. It starts with the session and stops when you stop it. Expect the location indicator and some extra battery use."
-            + " After \(keepAlive.timeoutLabel.lowercased()) with no movement, no open forward connection and the app not in front, it lets go: iOS then suspends the app, and the session comes back automatically when you return."
+        "A coarse location session (nothing is stored or sent) keeps iOS from suspending the app, so port forwards stay reachable while you use other apps. It starts and stops with port forwarding. Expect the location indicator and some extra battery use."
+            + " After \(keepAlive.timeoutLabel.lowercased()) with no movement, no open forward connection and the app not in front, it lets go: iOS then suspends the app, and port forwarding comes back automatically when you return."
     }
 
     private var browserIsPresented: Binding<Bool> {
@@ -575,25 +580,23 @@ struct ContentView: View {
 
     // MARK: - Background keep-alive
 
-    /// A session screen is up, in either mode — what the keep-alive and the Live
-    /// Activity both follow.
+    /// A session screen is up in either mode — what the Live Activity follows.
     private var sessionScreenActive: Bool {
         proxyOnlyActive || browserModel != nil
     }
 
-    /// The location keep-alive follows the session, whichever mode it is: it runs
-    /// whenever a session screen is up with a live native session, and stops with
-    /// it (so the location indicator never outlives the tunnel).
+    /// The location keep-alive follows forwarding-only sessions. Browser sessions
+    /// explicitly deactivate it even if the persisted forwarding preference is on.
     private func syncKeepAlive() {
-        keepAlive.setSessionActive(sessionScreenActive && proxy.sessionAlive)
+        keepAlive.setSessionActive(proxyOnlyActive && proxy.sessionAlive)
     }
 
     /// Best-effort fallback for when the keep-alive is off (or location was
     /// denied): extended execution buys ~30s after backgrounding, then iOS
     /// suspends the process and defuncts its sockets; the next foreground
-    /// relaunches the session (see `recoverFromSuspension`). With the keep-alive
-    /// on, the location session (`BackgroundKeepAlive`) holds the process instead
-    /// and neither mode is suspended.
+    /// relaunches the session (see `recoverFromSuspension`). Only forwarding mode
+    /// can replace that fallback with the location session (`BackgroundKeepAlive`);
+    /// browser mode always follows normal iOS/WebKit background suspension.
     private func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
         case .background:
@@ -605,20 +608,20 @@ struct ContentView: View {
             // Time spent in the app doesn't eat the keep-alive's inactivity
             // window: start it when the app actually goes away, so what the Live
             // Activity counts down from here is the full limit.
-            keepAlive.noteActivity()
+            if proxyOnlyActive { keepAlive.noteActivity() }
             // While the location keep-alive holds the process, the poll loop keeps
             // running: let it refresh the Live Activity in the background (SwiftUI's
             // .onChange handlers are paused now). Otherwise the banner is left live
             // and only dismissed at actual suspension (the expiration handler
             // below), so it lingers the full grace and a return to the foreground
             // within it keeps it live — no premature .end()/revive flicker.
-            proxy.backgroundLiveActivityRefreshEnabled = keepAlive.isRunning
+            proxy.backgroundLiveActivityRefreshEnabled = proxyOnlyActive && keepAlive.isRunning
             guard proxy.sessionAlive, backgroundTask == .invalid else { break }
             backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "flextunnel-proxy") {
                 // Grace expired → iOS suspends us now (unless keep-alive holds the
                 // process) and defuncts the forward listeners — remember that so the
                 // next foreground rebinds them.
-                wasSuspended = !keepAlive.isRunning
+                wasSuspended = !(proxyOnlyActive && keepAlive.isRunning)
                 if wasSuspended {
                     // A suspended process's listeners keep accepting into the
                     // kernel backlog and serve nothing; close them while we can
@@ -656,7 +659,7 @@ struct ContentView: View {
             // Using the app is activity: refill the keep-alive's inactivity
             // window (and revive it if the limit was reached while away), so the
             // limit caps one stretch of backgrounded time.
-            keepAlive.noteActivity()
+            if proxyOnlyActive { keepAlive.noteActivity() }
             // Revive an expired banner (via start()) so a still-connected session
             // is glanceable again on return.
             syncLiveActivity()
@@ -679,7 +682,7 @@ struct ContentView: View {
         // The limit can only be reached while away (the keep-alive's idle check
         // refills the window whenever the app is in front); if we are in front
         // anyway, nothing is about to be suspended.
-        guard scenePhase != .active else { return }
+        guard proxyOnlyActive, scenePhase != .active else { return }
         wasSuspended = true
         // Same as the background-grace expiration handler: don't leave
         // black-hole listeners behind while suspended.
@@ -714,8 +717,8 @@ struct ContentView: View {
 
     /// Mirror the session into the Live Activity: start/refresh it while connected,
     /// reflect a reconnect while connecting, and end it once the session is gone.
-    /// Both modes get one — either can be held alive in the background now, and a
-    /// backgrounded session is exactly when a glanceable banner earns its place.
+    /// Both modes get one. Only forwarding sessions can keep refreshing one in
+    /// the background; a browser session's banner ends when its grace expires.
     /// `allowCreate` is false for background refreshes, which must never call
     /// `Activity.request` (foreground-only) — they only update/end an existing one.
     private func syncLiveActivity(allowCreate: Bool = true) {
@@ -731,7 +734,7 @@ struct ContentView: View {
                 statusText: liveActivityStatusText,
                 // Counted down by the widget itself, so it stays right between
                 // refreshes (about once a minute while backgrounded).
-                keepAliveDeadline: keepAlive.deadline
+                keepAliveDeadline: proxyOnlyActive ? keepAlive.deadline : nil
             )
             if allowCreate {
                 liveActivity.start(subtitle: sessionMode.liveActivitySubtitle, state: state)
@@ -747,7 +750,7 @@ struct ContentView: View {
                 tunnelConnected: false,
                 socksAlive: proxy.sessionAlive,
                 statusText: "Reconnecting…",
-                keepAliveDeadline: keepAlive.deadline
+                keepAliveDeadline: proxyOnlyActive ? keepAlive.deadline : nil
             ))
         case .idle, .failed:
             liveActivity.end()

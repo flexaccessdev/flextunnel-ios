@@ -51,16 +51,16 @@ final class ProxyController: ObservableObject {
     @Published private(set) var forwardedRoutes: ForwardedRoutes?
 
     /// Called (on the main actor) from the poll loop when the Live-Activity-
-    /// relevant state changes while the app is backgrounded with keep-alive — the
-    /// hook `ContentView` uses to refresh the banner without SwiftUI's `.onChange`
-    /// (which doesn't fire while backgrounded). Only invoked while
+    /// relevant state changes while a forwarding session is backgrounded with
+    /// keep-alive — the hook `ContentView` uses to refresh the banner without
+    /// SwiftUI's `.onChange` (which doesn't fire while backgrounded). Only invoked while
     /// `backgroundLiveActivityRefreshEnabled` is set.
     var onBackgroundLiveActivityRefresh: (() -> Void)?
     /// Called after each native health poll so the port-forward controller can
     /// refresh listener and active-connection status.
     var onForwardStatusRefresh: (() -> Void)?
-    /// Set by `ContentView` while the app is in the background AND the keep-alive
-    /// session is holding the process; gates `onBackgroundLiveActivityRefresh`.
+    /// Set by `ContentView` while a forwarding keep-alive is holding the
+    /// backgrounded process; gates `onBackgroundLiveActivityRefresh`.
     /// Clearing it resets the keep-alive refresh clock so the next background
     /// stint re-arms immediately.
     var backgroundLiveActivityRefreshEnabled = false {
