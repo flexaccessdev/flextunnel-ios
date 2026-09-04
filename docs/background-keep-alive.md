@@ -161,12 +161,14 @@ the tunnel warm while WebKit itself is inactive.
 ## Live Activity
 
 The tunnel-status Live Activity (lock screen / Dynamic Island) accompanies
-sessions in both modes and is **UX only** — it neither grants nor relies on
-background execution. During a held-alive forwarding session the health poll
-(once a minute while backgrounded) keeps refreshing it. A browser session, or a
-forwarding session without keep-alive, dismisses the banner when the grace
-expires and the app suspends. Reaching the forwarding inactivity limit dismisses
-it the same way, since the app is about to stop being able to refresh it.
+port-forwarding sessions only and is **UX only** — it neither grants nor relies
+on background execution. It exists for a session running behind other apps,
+which only forwarding does: a browser session is either on screen or suspended,
+so it never starts one. During a held-alive forwarding session the health poll
+(once a minute while backgrounded) keeps refreshing it. A forwarding session
+without keep-alive dismisses the banner when the grace expires and the app
+suspends. Reaching the forwarding inactivity limit dismisses it the same way,
+since the app is about to stop being able to refresh it.
 
 While the keep-alive is holding a forwarding session, the banner also shows
 **`est. 12m till disconnect`** (`timer` glyph). The app pushes a *deadline*, not a

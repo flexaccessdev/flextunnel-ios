@@ -2,7 +2,8 @@ import ActivityKit
 import SwiftUI
 import WidgetKit
 
-/// Lock-screen banner + Dynamic Island rendering for the tunnel session. Colors
+/// Lock-screen banner + Dynamic Island rendering for a port-forwarding session
+/// (browser sessions never start one). Colors
 /// follow tunnel-link state: green when connected, orange while reconnecting. Once
 /// the pushed state goes stale (`context.isStale` — the app stopped updating, e.g.
 /// it was suspended in the background), everything dims to a neutral "status
@@ -78,10 +79,10 @@ private struct LockScreenView: View {
     }
 }
 
-/// How much longer the background keep-alive holds a forwarding session before
+/// How much longer the background keep-alive holds the forwarding session before
 /// iOS suspends it. Shown only while something is actually holding the app: no
-/// deadline (browser mode, keep-alive off, or already let go) or a stale banner
-/// means there is nothing trustworthy to report.
+/// deadline (keep-alive off or already let go) or a stale banner means there is
+/// nothing trustworthy to report.
 private struct KeepAliveRemaining: View {
     let state: TunnelActivityAttributes.ContentState
     let isStale: Bool

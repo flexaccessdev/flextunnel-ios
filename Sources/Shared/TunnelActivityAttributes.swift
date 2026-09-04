@@ -2,7 +2,8 @@ import ActivityKit
 import Foundation
 
 /// Live Activity model, compiled into both the app (which starts/updates/ends the
-/// activity) and the widget extension (which renders it). Purely a status
+/// activity) and the widget extension (which renders it). Only a port-forwarding
+/// session has one — it is the mode that runs behind other apps. Purely a status
 /// surface — it does not extend background runtime; it just shows the last-known
 /// tunnel state on the lock screen / Dynamic Island so the session is glanceable.
 struct TunnelActivityAttributes: ActivityAttributes {
@@ -16,11 +17,11 @@ struct TunnelActivityAttributes: ActivityAttributes {
         var socksAlive: Bool
         /// Short human status, e.g. "Connected" / "Reconnecting…".
         var statusText: String
-        /// Estimated moment the background keep-alive lets go of a forwarding
+        /// Estimated moment the background keep-alive lets go of the forwarding
         /// session if nothing resets its inactivity window first (movement, an
-        /// open forward connection, or opening the app). Nil for browser mode or
-        /// when no forwarding keep-alive is holding the app — then there is no
-        /// limit worth showing, only the ~30s grace.
+        /// open forward connection, or opening the app). Nil when no keep-alive
+        /// is holding the app — then there is no limit worth showing, only the
+        /// ~30s grace.
         ///
         /// A date rather than a rendered string on purpose: the widget turns it
         /// into minutes at render time, so it can't disagree with the clock even
@@ -31,7 +32,7 @@ struct TunnelActivityAttributes: ActivityAttributes {
     }
 
     /// Static part: fixed for the life of the activity. The title is always
-    /// "Flextunnel" (hardcoded in the widget); this is the helpful line under
-    /// it, e.g. "SOCKS proxy on localhost:18080".
-    var subtitle: String
+    /// "Flextunnel" (hardcoded in the widget); this is the helpful line under it.
+    /// Only forwarding sessions have a banner, so it is a constant.
+    var subtitle: String = "Server-direct port forwarding"
 }
