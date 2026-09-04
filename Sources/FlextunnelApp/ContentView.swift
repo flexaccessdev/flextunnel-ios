@@ -48,15 +48,6 @@ struct ContentView: View {
             case .proxyOnly: return "Starting port forwarding…"
             }
         }
-
-        /// The line under the "Flextunnel" title in the Live Activity: what this
-        /// session is doing with the tunnel.
-        var liveActivitySubtitle: String {
-            switch self {
-            case .browser: return "Browsing through the tunnel"
-            case .proxyOnly: return "Server-direct port forwarding"
-            }
-        }
     }
 
     @StateObject private var proxy = ProxyController()
@@ -111,8 +102,10 @@ struct ContentView: View {
     // forward listeners, so the next foreground must rebind them.
     @State private var wasSuspended = false
 
-    // Tunnel status Live Activity (lock screen / Dynamic Island). UX only — it
-    // reflects the last-known state; it neither grants nor needs background time.
+    // Tunnel status Live Activity (lock screen / Dynamic Island) for forwarding
+    // sessions only: a backgrounded forwarding session is what earns a glanceable
+    // banner, while a browser session is either in front or suspended. UX only —
+    // it reflects the last-known state; it neither grants nor needs background time.
     @State private var liveActivity = LiveActivityController()
 
     // Owned here so bookmarks/history survive BrowserModel being recreated when
@@ -246,8 +239,9 @@ struct ContentView: View {
             .onChange(of: proxy.forwardingSessionID) {
                 syncForwards()
             }
-            .onChange(of: sessionScreenActive) {
+            .onChange(of: proxyOnlyActive) {
                 syncKeepAlive()
+                syncLiveActivity()
             }
             .onChange(of: proxy.sessionAlive) {
                 syncForwards()
@@ -580,11 +574,6 @@ struct ContentView: View {
 
     // MARK: - Background keep-alive
 
-    /// A session screen is up in either mode — what the Live Activity follows.
-    private var sessionScreenActive: Bool {
-        proxyOnlyActive || browserModel != nil
-    }
-
     /// The location keep-alive follows forwarding-only sessions. Browser sessions
     /// explicitly deactivate it even if the persisted forwarding preference is on.
     private func syncKeepAlive() {
@@ -628,12 +617,13 @@ struct ContentView: View {
                     // still run so local clients get refused instead of hanging.
                     // The relaunch on return rebinds them.
                     proxy.closeListenersForSuspension()
-                    // Suspended: the banner can no longer be kept fresh, so dismiss
-                    // it now (≈ the grace after backgrounding). Hold the task
-                    // assertion until the async dismissal actually registers, then
-                    // end it — otherwise the app can suspend first and leave the
-                    // banner behind. A foreground before this handler fires cancels
-                    // the task, so the banner stays live.
+                    // Suspended: a forwarding session's banner can no longer be
+                    // kept fresh, so dismiss it now (≈ the grace after
+                    // backgrounding); a no-op in browser mode, which has none.
+                    // Hold the task assertion until the async dismissal actually
+                    // registers, then end it — otherwise the app can suspend first
+                    // and leave the banner behind. A foreground before this
+                    // handler fires cancels the task, so the banner stays live.
                     Task {
                         await liveActivity.endNow()
                         endBackgroundTask()
@@ -715,14 +705,15 @@ struct ContentView: View {
 
     // MARK: - Live Activity
 
-    /// Mirror the session into the Live Activity: start/refresh it while connected,
-    /// reflect a reconnect while connecting, and end it once the session is gone.
-    /// Both modes get one. Only forwarding sessions can keep refreshing one in
-    /// the background; a browser session's banner ends when its grace expires.
+    /// Mirror a forwarding session into the Live Activity: start/refresh it while
+    /// connected, reflect a reconnect while connecting, and end it once the
+    /// session is gone. Browser sessions never get one: the banner exists for a
+    /// session running behind other apps, which only forwarding does (a browser
+    /// session is either on screen or suspended within the grace).
     /// `allowCreate` is false for background refreshes, which must never call
     /// `Activity.request` (foreground-only) — they only update/end an existing one.
     private func syncLiveActivity(allowCreate: Bool = true) {
-        guard sessionScreenActive else {
+        guard proxyOnlyActive else {
             liveActivity.end()
             return
         }
@@ -734,10 +725,10 @@ struct ContentView: View {
                 statusText: liveActivityStatusText,
                 // Counted down by the widget itself, so it stays right between
                 // refreshes (about once a minute while backgrounded).
-                keepAliveDeadline: proxyOnlyActive ? keepAlive.deadline : nil
+                keepAliveDeadline: keepAlive.deadline
             )
             if allowCreate {
-                liveActivity.start(subtitle: sessionMode.liveActivitySubtitle, state: state)
+                liveActivity.start(state: state)
             } else {
                 liveActivity.update(state)
             }
@@ -750,7 +741,7 @@ struct ContentView: View {
                 tunnelConnected: false,
                 socksAlive: proxy.sessionAlive,
                 statusText: "Reconnecting…",
-                keepAliveDeadline: proxyOnlyActive ? keepAlive.deadline : nil
+                keepAliveDeadline: keepAlive.deadline
             ))
         case .idle, .failed:
             liveActivity.end()

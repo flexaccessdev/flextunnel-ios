@@ -2,9 +2,10 @@ import ActivityKit
 import Foundation
 import os
 
-/// Owns the single tunnel Live Activity: request it once the session connects,
-/// push state updates as the link flaps, and end it on an explicit Stop. This is
-/// UX only — it neither grants nor relies on background execution (see the
+/// Owns the single tunnel Live Activity: request it once a forwarding session
+/// connects, push state updates as the link flaps, and end it on an explicit
+/// Stop. Browser sessions never have one (see `ContentView.syncLiveActivity`).
+/// This is UX only — it neither grants nor relies on background execution (see the
 /// keep-alive note in `ContentView.handleScenePhase`). If the user has Live
 /// Activities disabled system-wide, every call is a no-op.
 @MainActor
@@ -38,7 +39,7 @@ final class LiveActivityController {
     /// activity is `.ended`/`.dismissed` (e.g. a survivor reattached on launch),
     /// drop it and request a fresh one so the banner reappears for a still-
     /// connected session.
-    func start(subtitle: String, state: TunnelActivityAttributes.ContentState) {
+    func start(state: TunnelActivityAttributes.ContentState) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         if let current = activity {
             switch current.activityState {
@@ -54,7 +55,7 @@ final class LiveActivityController {
                 break
             }
         }
-        let attributes = TunnelActivityAttributes(subtitle: subtitle)
+        let attributes = TunnelActivityAttributes()
         do {
             activity = try Activity.request(
                 attributes: attributes,
