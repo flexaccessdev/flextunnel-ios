@@ -173,6 +173,13 @@ final class ProxyController: ObservableObject {
         /// caller-side; shown in the status popover like the server status page.
         var bridges: [BridgeRoute]
 
+        /// Whether this snapshot carries a tunnel set the handshake actually
+        /// learned. The set is required (the core rejects an empty one), so both
+        /// lists empty means it is not known *yet* — a session relaunched by the
+        /// manual Reconnect or the suspension recovery, polled before its first
+        /// handshake lands — rather than "nothing is routed".
+        var isKnown: Bool { !domains.isEmpty || !cidrs.isEmpty }
+
         /// A `*` domain or a default-route CIDR means everything is tunneled, so a
         /// tunnel drop is a full outage (nothing is off-list to browse directly).
         var isFullTunnel: Bool {
@@ -283,6 +290,21 @@ final class ProxyController: ObservableObject {
             }
             return lines.joined(separator: "\n")
         }
+    }
+
+    /// The browser's WebKit-level scoping (`ProxyConfiguration.matchDomains`) to
+    /// apply right now, or nil while no tunnel set is known — no snapshot yet, or
+    /// a relaunched session polled before its first handshake. Callers keep the
+    /// last known scoping through that gap: unscoping the browser would hand the
+    /// private hosts back to the device's own DNS, which answers NXDOMAIN for
+    /// names that only resolve server-side (conditional DNS forwarding), instead
+    /// of letting the proxy hold them for the reconnect.
+    ///
+    /// Double optional on purpose: the inner nil (a full-tunnel set, where every
+    /// host must go through the proxy) is a real value that must be applied.
+    var browserMatchDomains: [String]?? {
+        guard let routes = forwardedRoutes, routes.isKnown else { return nil }
+        return .some(routes.proxyMatchDomains)
     }
 
     /// True when everything is routed through the tunnel (full-tunnel set), so a
