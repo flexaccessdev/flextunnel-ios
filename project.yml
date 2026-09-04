@@ -97,8 +97,8 @@ targets:
         # (cleartext http:// is blocked by default, which silently fails loads
         # like http://server.ezvpn:8000 before they ever reach the proxy).
         INFOPLIST_FILE: Sources/FlextunnelApp/Info.plist
-        MARKETING_VERSION: "0.0.7"
-        CURRENT_PROJECT_VERSION: "7"
+        MARKETING_VERSION: "0.0.9"
+        CURRENT_PROJECT_VERSION: "9"
         # The pinned libflextunnel release, surfaced in the app's version footer
         # (Info.plist -> FlextunnelCoreVersion). scripts/bump-xcframework.sh
         # rewrites this alongside the url+checksum in Package.swift, so the two
@@ -132,5 +132,5 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.flexaccess.flextunnel.widgets
         INFOPLIST_FILE: Sources/FlextunnelWidgets/Info.plist
-        MARKETING_VERSION: "0.0.7"
-        CURRENT_PROJECT_VERSION: "7"
+        MARKETING_VERSION: "0.0.9"
+        CURRENT_PROJECT_VERSION: "9"

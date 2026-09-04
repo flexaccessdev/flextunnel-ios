@@ -78,10 +78,10 @@ private struct LockScreenView: View {
     }
 }
 
-/// How much longer the background keep-alive holds the session before iOS
-/// suspends it. Shown only while something is actually holding the app: no
-/// deadline (keep-alive off or already let go) or a stale banner means there is
-/// nothing trustworthy to report.
+/// How much longer the background keep-alive holds a forwarding session before
+/// iOS suspends it. Shown only while something is actually holding the app: no
+/// deadline (browser mode, keep-alive off, or already let go) or a stale banner
+/// means there is nothing trustworthy to report.
 private struct KeepAliveRemaining: View {
     let state: TunnelActivityAttributes.ContentState
     let isStale: Bool
