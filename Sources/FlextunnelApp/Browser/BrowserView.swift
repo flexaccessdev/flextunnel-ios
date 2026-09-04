@@ -9,9 +9,6 @@ import WebKit
 struct BrowserView: View {
     @State var model: BrowserModel
     @ObservedObject var proxy: ProxyController
-    /// Reported read-only in the tunnel status popover; the opt-in itself lives on
-    /// the start screen.
-    @ObservedObject var keepAlive: BackgroundKeepAlive
     @Environment(\.dismiss) private var dismiss
     @State private var showingTunnelStatus = false
     @State private var showingTabTray = false
@@ -26,7 +23,6 @@ struct BrowserView: View {
             AddressBarView(
                 model: model,
                 proxy: proxy,
-                keepAlive: keepAlive,
                 tunnelStatusIcon: tunnelStatusIcon,
                 tunnelStatusColor: tunnelStatusColor,
                 showingTunnelStatus: $showingTunnelStatus,
@@ -587,7 +583,6 @@ private struct BrowserCertificateWarningView: View {
 private struct AddressBarView: View {
     @Bindable var model: BrowserModel
     let proxy: ProxyController
-    let keepAlive: BackgroundKeepAlive
     let tunnelStatusIcon: String
     let tunnelStatusColor: Color
     @Binding var showingTunnelStatus: Bool
@@ -706,7 +701,6 @@ private struct AddressBarView: View {
         .popover(isPresented: $showingTunnelStatus, arrowEdge: .top) {
             TunnelStatusPopover(
                 proxy: proxy,
-                keepAlive: keepAlive,
                 boundPort: model.socksPort,
                 onDismiss: { showingTunnelStatus = false },
                 onReconnect: onReconnect,
@@ -1204,7 +1198,6 @@ private struct BottomActionBar: View {
 
 private struct TunnelStatusPopover: View {
     @ObservedObject var proxy: ProxyController
-    @ObservedObject var keepAlive: BackgroundKeepAlive
     let boundPort: UInt16
     let onDismiss: () -> Void
     let onReconnect: () -> Void
@@ -1244,11 +1237,6 @@ private struct TunnelStatusPopover: View {
                     DetailRow("SOCKS proxy", proxy.sessionAlive ? "running" : "stopped",
                               valueColor: proxy.sessionAlive ? .green : .red)
                     DetailRow("Tunnel link", tunnelLinkText, valueColor: healthColor)
-                    // Read-only here: the opt-in is made on the start screen
-                    // before connecting. Off means iOS suspends this session
-                    // (and its WebViews) shortly after backgrounding.
-                    DetailRow("Background keep-alive", keepAlive.statusLabel,
-                              valueColor: keepAlive.statusColor)
                     // Where the browser sends tunnel-set hosts. Off-list hosts
                     // never touch it (WebKit's matchDomains split happens before
                     // any connection), so while nothing is listening only

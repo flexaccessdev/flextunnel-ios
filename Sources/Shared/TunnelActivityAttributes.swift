@@ -16,10 +16,11 @@ struct TunnelActivityAttributes: ActivityAttributes {
         var socksAlive: Bool
         /// Short human status, e.g. "Connected" / "Reconnecting…".
         var statusText: String
-        /// Estimated moment the background keep-alive lets go of the session if
-        /// nothing resets its inactivity window first (movement, an open forward
-        /// connection, or opening the app). Nil when no keep-alive is holding the
-        /// app — then there is no limit worth showing, only the ~30s grace.
+        /// Estimated moment the background keep-alive lets go of a forwarding
+        /// session if nothing resets its inactivity window first (movement, an
+        /// open forward connection, or opening the app). Nil for browser mode or
+        /// when no forwarding keep-alive is holding the app — then there is no
+        /// limit worth showing, only the ~30s grace.
         ///
         /// A date rather than a rendered string on purpose: the widget turns it
         /// into minutes at render time, so it can't disagree with the clock even

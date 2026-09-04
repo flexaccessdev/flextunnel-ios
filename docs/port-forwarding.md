@@ -80,25 +80,25 @@ too; the management UI just lives in proxy-only mode.
 
 The listeners live inside the app process and follow its lifecycle, so whether
 forwards survive backgrounding is entirely down to the **keep-alive** — opted
-into on the start screen before connecting, and shared with browser sessions.
+into on the start screen while **Forward ports** is selected, before connecting.
 See [background-keep-alive.md](background-keep-alive.md) for the mechanism, the
 permission, and the App Store caveat. The proxy screen's Background section
 reports its live status read-only.
 
 What matters specifically for forwards:
 
-- **With it on**, every forward (and, in browser sessions, the SOCKS listener)
-  stays reachable while you use other apps — until the keep-alive's **inactivity limit** (30 minutes by
-  default). A forward carrying an open connection counts as activity and keeps
+- **With it on**, every forward stays reachable while you use other apps — until
+  the keep-alive's **inactivity limit** (5 minutes by default). A forward
+  carrying an open connection counts as activity and keeps
   postponing it, so a session in active use isn't dropped for sitting still;
   reaching the limit falls back to the suspension case below, and returning to
   the app rebinds everything.
 - **With it off or location denied**, extended execution keeps serving for
   roughly **30 seconds** after backgrounding, then iOS suspends the process.
-  Just before that the app **closes every listener** (forwards and, in browser
-  sessions, the SOCKS front-end): a suspended process's listeners would keep
-  accepting into the kernel backlog and serve nothing, so closing turns a
-  client's hang into an immediate connection-refused. On return the session is
+  Just before that the app **closes every forward listener**: a suspended
+  process's listeners would keep accepting into the kernel backlog and serve
+  nothing, so closing turns a client's hang into an immediate
+  connection-refused. On return the session is
   **relaunched automatically** — fresh tunnel connect, every enabled forward
   rebound — so expect a brief "connecting", and clients that were connected
   must reconnect.
