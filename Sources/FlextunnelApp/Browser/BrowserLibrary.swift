@@ -38,7 +38,9 @@ struct HistoryEntry: Identifiable, Codable, Equatable {
 /// to their history store, rather than the weaker UserDefaults plist:
 /// - written with Data Protection `…UntilFirstUserAuthentication` (encrypted at
 ///   rest, readable after the first unlock so it survives backgrounding);
-/// - excluded from iCloud / device backups.
+/// - included in iCloud / encrypted device backups, so a restore brings the
+///   user's bookmarks and history back. This is backup only, not sync: the
+///   data lives in the app container and never leaves the device otherwise.
 /// (WebKit's shared default data store persists browser session data like
 /// cookies and logins; BrowserLibrary persists the app's own bookmark and
 /// history JSON records.)
@@ -147,13 +149,15 @@ final class BrowserLibrary {
         return base.appendingPathComponent("BrowserLibrary", isDirectory: true)
     }
 
-    /// Creates the directory and marks it excluded from backups, which also
-    /// excludes its contents.
+    /// Creates the directory and marks it backup-eligible. Set explicitly to
+    /// `false` rather than left alone: earlier builds excluded this directory,
+    /// and the exclusion is a persisted attribute on the existing directory
+    /// that stays in force until something clears it.
     private static func prepareDirectory(_ dir: URL) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var dir = dir
         var values = URLResourceValues()
-        values.isExcludedFromBackup = true
+        values.isExcludedFromBackup = false
         try? dir.setResourceValues(values)
     }
 
