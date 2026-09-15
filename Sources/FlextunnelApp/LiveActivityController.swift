@@ -43,7 +43,9 @@ final class LiveActivityController {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         if let current = activity {
             switch current.activityState {
-            case .active, .stale:
+            case .pending, .active, .stale:
+                // `.pending` is already on its way to the screen; a second
+                // request would spawn a duplicate banner.
                 update(state)
                 return
             case .ended, .dismissed:
