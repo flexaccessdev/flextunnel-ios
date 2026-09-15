@@ -50,11 +50,12 @@ struct BrowserView: View {
                                     BrowserCertificateWarningView(
                                         warning: warning,
                                         onProceed: { tab.resolveCertificateWarning(allow: true) },
-                                        onGoBack: { tab.resolveCertificateWarning(allow: false) })
+                                        onGoBack: { tab.returnToDisplayedPage() })
                                 } else if let failure = tab.loadFailure {
                                     BrowserLoadFailureView(
                                         failure: failure,
-                                        onRetry: { tab.retryFailedLoad() })
+                                        onRetry: { tab.retryFailedLoad() },
+                                        onGoBack: { tab.returnToDisplayedPage() })
                                 }
                             }
                             .overlay {
@@ -479,9 +480,13 @@ private struct EmptyBrowserView: View {
     }
 }
 
+/// Full-screen failure page layered over the document WebKit kept displaying.
+/// Besides retrying, it offers the way out mainstream browsers give for free —
+/// back to the page you were on — since the overlay otherwise hides it.
 private struct BrowserLoadFailureView: View {
     let failure: BrowserLoadFailure
     let onRetry: () -> Void
+    let onGoBack: () -> Void
 
     var body: some View {
         VStack(spacing: 14) {
@@ -515,10 +520,17 @@ private struct BrowserLoadFailureView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 320)
 
-            Button(action: onRetry) {
-                Label("Try Again", systemImage: "arrow.clockwise")
+            VStack(spacing: 10) {
+                Button(action: onRetry) {
+                    Label("Try Again", systemImage: "arrow.clockwise").frame(maxWidth: 280)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button(action: onGoBack) {
+                    Text("Go Back").frame(maxWidth: 280)
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.borderedProminent)
             .padding(.top, 4)
         }
         .padding(24)

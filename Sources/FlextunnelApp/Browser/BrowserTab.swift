@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import Security
+import UIKit
 import WebKit
 import os.log
 
@@ -36,7 +37,18 @@ final class BrowserTab: Identifiable {
     /// handshake — so the security indicator must not trust `page.url` until the
     /// response has actually arrived over the negotiated connection.
     private var hasCommittedNavigation = false
+    /// The document whose commit this tab last processed, so a commit the
+    /// navigation stream dropped can be told apart from one already handled
+    /// (see `recoverMissedCommit`).
+    private var committedURL: URL?
     private var certificateWarningContinuation: CheckedContinuation<Bool, Never>?
+
+    /// The host:port whose certificate warning the user declined (or that a
+    /// newer navigation superseded). WebKit reports the cancelled challenge as
+    /// a navigation failure; that failure is ours, not the page's, so it must
+    /// not raise the failure screen — the tab has already returned to whatever
+    /// it was showing. Consumed by the first matching error.
+    private var declinedCertificateChallenge: (host: String, port: Int)?
 
     /// Drains `page.navigations` for the tab's whole lifetime, independent of
     /// which tab is selected. Cancelled when the tab is closed.
@@ -159,6 +171,9 @@ final class BrowserTab: Identifiable {
     // MARK: - Navigation
 
     func load(_ url: URL, displayAddress: String? = nil) {
+        // A certificate interstitial still waiting on an answer belongs to the
+        // navigation this one replaces; leaving it up would shadow the new page.
+        resolveCertificateWarning(allow: false)
         presentingHome = false
         lastAttemptedURL = url
         addressText = displayAddress ?? url.absoluteString
@@ -169,12 +184,22 @@ final class BrowserTab: Identifiable {
     }
 
     func goBack() {
+        // A failure or certificate screen sits over a document WebKit still
+        // displays (a provisional failure never unloads the current page), and
+        // that document is not in the back list — it is the current entry. So
+        // back first uncovers it, like leaving Safari's error page, instead of
+        // skipping past it into history.
+        if loadFailure != nil || certificateWarning != nil {
+            returnToDisplayedPage()
+            return
+        }
         // On the first page there's no web history to step into, so back
         // returns to the home view instead.
         guard let item = page.backForwardList.backList.last else {
             goHome()
             return
         }
+        resolveCertificateWarning(allow: false)
         presentingHome = false
         lastAttemptedURL = item.url
         addressText = item.url.absoluteString
@@ -192,6 +217,7 @@ final class BrowserTab: Identifiable {
             return
         }
         guard let item = page.backForwardList.forwardList.first else { return }
+        resolveCertificateWarning(allow: false)
         lastAttemptedURL = item.url
         addressText = item.url.absoluteString
         loadFailure = nil
@@ -224,15 +250,46 @@ final class BrowserTab: Identifiable {
         load(url, displayAddress: addressText)
     }
 
+    /// Dismisses the failure or certificate screen and returns to what WebKit
+    /// still shows underneath: the last committed document, or the home view
+    /// when the tab never committed one. The address bar follows, so it stops
+    /// naming the URL that failed.
+    func returnToDisplayedPage() {
+        resolveCertificateWarning(allow: false)
+        loadFailure = nil
+        if let url = page.url {
+            presentingHome = false
+            lastAttemptedURL = url
+            addressText = url.absoluteString
+            hasCommittedNavigation = true
+        } else {
+            lastAttemptedURL = nil
+            addressText = ""
+            hasCommittedNavigation = false
+        }
+    }
+
     func resolveCertificateWarning(allow: Bool) {
+        guard let continuation = certificateWarningContinuation else {
+            certificateWarning = nil
+            return
+        }
+        if !allow, let warning = certificateWarning {
+            declinedCertificateChallenge = (warning.host, warning.port)
+        }
         certificateWarning = nil
-        certificateWarningContinuation?.resume(returning: allow)
         certificateWarningContinuation = nil
+        continuation.resume(returning: allow)
     }
 
     /// Drains the page's navigation events for this tab's lifetime, logging
     /// outcomes and recording failures into `loadFailure`. Started in `make` and
     /// cancelled in `stopObserving`, so it runs regardless of tab selection.
+    ///
+    /// `WebPage.navigations` terminates on every error, so the loop re-subscribes
+    /// after each one. Events WebKit delivers between the error and the
+    /// re-subscription — the rest of the same IPC batch — reach no stream and
+    /// are lost, which `recoverMissedCommit` compensates for from page state.
     private func observeNavigations() async {
         while !Task.isCancelled {
             do {
@@ -245,17 +302,36 @@ final class BrowserTab: Identifiable {
                 return
             } catch {
                 handleNavigationError(error)
+                recoverMissedCommit()
             }
         }
+    }
+
+    /// Recovers a `.committed` event the stream dropped. The common case: leaving
+    /// a page that is still loading makes WebKit cancel the old document's load
+    /// and commit the new one in the same batch, so the cancellation kills the
+    /// stream and the commit that follows it is never delivered — leaving the
+    /// address bar and lock on the old page until `.finished`, or for good on a
+    /// page that never finishes. WebKit's own state still says what happened: a
+    /// document is committed once it is the current back-forward item and the
+    /// page's URL, and if that is not the document whose commit was last
+    /// processed, the commit was missed.
+    private func recoverMissedCommit() {
+        guard let url = page.url, url != committedURL,
+              page.backForwardList.currentItem?.url == url else { return }
+        log.info("recovering missed commit for host \(Self.logHost(for: url), privacy: .public)")
+        didCommit(url)
     }
 
     private func handleNavigationEvent(_ event: WebPage.NavigationEvent) {
         switch event {
         case .committed, .finished:
-            hasCommittedNavigation = true
-            loadFailure = nil
             if let url = page.url {
-                addressText = url.absoluteString
+                didCommit(url)
+            } else {
+                hasCommittedNavigation = true
+                loadFailure = nil
+                declinedCertificateChallenge = nil
             }
             // Record into history once the page has fully loaded, so the title
             // (which arrives with the document) is available.
@@ -267,20 +343,57 @@ final class BrowserTab: Identifiable {
             // `load(_:)` — the indicator resets for every fresh navigation.
             hasCommittedNavigation = false
         case .receivedServerRedirect:
-            break
+            // `page.url` already names the redirect target; track it so a
+            // failure or declined certificate at the target is matched to this
+            // navigation, and the address bar follows the redirect as in Safari.
+            if let url = page.url, url != lastAttemptedURL {
+                lastAttemptedURL = url
+                addressText = url.absoluteString
+            }
         @unknown default:
             break
         }
     }
 
+    /// The document at `url` is committed: it is what the page displays now, so
+    /// any failure screen is stale and the address bar and lock follow it.
+    private func didCommit(_ url: URL) {
+        hasCommittedNavigation = true
+        committedURL = url
+        loadFailure = nil
+        declinedCertificateChallenge = nil
+        addressText = url.absoluteString
+    }
+
     private func handleNavigationError(_ error: Error) {
         let nsError = underlyingNSError(from: error)
-        guard nsError.code != NSURLErrorCancelled else { return }
-        // A navigation we cancelled to hand off as a download reports a policy
-        // interruption — not a real failure, so don't show the error screen.
-        if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 { return }
+        let failing = failingURL(from: error)
 
-        let attemptedURL = failingURL(from: error) ?? lastAttemptedURL ?? page.url
+        // The failure WebKit reports for a certificate challenge we cancelled
+        // (user chose Go Back, or a newer navigation superseded the warning):
+        // the tab already shows what it should, so this must not raise the
+        // failure screen over it.
+        if let declined = declinedCertificateChallenge {
+            declinedCertificateChallenge = nil
+            if failing == nil
+                || failing.flatMap { $0.host() }.map(BrowserNavigationDecider.normalizedHost) == BrowserNavigationDecider.normalizedHost(declined.host) {
+                return
+            }
+        }
+
+        // Cancellations: our own stop, a navigation replaced by a newer one, a
+        // response handed off as a download (policy interruption, WebKit 102),
+        // or a link opened in another app. Not failures — but when nothing
+        // else is loading, the aborted URL must not stay in the address bar
+        // over the page WebKit kept displaying.
+        if Self.isCancellation(nsError) {
+            if loadFailure == nil, certificateWarning == nil, !page.isLoading {
+                returnToDisplayedPage()
+            }
+            return
+        }
+
+        let attemptedURL = failing ?? lastAttemptedURL ?? page.url
         let message = Self.userFacingMessage(for: nsError)
         log.error("navigation failed: \(nsError.localizedDescription, privacy: .private)")
 
@@ -295,6 +408,14 @@ final class BrowserTab: Identifiable {
                 message: message,
                 reason: nsError.localizedDescription)
         }
+    }
+
+    private static func isCancellation(_ error: NSError) -> Bool {
+        if error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled { return true }
+        // WebKitErrorFrameLoadInterruptedByPolicyChange: a navigation our
+        // decider answered with `.cancel`.
+        if error.domain == "WebKitErrorDomain" && error.code == 102 { return true }
+        return false
     }
 
     private func failingURL(from error: Error) -> URL? {
@@ -408,10 +529,20 @@ final class BrowserNavigationDecider: WebPage.NavigationDeciding {
     var downloadHandler: ((URLRequest, URLResponse?) -> Void)?
 
     private let certificateTrustStore: BrowserCertificateTrustStore
+    private let log = Logger(subsystem: "com.example.flextunnel", category: "webview")
     /// The most recent navigation action's request, kept so the response path can
     /// preserve the original method/body/headers — `NavigationResponse` doesn't
     /// expose the request, and rebuilding from the URL alone would drop them.
     private var lastNavigationRequest: URLRequest?
+    /// The main frame's in-flight (or committed) URL, so a TLS challenge can be
+    /// told apart from a subresource's: only the page itself gets the
+    /// interstitial. Updated for redirects too, since WebKit re-asks policy.
+    private var mainFrameURL: URL?
+
+    /// Schemes WebKit renders itself. Anything else (`mailto:`, `tel:`, app
+    /// links) can only fail inside the web view — with a failure screen whose
+    /// Try Again fails the same way — so it is handed to the system instead.
+    private static let webSchemes: Set<String> = ["http", "https", "about", "blob", "data", "javascript"]
 
     init(certificateTrustStore: BrowserCertificateTrustStore) {
         self.certificateTrustStore = certificateTrustStore
@@ -422,6 +553,22 @@ final class BrowserNavigationDecider: WebPage.NavigationDeciding {
         preferences: inout WebPage.NavigationPreferences
     ) async -> WKNavigationActionPolicy {
         lastNavigationRequest = action.request
+        if let url = action.request.url, let scheme = url.scheme?.lowercased(),
+           !Self.webSchemes.contains(scheme) {
+            // Only a user gesture may launch another app; a script redirect
+            // to an app scheme is dropped silently, as mainstream browsers do.
+            switch action.navigationType {
+            case .linkActivated, .formSubmitted, .formResubmitted:
+                log.info("opening external scheme \(scheme, privacy: .public)")
+                UIApplication.shared.open(url, options: [:], completionHandler: nil)
+            default:
+                log.info("dropping non-user navigation to scheme \(scheme, privacy: .public)")
+            }
+            return .cancel
+        }
+        if action.target?.isMainFrame == true {
+            mainFrameURL = action.request.url
+        }
         if action.shouldPerformDownload {
             downloadHandler?(action.request, nil)
             return .cancel
@@ -465,6 +612,15 @@ final class BrowserNavigationDecider: WebPage.NavigationDeciding {
             return (.useCredential, URLCredential(trust: serverTrust))
         }
 
+        // A subresource (image, script, XHR, iframe) on an untrusted host is
+        // blocked without asking — as Chrome and Safari do — rather than
+        // throwing a full-screen interstitial over a page that is otherwise
+        // fine, on every poll. Navigate to that host directly to trust it.
+        guard isMainFrameChallenge(host: host, port: port) else {
+            log.info("blocking subresource with untrusted certificate on \(host, privacy: .private)")
+            return (.cancelAuthenticationChallenge, nil)
+        }
+
         let warning = BrowserCertificateWarning(host: host, port: port, reason: reason)
         guard await certificateWarningHandler?(warning) == true else {
             return (.cancelAuthenticationChallenge, nil)
@@ -472,6 +628,22 @@ final class BrowserNavigationDecider: WebPage.NavigationDeciding {
 
         certificateTrustStore.trust(host: host, port: port)
         return (.useCredential, URLCredential(trust: serverTrust))
+    }
+
+    private func isMainFrameChallenge(host: String, port: Int) -> Bool {
+        guard let url = mainFrameURL, let mainHost = url.host() else { return false }
+        let mainPort = url.port ?? (url.scheme?.lowercased() == "http" ? 80 : 443)
+        return Self.normalizedHost(mainHost) == Self.normalizedHost(host) && mainPort == port
+    }
+
+    /// Case-folded, with the brackets an IPv6 literal carries in a URL but not
+    /// in a protection space.
+    static func normalizedHost(_ host: String) -> String {
+        var host = host.lowercased()
+        if host.hasPrefix("[") && host.hasSuffix("]") {
+            host = String(host.dropFirst().dropLast())
+        }
+        return host
     }
 
     /// Evaluates the server trust: nil when valid, otherwise a human-readable
