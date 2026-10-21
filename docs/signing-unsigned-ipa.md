@@ -45,10 +45,10 @@ Never commit them or upload them to an untrusted signing service.
 Run the command blocks below in the same Terminal session so their variables
 remain available.
 
-## 1. Download and verify the prerelease
+## 1. Download and verify the release
 
 Download `flextunnel-unsigned.ipa` and `SHA256SUMS.txt` from the same GitHub
-prerelease. Set the absolute download directory and verify the IPA:
+release. Set the absolute download directory and verify the IPA:
 
 ```bash
 DOWNLOAD_DIR="/absolute/path/to/downloads"

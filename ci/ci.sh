@@ -135,8 +135,8 @@ job_smoke() {
     xcrun simctl terminate "$SIM_NAME" "$BUNDLE_ID" >/dev/null 2>&1 || true
 }
 
-# .github/workflows/unsigned-ios.yml, minus the packaging: the IPA, the archive
-# zip, the checksums and the prerelease are release plumbing, and none of them
+# .github/workflows/unsigned-ios.yml, minus the packaging: the version tag, the
+# IPA, the archive zip, the checksums and the release are release plumbing, and none of them
 # can fail in a way the archive and the assertions below do not already catch.
 job_unsigned() {
     step 'unsigned release archive'

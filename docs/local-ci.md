@@ -58,8 +58,8 @@ that Actions does not bother with:
 - **`unsigned`** — `.github/workflows/unsigned-ios.yml`: the Release archive with
   signing off, then its bundle assertions — widget embedded, nothing signed, no
   profile baked in, and the background-location keys still in `Info.plist`. The
-  packaging that workflow does after that (IPA, archive zip, checksums,
-  prerelease) is release plumbing and is deliberately not repeated here.
+  packaging that workflow does after that (version tag, IPA, archive zip,
+  checksums, release) is release plumbing and is deliberately not repeated here.
 - **`device`** — the signed device slice, at Debug: a compile-and-sign check, so
   running the job on its own tells you signing still resolves. It is not what
   goes on the phone — `scripts/run-device-ios-host.sh` builds its own Release slice (below).
