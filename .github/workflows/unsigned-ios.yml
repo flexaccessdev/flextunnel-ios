@@ -1,4 +1,4 @@
-name: Build unsigned iOS artifacts
+name: Release unsigned iOS (Manual)
 
 # ---------------------------------------------------------------------------
 # INTERNAL NOTE (team only — we own the dev.flexaccess.flextunnel* App IDs)
@@ -33,14 +33,106 @@ name: Build unsigned iOS artifacts
 # device UDIDs already registered with the team, so register targets first.
 # ---------------------------------------------------------------------------
 
+# Like the sibling repos (ezvpn-apple), the tag and title come from the version
+# declared in project.yml (MARKETING_VERSION / CURRENT_PROJECT_VERSION, shared
+# by the app and widget targets) plus the pinned flextunnel core
+# (FLEXTUNNEL_CORE_VERSION). A run aborts if that tag already exists, so every
+# release needs a version bump, and it is a real release on main, a prerelease
+# from any other branch. Manual only.
 on:
   workflow_dispatch:
 
 permissions:
   contents: write
 
+# One run at a time; a second dispatch queues instead of racing on the tag.
+concurrency:
+  group: release-ios
+  cancel-in-progress: false
+
 jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      build: ${{ steps.tag.outputs.build }}
+      release_tag: ${{ steps.tag.outputs.release_tag }}
+      release_title: ${{ steps.tag.outputs.release_title }}
+      is_prerelease: ${{ steps.tag.outputs.is_prerelease }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Generate tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Tag and title come from the version declared in project.yml, which
+          # the app and widget targets must share. Whether it is a prerelease
+          # depends only on the branch (anything but main).
+          versions="$(sed -nE 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"?([0-9.]+)"?.*/\1/p' project.yml | sort -u)"
+          builds="$(sed -nE 's/^[[:space:]]*CURRENT_PROJECT_VERSION:[[:space:]]*"?([0-9]+)"?.*/\1/p' project.yml | sort -u)"
+          [[ -n "$versions" && "$(wc -l <<<"$versions")" -eq 1 ]] || {
+            echo "::error::project.yml must declare exactly one MARKETING_VERSION across targets (found: $(echo $versions))"
+            exit 1
+          }
+          [[ -n "$builds" && "$(wc -l <<<"$builds")" -eq 1 ]] || {
+            echo "::error::project.yml must declare exactly one CURRENT_PROJECT_VERSION across targets (found: $(echo $builds))"
+            exit 1
+          }
+          version="$versions"
+          core="$(sed -nE 's/^[[:space:]]*FLEXTUNNEL_CORE_VERSION:[[:space:]]*"?([0-9.]+)"?.*/\1/p' project.yml | head -1)"
+          [[ -n "$core" ]] || {
+            echo "::error::Could not parse FLEXTUNNEL_CORE_VERSION from project.yml"
+            exit 1
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build=$builds" >> "$GITHUB_OUTPUT"
+          echo "release_tag=v$version" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "release_title=Prerelease iOS v$version ($builds, core $core)" >> "$GITHUB_OUTPUT"
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_title=Release iOS v$version ($builds, core $core)" >> "$GITHUB_OUTPUT"
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Abort if tag already exists
+        run: |
+          if git ls-remote --tags origin "refs/tags/${{ steps.tag.outputs.release_tag }}" | grep -q .; then
+            echo "::error::Tag ${{ steps.tag.outputs.release_tag }} already exists on remote"
+            exit 1
+          fi
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "${{ steps.tag.outputs.release_tag }}" --json isDraft --jq '.isDraft' 2>/dev/null | grep -qx true; then
+            echo "Deleting stale draft release ${{ steps.tag.outputs.release_tag }}"
+            gh release delete "${{ steps.tag.outputs.release_tag }}" --yes
+          fi
+          args=()
+          if [ "${{ steps.tag.outputs.is_prerelease }}" = "true" ]; then
+            args+=(--prerelease)
+          else
+            # Generate notes against the previous *stable* release, not the latest prerelease.
+            prev_stable=$(gh release list --exclude-pre-releases --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // empty')
+            if [ -n "$prev_stable" ]; then
+              args+=(--notes-start-tag "$prev_stable")
+            fi
+          fi
+          gh release create "${{ steps.tag.outputs.release_tag }}" \
+            --draft \
+            "${args[@]}" \
+            --target "${{ github.sha }}" \
+            --title "${{ steps.tag.outputs.release_title }}" \
+            --generate-notes
+
   build:
+    needs: setup
     name: Build unsigned IPA and archive
     runs-on: macos-latest
     timeout-minutes: 30
@@ -86,6 +178,17 @@ jobs:
             echo "::error::Widget extension not found at $widget_path"
             exit 1
           fi
+
+          for bundle in "$app_path" "$widget_path"; do
+            short="$(plutil -extract CFBundleShortVersionString raw -o - \
+              "$bundle/Info.plist")"
+            build="$(plutil -extract CFBundleVersion raw -o - \
+              "$bundle/Info.plist")"
+            if [[ "$short ($build)" != "${{ needs.setup.outputs.version }} (${{ needs.setup.outputs.build }})" ]]; then
+              echo "::error::$bundle reports version $short ($build), not ${{ needs.setup.outputs.version }} (${{ needs.setup.outputs.build }})"
+              exit 1
+            fi
+          done
 
           while IFS= read -r bundle; do
             if codesign --display "$bundle" >/dev/null 2>&1; then
@@ -156,26 +259,35 @@ jobs:
       - name: Upload unsigned IPA and archive
         uses: actions/upload-artifact@v7
         with:
-          name: flextunnel-ios-unsigned-${{ github.run_number }}
+          name: release-ios
           path: ${{ runner.temp }}/flextunnel-ios-artifacts/
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
 
-      - name: Publish GitHub prerelease
+  publish-release:
+    needs: [setup, build]
+    if: always() && needs.setup.result == 'success' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: List release artifacts
+        run: ls -la artifacts/
+
+      - name: Upload artifacts to draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          artifact_dir="$RUNNER_TEMP/flextunnel-ios-artifacts"
-          release_id="$(date -u +%Y%m%d%H%M%S)-${GITHUB_SHA:0:7}"
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "${{ needs.setup.outputs.release_tag }}" artifacts/* --clobber
 
-          gh release create "$release_id" \
-            "$artifact_dir/flextunnel-unsigned.ipa" \
-            "$artifact_dir/flextunnel-ios-unsigned.xcarchive.zip" \
-            "$artifact_dir/SHA256SUMS.txt" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "$release_id" \
-            --notes "Unsigned iOS artifacts built from commit $GITHUB_SHA." \
-            --prerelease \
-            --latest=false
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "${{ needs.setup.outputs.release_tag }}" --draft=false

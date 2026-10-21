@@ -51,7 +51,7 @@ There are two ways to use the tunnel, chosen on the setup screen:
 - [Building in a macOS VM](docs/deploy-from-a-vm.md) — why a UTM/Tart guest can
   never install onto a physical device, and the build-in-the-VM /
   install-from-the-host split that works instead.
-- [Sign an unsigned IPA](docs/signing-unsigned-ipa.md) — verify a prerelease,
+- [Sign an unsigned IPA](docs/signing-unsigned-ipa.md) — verify a release,
   apply team-owned bundle IDs, sign the widget and app with separate profiles,
   and preserve the background location configuration.
 
@@ -134,12 +134,16 @@ from `Developer.local.xcconfig` (gitignored, per-developer) or a `--team-id` fla
    See `scripts/create-archive-ios.sh --help` for all options (configuration,
    output paths, and export method, which defaults to `debugging`).
 
-## Unsigned prerelease for self-signing
+## Unsigned release for self-signing
 
-Run the **Build unsigned iOS artifacts** workflow manually in GitHub Actions.
-It builds without a development team, uploads the unsigned IPA, unsigned
-`.xcarchive`, and checksums as a workflow artifact, and publishes the same files
-in a prerelease named `yyyymmddhhmmss-<short-git-hash>`.
+Run the **Release unsigned iOS (Manual)** workflow in GitHub Actions. It builds
+without a development team and publishes the unsigned IPA, unsigned
+`.xcarchive`, and checksums in a release tagged `v<MARKETING_VERSION>` from
+`project.yml` and titled with the app version, build number and pinned core,
+e.g. `Release iOS v0.0.1 (1, core 0.0.83)` (a prerelease when run from a branch
+other than `main`). The workflow refuses to run if that tag already exists, so
+bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` (on both the app and
+widget targets) before each release.
 
 The IPA cannot be installed as downloaded. Each user must sign both the main
 app and its WidgetKit extension with separate profiles owned by their Apple
