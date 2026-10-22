@@ -178,3 +178,7 @@ still contains the app's background location mode and usage description.
 - The `.xcodeproj` is git-ignored on purpose — regenerate it with `xcodegen`. The
   xcframework is fetched by Swift Package Manager (pinned release, or a local
   build in FFI-dev mode), not vendored into this repo.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
