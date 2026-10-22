@@ -10,6 +10,20 @@ QUIC (NAT traversal, relay fallback, TLS 1.3), the app dials the server by its
 endpoint id — the server needs no public inbound port, and neither end needs
 root or a TUN device.
 
+> **Alpha.** The iOS client is the least stable flextunnel client and every
+> release of it is published as a GitHub prerelease. The desktop and CLI
+> clients run the tunnel as a long-lived process; iOS does not allow that.
+> There is no VPN / Network Extension, so the tunnel lives inside the app
+> process and follows its lifecycle: iOS suspends the app ~30 s after it leaves
+> the foreground and every forward dies with it, unless the opt-in Core Location
+> keep-alive holds the process up (and that only covers **Forward ports**
+> mode — WebKit's own page and network processes are suspended regardless).
+> The browser is also limited to what `WKWebsiteDataStore.proxyConfigurations`
+> can express (host-name scoping only, no CIDR split), and nothing outside the
+> app can use the proxy except through the `localhost` port forwards. Expect
+> rough edges around backgrounding, reconnects and WebKit behavior that the
+> other platforms do not have.
+
 There are two ways to use the tunnel, chosen on the setup screen:
 
 - **Browse the web** — a built-in browser routed through the tunnel. This is a
@@ -140,8 +154,10 @@ Run the **Release unsigned iOS (Manual)** workflow in GitHub Actions. It builds
 without a development team and publishes the unsigned IPA, unsigned
 `.xcarchive`, and checksums in a release tagged `v<MARKETING_VERSION>` from
 `project.yml` and titled with the app version, build number and pinned core,
-e.g. `Release iOS v0.0.1 (1, core 0.0.83)` (a prerelease when run from a branch
-other than `main`). The workflow refuses to run if that tag already exists, so
+e.g. `Alpha iOS v0.0.1 (1, core 0.0.83)`. While the iOS client is alpha every
+release is marked a GitHub **prerelease**, whatever branch it is run from, so
+nothing is ever presented as a stable iOS build; the title says `Alpha` on
+`main` and `Alpha (branch)` elsewhere. The workflow refuses to run if that tag already exists, so
 bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` (on both the app and
 widget targets) before each release.
 

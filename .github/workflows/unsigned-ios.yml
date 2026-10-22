@@ -37,8 +37,13 @@ name: Release unsigned iOS (Manual)
 # declared in project.yml (MARKETING_VERSION / CURRENT_PROJECT_VERSION, shared
 # by the app and widget targets) plus the pinned flextunnel core
 # (FLEXTUNNEL_CORE_VERSION). A run aborts if that tag already exists, so every
-# release needs a version bump, and it is a real release on main, a prerelease
-# from any other branch. Manual only.
+# release needs a version bump. The iOS client is alpha — iOS suspends the
+# in-process tunnel in the background and there is no Network Extension, so it
+# is not as stable as the other flextunnel clients — and every release is
+# therefore published as a GitHub prerelease, titled "Alpha", whatever branch it
+# runs from; a branch other than main is additionally named in the title. Drop
+# the alpha marking here, in README.md and in AppVersionFooter.swift together
+# when the client graduates. Manual only.
 on:
   workflow_dispatch:
 
@@ -58,7 +63,6 @@ jobs:
       build: ${{ steps.tag.outputs.build }}
       release_tag: ${{ steps.tag.outputs.release_tag }}
       release_title: ${{ steps.tag.outputs.release_title }}
-      is_prerelease: ${{ steps.tag.outputs.is_prerelease }}
     steps:
       - uses: actions/checkout@v6
 
@@ -69,8 +73,8 @@ jobs:
           set -euo pipefail
 
           # Tag and title come from the version declared in project.yml, which
-          # the app and widget targets must share. Whether it is a prerelease
-          # depends only on the branch (anything but main).
+          # the app and widget targets must share. Every release is an alpha
+          # prerelease; a branch other than main is named in the title.
           versions="$(sed -nE 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"?([0-9.]+)"?.*/\1/p' project.yml | sort -u)"
           builds="$(sed -nE 's/^[[:space:]]*CURRENT_PROJECT_VERSION:[[:space:]]*"?([0-9]+)"?.*/\1/p' project.yml | sort -u)"
           [[ -n "$versions" && "$(wc -l <<<"$versions")" -eq 1 ]] || {
@@ -91,11 +95,9 @@ jobs:
           echo "build=$builds" >> "$GITHUB_OUTPUT"
           echo "release_tag=v$version" >> "$GITHUB_OUTPUT"
           if [ "${{ github.ref }}" != "refs/heads/main" ]; then
-            echo "release_title=Prerelease iOS v$version ($builds, core $core)" >> "$GITHUB_OUTPUT"
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "release_title=Alpha (${{ github.ref_name }}) iOS v$version ($builds, core $core)" >> "$GITHUB_OUTPUT"
           else
-            echo "release_title=Release iOS v$version ($builds, core $core)" >> "$GITHUB_OUTPUT"
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "release_title=Alpha iOS v$version ($builds, core $core)" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Abort if tag already exists
@@ -114,19 +116,11 @@ jobs:
             echo "Deleting stale draft release ${{ steps.tag.outputs.release_tag }}"
             gh release delete "${{ steps.tag.outputs.release_tag }}" --yes
           fi
-          args=()
-          if [ "${{ steps.tag.outputs.is_prerelease }}" = "true" ]; then
-            args+=(--prerelease)
-          else
-            # Generate notes against the previous *stable* release, not the latest prerelease.
-            prev_stable=$(gh release list --exclude-pre-releases --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // empty')
-            if [ -n "$prev_stable" ]; then
-              args+=(--notes-start-tag "$prev_stable")
-            fi
-          fi
+          # Alpha: always a prerelease (see the header comment). Notes are
+          # generated against the previous release, which is also a prerelease.
           gh release create "${{ steps.tag.outputs.release_tag }}" \
             --draft \
-            "${args[@]}" \
+            --prerelease \
             --target "${{ github.sha }}" \
             --title "${{ steps.tag.outputs.release_title }}" \
             --generate-notes
