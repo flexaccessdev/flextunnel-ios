@@ -30,8 +30,16 @@ enum AppVersion {
         return trimmed.isEmpty ? "unknown" : trimmed
     }()
 
+    /// The iOS client is alpha: with no Network Extension the tunnel lives in
+    /// the app process and dies with it when iOS suspends the app, so it is
+    /// less stable than the other flextunnel clients. Shown next to the
+    /// version so a tester reporting a build knows the stage it is at; drop it
+    /// here, in README.md and in the release workflow together when the client
+    /// graduates.
+    static let stage = "alpha"
+
     /// The single line both numbers share.
-    static var summary: String { "Version \(app) · core \(core)" }
+    static var summary: String { "Version \(app) \(stage) · core \(core)" }
 }
 
 /// Centered, quiet version line meant as the last row of a `Form`/`List`.
@@ -43,6 +51,6 @@ struct AppVersionFooter: View {
             .frame(maxWidth: .infinity, alignment: .center)
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
-            .accessibilityLabel("App version \(AppVersion.app), flextunnel core \(AppVersion.core)")
+            .accessibilityLabel("App version \(AppVersion.app), \(AppVersion.stage), flextunnel core \(AppVersion.core)")
     }
 }
