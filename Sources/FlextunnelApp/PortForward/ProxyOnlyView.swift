@@ -467,8 +467,7 @@ private struct ForwardEditSheet: View {
     }
 }
 
-/// Same shape as the tunnel popover's DetailRow (private to BrowserView.swift);
-/// duplicated here rather than shared — it's a trivial two-Text row.
+/// A caption-over-value status row — a trivial two-Text row, kept private here.
 private struct InfoRow: View {
     let title: String
     let value: String

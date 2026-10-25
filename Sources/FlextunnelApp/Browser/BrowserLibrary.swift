@@ -90,6 +90,16 @@ final class BrowserLibrary {
         persistBookmarks()
     }
 
+    /// Renames and/or re-points a bookmark in place, keeping its position and
+    /// date added. Re-pointing onto a URL another bookmark already holds is
+    /// refused, the same no-duplicates rule `addBookmark` keeps.
+    func updateBookmark(_ bookmark: Bookmark, name: String, url: URL) {
+        guard let index = bookmarks.firstIndex(where: { $0.id == bookmark.id }) else { return }
+        guard url == bookmark.url || !isBookmarked(url) else { return }
+        bookmarks[index] = Bookmark(id: bookmark.id, name: name, url: url, dateAdded: bookmark.dateAdded)
+        persistBookmarks()
+    }
+
     func toggleBookmark(name: String, url: URL) {
         if isBookmarked(url) {
             removeBookmark(url: url)
@@ -125,8 +135,14 @@ final class BrowserLibrary {
         persistHistory()
     }
 
-    func clearHistory() {
-        history.removeAll()
+    /// Drops the entries visited at or after `since`, or everything when nil —
+    /// the "last hour / today / all" choices of a mainstream Clear History.
+    func clearHistory(since: Date? = nil) {
+        if let since {
+            history.removeAll { $0.lastVisited >= since }
+        } else {
+            history.removeAll()
+        }
         persistHistory()
     }
 

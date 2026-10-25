@@ -6,6 +6,12 @@ import WebKit
 /// follows Firefox iOS: site identity/search, URL text, and stop/reload as the
 /// trailing page action. Tunnel status is this app's custom action outside that
 /// standard browser surface.
+///
+/// Pages that put their own controls along the bottom edge (a remote desktop's
+/// docked soft keyboard) sit right above the bottom bar, so the chrome guards
+/// against stray taps three ways: a dead band above the bar's buttons, the bar
+/// hidden while the system keyboard is up (as Safari does), and Hide Toolbars,
+/// which gives the page the whole screen behind a slim strip that restores them.
 struct BrowserView: View {
     @State var model: BrowserModel
     @ObservedObject var proxy: ProxyController
@@ -16,21 +22,43 @@ struct BrowserView: View {
     @State private var showingFind = false
     @State private var addressBarFocused = false
     @State private var addressQuery = ""
+    /// Hide Toolbars, for this browser session only. Only takes effect over a
+    /// page — a home tab always shows the address bar (see `toolbarsCollapsed`).
+    @State private var toolbarsHidden = false
+    @State private var keyboardVisible = false
+    // The bottom bar's sheets live here, not on the bar: the bar leaves the
+    // hierarchy while the keyboard is up or the toolbars are hidden, and a
+    // sheet attached to it would be torn down the moment one of its own text
+    // fields (Library search, the bookmark editor) raised the keyboard.
+    @State private var library: LibraryRequest?
+    @State private var shareItem: ShareItem?
+    @State private var bookmarkDraft: BookmarkDraft?
+    /// A draft requested from inside the share popout, applied once it dismisses
+    /// so we never present two sheets at once.
+    @State private var pendingShareDraft: BookmarkDraft?
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         VStack(spacing: 0) {
-            AddressBarView(
-                model: model,
-                proxy: proxy,
-                tunnelStatusIcon: tunnelStatusIcon,
-                tunnelStatusColor: tunnelStatusColor,
-                showingTunnelStatus: $showingTunnelStatus,
-                addressBarFocused: $addressBarFocused,
-                editText: $addressQuery,
-                onReconnect: { proxy.retryNow() },
-                onStopAndReconfigure: stopAndDismiss)
-            Divider()
+            if toolbarsCollapsed {
+                CollapsedToolbarStrip(
+                    tab: model.selectedTab,
+                    tunnelStatusColor: tunnelStatusColor,
+                    onShow: { toolbarsHidden = false })
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            } else {
+                AddressBarView(
+                    model: model,
+                    proxy: proxy,
+                    tunnelStatusIcon: tunnelStatusIcon,
+                    tunnelStatusColor: tunnelStatusColor,
+                    tunnelStatusValue: tunnelStatusValue,
+                    tunnelReconnecting: proxy.sessionAlive && !proxy.tunnelConnected && !proxy.tunnelStuck,
+                    showingTunnelStatus: $showingTunnelStatus,
+                    addressBarFocused: $addressBarFocused,
+                    editText: $addressQuery)
+                Divider()
+            }
 
             if let tab = model.selectedTab {
                 Group {
@@ -54,8 +82,11 @@ struct BrowserView: View {
                                 } else if let failure = tab.loadFailure {
                                     BrowserLoadFailureView(
                                         failure: failure,
+                                        route: proxy.pageRoute(for: failure.url),
+                                        tunnelConnected: proxy.tunnelConnected,
                                         onRetry: { tab.retryFailedLoad() },
-                                        onGoBack: { tab.returnToDisplayedPage() })
+                                        onGoBack: { tab.returnToDisplayedPage() },
+                                        onShowTunnelStatus: { showingTunnelStatus = true })
                                 }
                             }
                             .overlay {
@@ -84,24 +115,29 @@ struct BrowserView: View {
                     onNewTab: { model.addTab() })
             }
 
-            Divider()
-            BottomActionBar(
-                model: model,
-                showingTabTray: $showingTabTray,
-                showingFind: $showingFind,
-                onDisconnect: stopAndDismiss,
-                onBookmarkSaved: flashBookmarkSaved)
-        }
-        .overlay(alignment: .bottom) {
-            if showBookmarkSaved {
-                BookmarkSavedToast()
-                    .padding(.bottom, 76)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            } else if let toast = model.downloads.toast {
-                DownloadStatusToast(toast: toast)
-                    .padding(.bottom, 76)
+            if showsBottomBar {
+                BottomActionBar(
+                    model: model,
+                    showingTabTray: $showingTabTray,
+                    showingFind: $showingFind,
+                    onShowLibrary: { library = LibraryRequest(section: $0) },
+                    onShare: { shareItem = ShareItem(url: $0) },
+                    onAddBookmark: { bookmarkDraft = $0 },
+                    onHideToolbars: { toolbarsHidden = true },
+                    onDisconnect: stopAndDismiss)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+        }
+        .overlay(alignment: .bottom) {
+            Group {
+                if showBookmarkSaved {
+                    BookmarkSavedToast()
+                } else if let toast = model.downloads.toast {
+                    DownloadStatusToast(toast: toast)
+                }
+            }
+            .padding(.bottom, showsBottomBar ? 84 : 24)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
         .sheet(item: Bindable(model.downloads).pendingPrompt) { prompt in
             DownloadPromptView(
@@ -111,14 +147,59 @@ struct BrowserView: View {
                 .presentationDetents([.height(220)])
                 .presentationDragIndicator(.visible)
         }
+        .sheet(item: $library) { request in
+            LibraryView(model: model, section: request.section)
+        }
+        .sheet(item: $shareItem) { item in
+            BrowserShareSheet(
+                url: item.url,
+                activities: [bookmarkActivity(for: item.url)],
+                onDismiss: {
+                    shareItem = nil
+                    // Present the editor only after the popout has gone, so the
+                    // two sheets never overlap.
+                    if let draft = pendingShareDraft {
+                        pendingShareDraft = nil
+                        DispatchQueue.main.async { bookmarkDraft = draft }
+                    }
+                })
+                .ignoresSafeArea()
+        }
+        .sheet(item: $bookmarkDraft) { draft in
+            BookmarkEditView(draft: draft, isTaken: model.library.isBookmarked) { name, url in
+                model.library.addBookmark(name: name, url: url)
+                flashBookmarkSaved()
+            }
+        }
+        .sheet(isPresented: $showingTunnelStatus) {
+            TunnelStatusSheet(
+                proxy: proxy,
+                boundPort: model.socksPort,
+                pageURL: model.selectedTab?.visibleURL,
+                onReconnect: { proxy.retryNow() },
+                onDisconnect: stopAndDismiss)
+        }
         .animation(.easeInOut(duration: 0.25), value: model.downloads.toast)
         .animation(.easeInOut(duration: 0.18), value: addressBarFocused)
+        .animation(.easeInOut(duration: 0.22), value: toolbarsCollapsed)
+        .animation(.easeInOut(duration: 0.18), value: keyboardVisible)
         .onChange(of: model.downloads.toast) {
             // Auto-clear the terminal download toast after a moment.
             guard let shown = model.downloads.toast else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
                 if model.downloads.toast == shown { model.downloads.toast = nil }
             }
+        }
+        .onChange(of: model.selectedTab?.isHome ?? true) { _, isHome in
+            // Back to a home tab (or no tab): bring the bars back for good, so
+            // the next page doesn't open hidden without the user asking again.
+            if isHome { toolbarsHidden = false }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardVisible = false
         }
         .fullScreenCover(isPresented: $showingTabTray) {
             TabTrayView(model: model)
@@ -133,6 +214,17 @@ struct BrowserView: View {
             // so clear the flag to match reality and drop the stale overlay.
             if phase == .active { addressBarFocused = false }
         }
+    }
+
+    /// Hide Toolbars is on and there's a page to give the screen to.
+    private var toolbarsCollapsed: Bool {
+        toolbarsHidden && model.selectedTab.map { !$0.isHome } == true
+    }
+
+    /// The bottom bar steps aside for the system keyboard instead of riding on
+    /// top of it, right under the keys being typed on.
+    private var showsBottomBar: Bool {
+        !toolbarsCollapsed && !keyboardVisible
     }
 
     private func openFromHome(_ address: String) {
@@ -209,6 +301,25 @@ struct BrowserView: View {
         return .secondary
     }
 
+    /// The tunnel button's spoken state, matching the sheet's title.
+    private var tunnelStatusValue: String {
+        if proxy.tunnelConnected { return "Connected" }
+        if proxy.tunnelStuck { return "Disconnected" }
+        if proxy.sessionAlive { return "Reconnecting" }
+        return "Stopped"
+    }
+
+    /// Builds the share-popout bookmark action. Removal happens immediately;
+    /// adding stashes a draft so the editor opens once the popout dismisses.
+    private func bookmarkActivity(for url: URL) -> BookmarkActivity {
+        let library = model.library
+        if library.isBookmarked(url) {
+            return BookmarkActivity(mode: .remove) { library.removeBookmark(url: url) }
+        }
+        let name = model.selectedTab?.displayTitle ?? (url.host() ?? url.absoluteString)
+        return BookmarkActivity(mode: .add) { pendingShareDraft = BookmarkDraft(name: name, url: url) }
+    }
+
     private func stopAndDismiss() {
         model.stopAll()
         proxy.stop()
@@ -233,6 +344,61 @@ struct BrowserView: View {
         }
     }
 
+}
+
+/// Wraps the URL being shared so it can drive `.sheet(item:)`.
+private struct ShareItem: Identifiable {
+    let url: URL
+    var id: String { url.absoluteString }
+}
+
+/// Which Library segment to open, driving `.sheet(item:)`.
+private struct LibraryRequest: Identifiable {
+    let section: LibraryView.Section
+    var id: LibraryView.Section { section }
+}
+
+/// What Hide Toolbars leaves at the top: the page's domain and a tunnel-status
+/// dot on the bar material, under the status bar. Tapping it brings the
+/// toolbars back, as Safari's collapsed bar does.
+@MainActor
+private struct CollapsedToolbarStrip: View {
+    let tab: BrowserTab?
+    let tunnelStatusColor: Color
+    let onShow: () -> Void
+
+    var body: some View {
+        Button(action: onShow) {
+            HStack(spacing: 6) {
+                if tab?.siteSecurity == .secure {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Text(hostText)
+                    .font(.footnote.weight(.medium))
+                    .lineLimit(1)
+                Circle()
+                    .fill(tunnelStatusColor)
+                    .frame(width: 6, height: 6)
+            }
+            .frame(maxWidth: .infinity, minHeight: 30)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(.bar)
+        .accessibilityLabel("Show toolbars")
+        .accessibilityValue(hostText)
+        .accessibilityIdentifier("browser.showToolbars")
+    }
+
+    /// The registrable domain alone (`example.com` for `www.example.com`), the
+    /// part that says whose page this is.
+    private var hostText: String {
+        guard let tab else { return "" }
+        if let parts = AddressDisplayParts(tab: tab) { return parts.primaryText }
+        return tab.visibleURL?.host() ?? tab.addressText
+    }
 }
 
 /// Transient confirmation shown after a bookmark is saved.
@@ -482,11 +648,17 @@ private struct EmptyBrowserView: View {
 
 /// Full-screen failure page layered over the document WebKit kept displaying.
 /// Besides retrying, it offers the way out mainstream browsers give for free —
-/// back to the page you were on — since the overlay otherwise hides it.
+/// back to the page you were on — since the overlay otherwise hides it. It also
+/// says how the host is routed, the first thing to know when a private host
+/// fails: a tunneled host while the tunnel is down, or a host that isn't in the
+/// tunnel set at all and so went out directly.
 private struct BrowserLoadFailureView: View {
     let failure: BrowserLoadFailure
+    let route: PageRoute?
+    let tunnelConnected: Bool
     let onRetry: () -> Void
     let onGoBack: () -> Void
+    let onShowTunnelStatus: () -> Void
 
     var body: some View {
         VStack(spacing: 14) {
@@ -520,11 +692,30 @@ private struct BrowserLoadFailureView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 320)
 
+            if let routeHint {
+                Label(routeHint.text, systemImage: routeHint.icon)
+                    .font(.footnote)
+                    .foregroundStyle(routeHint.color)
+                    .multilineTextAlignment(.leading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: 320, alignment: .leading)
+                    .background(routeHint.color.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .accessibilityIdentifier("browser.failureRoute")
+            }
+
             VStack(spacing: 10) {
                 Button(action: onRetry) {
                     Label("Try Again", systemImage: "arrow.clockwise").frame(maxWidth: 280)
                 }
                 .buttonStyle(.borderedProminent)
+
+                if route == .tunnel && !tunnelConnected {
+                    Button(action: onShowTunnelStatus) {
+                        Label("Tunnel Status", systemImage: "bolt.horizontal.circle").frame(maxWidth: 280)
+                    }
+                    .buttonStyle(.bordered)
+                }
 
                 Button(action: onGoBack) {
                     Text("Go Back").frame(maxWidth: 280)
@@ -536,6 +727,22 @@ private struct BrowserLoadFailureView: View {
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground))
+    }
+
+    private var routeHint: (text: String, icon: String, color: Color)? {
+        switch route {
+        case .tunnel where !tunnelConnected:
+            return ("This site is reached through the tunnel, which is reconnecting.",
+                    "bolt.slash.circle", .orange)
+        case .tunnel:
+            return ("Reached through the tunnel — the server couldn't load it.",
+                    "bolt.horizontal.circle", .secondary)
+        case .direct:
+            return ("Connected directly — this host isn't in the tunnel set.",
+                    "arrow.up.right.circle", .secondary)
+        case nil:
+            return nil
+        }
     }
 }
 
@@ -597,11 +804,11 @@ private struct AddressBarView: View {
     let proxy: ProxyController
     let tunnelStatusIcon: String
     let tunnelStatusColor: Color
+    let tunnelStatusValue: String
+    let tunnelReconnecting: Bool
     @Binding var showingTunnelStatus: Bool
     @Binding var addressBarFocused: Bool
     @Binding var editText: String
-    let onReconnect: () -> Void
-    let onStopAndReconfigure: () -> Void
     @State private var showingSiteSecurity = false
     @FocusState private var addressFocused: Bool
 
@@ -619,6 +826,7 @@ private struct AddressBarView: View {
                         .textInputAutocapitalization(.never)
                         .submitLabel(.go)
                         .focused($addressFocused)
+                        .accessibilityIdentifier("browser.addressField")
                         .opacity(addressFocused ? 1 : 0)
                         .allowsHitTesting(addressFocused)
                         .onSubmit {
@@ -635,6 +843,7 @@ private struct AddressBarView: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("browser.address")
                     }
                 }
                 .frame(maxWidth: .infinity, minHeight: 36)
@@ -655,7 +864,7 @@ private struct AddressBarView: View {
             .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             .popover(isPresented: $showingSiteSecurity) {
                 if let tab {
-                    SiteSecurityPopover(tab: tab)
+                    SiteSecurityPopover(tab: tab, route: proxy.pageRoute(for: tab.visibleURL))
                         .presentationCompactAdaptation(.popover)
                 }
             }
@@ -706,19 +915,13 @@ private struct AddressBarView: View {
             Image(systemName: tunnelStatusIcon)
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(tunnelStatusColor)
+                .symbolEffect(.pulse, isActive: tunnelReconnecting)
                 .frame(width: 40, height: 36)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Tunnel status")
-        .popover(isPresented: $showingTunnelStatus, arrowEdge: .top) {
-            TunnelStatusPopover(
-                proxy: proxy,
-                boundPort: model.socksPort,
-                onDismiss: { showingTunnelStatus = false },
-                onReconnect: onReconnect,
-                onStopAndReconfigure: onStopAndReconfigure)
-                .presentationCompactAdaptation(.popover)
-        }
+        .accessibilityValue(tunnelStatusValue)
+        .accessibilityIdentifier("browser.tunnelStatus")
     }
 
     @ViewBuilder
@@ -740,6 +943,7 @@ private struct AddressBarView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(siteSecurityAccessibilityLabel(for: tab.siteSecurity))
+            .accessibilityIdentifier("browser.siteSecurity")
         }
     }
 
@@ -947,6 +1151,7 @@ private struct AddressDisplayParts {
 @MainActor
 private struct SiteSecurityPopover: View {
     let tab: BrowserTab
+    let route: PageRoute?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -965,6 +1170,15 @@ private struct SiteSecurityPopover: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if let route {
+                Divider()
+                Label(route == .tunnel ? "Through the tunnel" : "Direct (not in the tunnel set)",
+                      systemImage: route == .tunnel ? "bolt.horizontal.circle.fill" : "arrow.up.right.circle")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(route == .tunnel ? .green : .secondary)
+                    .accessibilityIdentifier("browser.siteRoute")
+            }
         }
         .padding()
         .frame(width: 300, alignment: .leading)
@@ -1034,162 +1248,162 @@ private struct SiteSecurityPopover: View {
     }
 }
 
-/// Bottom toolbar: back, forward, share, bookmark (placeholder), tab tray, menu.
+/// Bottom toolbar: tab tray, library, back, forward, share, menu.
+///
+/// Back and forward sit mid-bar rather than in the corner nearest a page's
+/// bottom-left controls, and a dead band above the buttons catches a finger
+/// that overshoots the page's bottom row — so a stray tap lands on nothing
+/// instead of navigating away.
 private struct BottomActionBar: View {
     @Bindable var model: BrowserModel
     @Binding var showingTabTray: Bool
     @Binding var showingFind: Bool
+    let onShowLibrary: (LibraryView.Section) -> Void
+    let onShare: (URL) -> Void
+    let onAddBookmark: (BookmarkDraft) -> Void
+    let onHideToolbars: () -> Void
     let onDisconnect: () -> Void
-    let onBookmarkSaved: () -> Void
-    @State private var showingLibrary = false
-    @State private var showingDownloads = false
-    @State private var shareItem: ShareItem?
-    @State private var bookmarkDraft: BookmarkDraft?
-    /// A draft requested from inside the share popout, applied once it dismisses
-    /// so we never present two sheets at once.
-    @State private var pendingShareDraft: BookmarkDraft?
 
-    /// Wraps the URL being shared so it can drive `.sheet(item:)`.
-    private struct ShareItem: Identifiable {
-        let url: URL
-        var id: String { url.absoluteString }
-    }
+    /// Height of the non-interactive band between the page and the buttons.
+    private static let deadBand: CGFloat = 10
 
     var body: some View {
         let tab = model.selectedTab
         let url = tab?.page.url
-        HStack {
-            Button { tab?.goBack() } label: { Image(systemName: "chevron.left") }
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 0) {
+                barButton("Show tabs", id: "browser.tabs") {
+                    showingTabTray = true
+                } label: {
+                    tabCountIcon
+                }
+
+                barButton("Library", id: "browser.library") {
+                    onShowLibrary(.bookmarks)
+                } label: {
+                    Image(systemName: "book")
+                        .overlay(alignment: .topTrailing) {
+                            if downloadsActive {
+                                Circle()
+                                    .fill(.tint)
+                                    .frame(width: 8, height: 8)
+                                    .offset(x: 4, y: -2)
+                            }
+                        }
+                }
+                .accessibilityValue(downloadsActive ? "Downloading" : "")
+
+                barButton("Back", id: "browser.back") {
+                    tab?.goBack()
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
                 .disabled(tab?.canGoBack != true)
 
-            Spacer()
-
-            Button { tab?.goForward() } label: { Image(systemName: "chevron.right") }
+                barButton("Forward", id: "browser.forward") {
+                    tab?.goForward()
+                } label: {
+                    Image(systemName: "chevron.right")
+                }
                 .disabled(tab?.canGoForward != true)
 
-            Spacer()
+                barButton("Share", id: "browser.share") {
+                    if let url { onShare(url) }
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .disabled(url == nil)
 
-            Button { showingDownloads = true } label: {
-                Image(systemName: downloadsActive ? "arrow.down.circle.fill" : "arrow.down.circle")
+                menu(tab: tab, url: url)
             }
-            .accessibilityLabel("Downloads")
-
-            Spacer()
-
-            if let url {
-                Button { shareItem = ShareItem(url: url) } label: { Image(systemName: "square.and.arrow.up") }
-                    .accessibilityLabel("Share")
-            } else {
-                Image(systemName: "square.and.arrow.up")
-                    .foregroundStyle(.tertiary)
-            }
-
-            Spacer()
-
-            Button { showingLibrary = true } label: { Image(systemName: "bookmark") }
-                .accessibilityLabel("Bookmarks and history")
-
-            Spacer()
-
-            Button { showingTabTray = true } label: { tabCountIcon }
-                .accessibilityLabel("Show tabs")
-
-            Spacer()
-
-            Menu {
-                if let url {
-                    if model.library.isBookmarked(url) {
-                        Button {
-                            model.library.removeBookmark(url: url)
-                        } label: {
-                            Label("Remove Bookmark", systemImage: "bookmark.slash")
-                        }
-                    } else {
-                        Button {
-                            bookmarkDraft = BookmarkDraft(
-                                name: tab?.displayTitle ?? (url.host() ?? url.absoluteString),
-                                url: url)
-                        } label: {
-                            Label("Add Bookmark", systemImage: "bookmark")
-                        }
-                    }
-                    Button {
-                        UIPasteboard.general.string = url.absoluteString
-                    } label: {
-                        Label("Copy URL", systemImage: "doc.on.doc")
-                    }
-                    Button {
-                        showingFind = true
-                    } label: {
-                        Label("Find in Page", systemImage: "magnifyingglass")
-                    }
-                }
-                Divider()
-                if let url {
-                    Button {
-                        UIApplication.shared.open(url)
-                    } label: {
-                        Label("Open in Safari (bypasses tunnel)", systemImage: "safari")
-                    }
-                }
-                if let tab = tab {
-                    Button {
-                        model.closeTab(tab)
-                    } label: {
-                        Label("Close Tab", systemImage: "xmark.square")
-                    }
-                }
-                Divider()
-                Button(role: .destructive, action: onDisconnect) {
-                    Label("Disconnect Tunnel", systemImage: "stop.circle")
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-            .accessibilityLabel("More")
+            .imageScale(.large)
+            .padding(.horizontal, 8)
+            .padding(.top, Self.deadBand)
         }
-        .imageScale(.large)
-        .padding(.horizontal, 20)
-        .padding(.vertical, 6)
         .background(.bar)
-        .sheet(isPresented: $showingLibrary) {
-            BookmarksHistoryView(model: model)
-        }
-        .sheet(isPresented: $showingDownloads) {
-            DownloadsView(model: model)
-        }
-        .sheet(item: $shareItem) { item in
-            BrowserShareSheet(
-                url: item.url,
-                activities: [bookmarkActivity(for: item.url)],
-                onDismiss: {
-                    shareItem = nil
-                    // Present the editor only after the popout has gone, so the
-                    // two sheets never overlap.
-                    if let draft = pendingShareDraft {
-                        pendingShareDraft = nil
-                        DispatchQueue.main.async { bookmarkDraft = draft }
-                    }
-                })
-                .ignoresSafeArea()
-        }
-        .sheet(item: $bookmarkDraft) { draft in
-            BookmarkEditView(draft: draft) { name, url in
-                model.library.addBookmark(name: name, url: url)
-                onBookmarkSaved()
-            }
-        }
     }
 
-    /// Builds the share-popout bookmark action. Removal happens immediately;
-    /// adding stashes a draft so the editor opens once the popout dismisses.
-    private func bookmarkActivity(for url: URL) -> BookmarkActivity {
-        let library = model.library
-        if library.isBookmarked(url) {
-            return BookmarkActivity(mode: .remove) { library.removeBookmark(url: url) }
+    /// One evenly spaced bar slot with a 44pt hit frame, starting below the
+    /// dead band.
+    private func barButton(
+        _ title: String,
+        id: String,
+        action: @escaping () -> Void,
+        @ViewBuilder label: () -> some View
+    ) -> some View {
+        Button(action: action) {
+            label()
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
         }
-        let name = model.selectedTab?.displayTitle ?? (url.host() ?? url.absoluteString)
-        return BookmarkActivity(mode: .add) { pendingShareDraft = BookmarkDraft(name: name, url: url) }
+        .accessibilityLabel(title)
+        .accessibilityIdentifier(id)
+    }
+
+    private func menu(tab: BrowserTab?, url: URL?) -> some View {
+        Menu {
+            if let url {
+                if model.library.isBookmarked(url) {
+                    Button {
+                        model.library.removeBookmark(url: url)
+                    } label: {
+                        Label("Remove Bookmark", systemImage: "bookmark.slash")
+                    }
+                } else {
+                    Button {
+                        onAddBookmark(BookmarkDraft(
+                            name: tab?.displayTitle ?? (url.host() ?? url.absoluteString),
+                            url: url))
+                    } label: {
+                        Label("Add Bookmark", systemImage: "bookmark")
+                    }
+                }
+                Button {
+                    UIPasteboard.general.string = url.absoluteString
+                } label: {
+                    Label("Copy URL", systemImage: "doc.on.doc")
+                }
+                Button {
+                    showingFind = true
+                } label: {
+                    Label("Find in Page", systemImage: "magnifyingglass")
+                }
+                Button(action: onHideToolbars) {
+                    Label("Hide Toolbars", systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+            }
+            Button {
+                onShowLibrary(.downloads)
+            } label: {
+                Label("Downloads", systemImage: "arrow.down.circle")
+            }
+            Divider()
+            if let url {
+                Button {
+                    UIApplication.shared.open(url)
+                } label: {
+                    Label("Open in Safari (bypasses tunnel)", systemImage: "safari")
+                }
+            }
+            if let tab = tab {
+                Button {
+                    model.closeTab(tab)
+                } label: {
+                    Label("Close Tab", systemImage: "xmark.square")
+                }
+            }
+            Divider()
+            Button(role: .destructive, action: onDisconnect) {
+                Label("Disconnect Tunnel", systemImage: "stop.circle")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("More")
+        .accessibilityIdentifier("browser.menu")
     }
 
     private var downloadsActive: Bool {
@@ -1205,236 +1419,5 @@ private struct BottomActionBar: View {
                     .font(.system(size: 13, weight: .semibold))
                     .monospacedDigit()
             }
-    }
-}
-
-private struct TunnelStatusPopover: View {
-    @ObservedObject var proxy: ProxyController
-    let boundPort: UInt16
-    let onDismiss: () -> Void
-    let onReconnect: () -> Void
-    let onStopAndReconfigure: () -> Void
-
-    /// The SOCKS proxy is up but the tunnel link is (re)establishing. Browsing may
-    /// still work (off-list) while this is true; the core reconnects on its own.
-    private var isReconnecting: Bool {
-        proxy.sessionAlive && !proxy.tunnelConnected
-    }
-
-    /// Drives the on-demand connection-path snapshot sheet.
-    @State private var showingConnPath = false
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 12) {
-                    Label(healthTitle, systemImage: healthIcon)
-                        .font(.headline)
-                        .foregroundStyle(healthColor)
-
-                    Spacer(minLength: 0)
-
-                    Button(action: onDismiss) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.title2)
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Dismiss status")
-                }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    DetailRow("State", proxy.status)
-                    DetailRow("SOCKS proxy", proxy.sessionAlive ? "running" : "stopped",
-                              valueColor: proxy.sessionAlive ? .green : .red)
-                    DetailRow("Tunnel link", tunnelLinkText, valueColor: healthColor)
-                    // Where the browser sends tunnel-set hosts. Off-list hosts
-                    // never touch it (WebKit's matchDomains split happens before
-                    // any connection), so while nothing is listening only
-                    // tunnel-set hosts fail.
-                    if proxy.sessionAlive {
-                        DetailRow("Bound SOCKS", "127.0.0.1:\(proxy.socksPort ?? boundPort)")
-                    } else {
-                        DetailRow(
-                            "Bound SOCKS",
-                            "none — 127.0.0.1:\(proxy.socksPort ?? boundPort) not listening",
-                            valueColor: .red)
-                    }
-
-                    if let summary = proxy.connectionSummary {
-                        DetailRow("Server node id", summary.serverNodeID, monospace: true)
-                        DetailRow("Relay URLs", relayURLsText(summary.relayURLs))
-                        DetailRow("iroh peer discovery", "enabled (n0 discovery)")
-                    }
-
-                    forwardedRoutesRows
-                }
-
-                if let error = proxy.lastError {
-                    DetailRow("Last error", error, valueColor: .red)
-                }
-
-                Divider()
-
-                // A one-shot readout of the live iroh path, shown in its own sheet
-                // — a point-in-time check rather than a live field. Only offered
-                // while the link is up (the snapshot is empty otherwise), so it
-                // appears and disappears with the tunnel, mirroring the desktop CTA.
-                if proxy.tunnelConnected {
-                    Button {
-                        showingConnPath = true
-                    } label: {
-                        Label("Connection path", systemImage: "point.3.connected.trianglepath.dotted")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(.bordered)
-                }
-
-                // Tunnel status lives here in the popover so the page underneath
-                // is never disturbed. While the link is down the core reconnects on
-                // its own (off-list browsing keeps working), but a Retry is always
-                // offered in case that reconnect is stuck — it relaunches the session.
-                if isReconnecting {
-                    VStack(alignment: .leading, spacing: 8) {
-                        if proxy.tunnelStuck {
-                            Text("The tunnel hasn't reconnected on its own. Retry relaunches the session.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            HStack(spacing: 8) {
-                                ProgressView()
-                                Text("Reconnecting…")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        if !proxy.isFullTunnel {
-                            Text("Off-list browsing keeps working directly; on-list (tunneled) routes are temporarily unavailable.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Button(action: onReconnect) {
-                            Label("Retry Connection", systemImage: "arrow.clockwise")
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                } else if !proxy.sessionAlive {
-                    Button(action: onReconnect) {
-                        Label("Reconnect", systemImage: "arrow.clockwise")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-
-                Button(role: .destructive, action: onStopAndReconfigure) {
-                    Label("Stop", systemImage: "stop.circle")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .padding()
-        }
-        .frame(minWidth: 300, idealWidth: 340, maxHeight: 520)
-        .sheet(isPresented: $showingConnPath) {
-            ConnPathSheet(query: { proxy.queryConnPath() })
-        }
-    }
-
-    /// The tunnel set the server pushed: the domains/CIDRs routed through the
-    /// tunnel (everything else browses directly). Shown even while the link is
-    /// down so the user can see which routes are temporarily unavailable.
-    @ViewBuilder
-    private var forwardedRoutesRows: some View {
-        if let routes = proxy.forwardedRoutes {
-            if routes.isFullTunnel {
-                DetailRow("Tunnel set", "Full tunnel (all traffic)")
-            } else {
-                if !routes.domains.isEmpty {
-                    DetailRow("Tunneled domains", routes.domains.joined(separator: "\n"), monospace: true)
-                }
-                if !routes.cidrs.isEmpty {
-                    DetailRow("Tunneled CIDRs", routes.cidrs.joined(separator: "\n"), monospace: true)
-                }
-            }
-            if !routes.hostAliases.isEmpty {
-                DetailRow(
-                    "Host aliases",
-                    routes.hostAliases.map { "\($0.alias) → \($0.target)" }.joined(separator: "\n"),
-                    monospace: true)
-            }
-            if !routes.dnsForwards.isEmpty {
-                DetailRow(
-                    "DNS forwards",
-                    routes.dnsForwards
-                        .map { "\($0.suffix) (+ subdomains) → \($0.servers.joined(separator: ", "))" }
-                        .joined(separator: "\n"),
-                    monospace: true)
-            }
-            if !routes.bridges.isEmpty {
-                DetailRow(
-                    "Bridge routes",
-                    routes.bridges.map(\.summary).joined(separator: "\n\n"),
-                    monospace: true)
-            }
-        }
-    }
-
-    private var tunnelLinkText: String {
-        if proxy.tunnelConnected { return "connected" }
-        if !proxy.sessionAlive { return "down" }
-        return proxy.tunnelStuck ? "disconnected" : "reconnecting"
-    }
-
-    private var healthTitle: String {
-        if proxy.tunnelConnected { return "Tunnel connected" }
-        if proxy.tunnelStuck { return "Tunnel disconnected" }
-        if proxy.sessionAlive { return "Tunnel reconnecting" }
-        return "Proxy stopped"
-    }
-
-    private var healthIcon: String {
-        if proxy.tunnelConnected { return "bolt.horizontal.circle.fill" }
-        return proxy.tunnelStuck ? "bolt.slash.circle" : "bolt.horizontal.circle"
-    }
-
-    private var healthColor: Color {
-        if proxy.tunnelConnected { return .green }
-        if proxy.tunnelStuck { return .red }
-        if proxy.sessionAlive { return .orange }
-        return .red
-    }
-
-    private func relayURLsText(_ relayURLs: [String]) -> String {
-        relayURLs.isEmpty ? "iroh defaults" : relayURLs.joined(separator: "\n")
-    }
-}
-
-private struct DetailRow: View {
-    let title: String
-    let value: String
-    let valueColor: Color?
-    let monospace: Bool
-
-    init(_ title: String, _ value: String, valueColor: Color? = nil, monospace: Bool = false) {
-        self.title = title
-        self.value = value
-        self.valueColor = valueColor
-        self.monospace = monospace
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Text(value)
-                .font(monospace ? .system(.footnote, design: .monospaced) : .footnote)
-                .foregroundStyle(valueColor ?? .primary)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

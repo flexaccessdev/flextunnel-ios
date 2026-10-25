@@ -1,0 +1,329 @@
+import SwiftUI
+import UIKit
+
+/// How the browser reaches a page's host: through the tunnel, or directly.
+enum PageRoute {
+    case tunnel
+    case direct
+}
+
+extension ProxyController {
+    /// Whether the browser sends `url`'s host through the tunnel, or nil while
+    /// no tunnel set is known (no handshake yet) or the URL has no host.
+    /// Advisory, like `RouteMatch`: the core's routed set makes the real call,
+    /// so a mismatch mislabels a hint, nothing more. The reserved
+    /// `flextunnel.internal` namespace always goes through the tunnel.
+    func pageRoute(for url: URL?) -> PageRoute? {
+        guard let host = url?.host(), let routes = forwardedRoutes, routes.isKnown else { return nil }
+        let normalized = BrowserNavigationDecider.normalizedHost(host)
+        if normalized == "flextunnel.internal" || normalized.hasSuffix(".flextunnel.internal") {
+            return .tunnel
+        }
+        return RouteMatch.isTunneled(host: normalized, routes: routes) ? .tunnel : .direct
+    }
+}
+
+/// The browser's tunnel status: a health header that says what the split means
+/// right now, the recovery actions, how the current page is routed, the tunnel
+/// set the server pushed, and the session details. A sheet rather than a
+/// popover so the routes and details have room; the page underneath is never
+/// disturbed.
+struct TunnelStatusSheet: View {
+    @ObservedObject var proxy: ProxyController
+    /// The browser's bound SOCKS port, shown when the controller no longer
+    /// publishes one (the listener went away).
+    let boundPort: UInt16
+    /// The selected tab's page, for the "This page" row.
+    let pageURL: URL?
+    let onReconnect: () -> Void
+    let onDisconnect: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var showingConnPath = false
+
+    /// The SOCKS proxy is up but the tunnel link is (re)establishing. Off-list
+    /// browsing still works while this is true; the core reconnects on its own.
+    private var isReconnecting: Bool {
+        proxy.sessionAlive && !proxy.tunnelConnected
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    header
+                    actions
+                }
+
+                if let host = pageURL?.host(), let route = proxy.pageRoute(for: pageURL) {
+                    Section("This page") {
+                        PageRouteRow(host: host, route: route)
+                    }
+                }
+
+                tunnelSetSections
+                detailsSection
+
+                if let error = proxy.lastError {
+                    Section("Last error") {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            .accessibilityIdentifier("tunnelStatus.sheet")
+            .navigationTitle("Tunnel")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .sheet(isPresented: $showingConnPath) {
+                ConnPathSheet(query: { proxy.queryConnPath() })
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    // MARK: - Health
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: healthIcon)
+                .font(.system(size: 34, weight: .regular))
+                .foregroundStyle(healthColor)
+                .symbolEffect(.pulse, isActive: isReconnecting && !proxy.tunnelStuck)
+                .frame(width: 44)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(healthTitle)
+                    .font(.headline)
+                    .accessibilityIdentifier("tunnelStatus.title")
+                Text(healthExplanation)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        // While the link is down the core reconnects on its own, but Retry is
+        // always offered in case that reconnect is stuck — it relaunches the
+        // session.
+        if isReconnecting {
+            Button(action: onReconnect) {
+                Label("Retry Connection", systemImage: "arrow.clockwise")
+            }
+        } else if !proxy.sessionAlive {
+            Button(action: onReconnect) {
+                Label("Reconnect", systemImage: "arrow.clockwise")
+            }
+        }
+        // A one-shot readout of the live iroh path. Only offered while the link
+        // is up (the snapshot is empty otherwise), mirroring the desktop CTA.
+        if proxy.tunnelConnected {
+            Button {
+                showingConnPath = true
+            } label: {
+                Label("Connection Path", systemImage: "point.3.connected.trianglepath.dotted")
+            }
+            .accessibilityIdentifier("tunnelStatus.connectionPath")
+        }
+        // Up here with the other actions, so it's reachable at the medium
+        // detent rather than below the routes and details.
+        Button(role: .destructive, action: onDisconnect) {
+            Label("Disconnect", systemImage: "stop.circle")
+                .foregroundStyle(.red)
+        }
+        .accessibilityIdentifier("tunnelStatus.disconnect")
+    }
+
+    private var healthTitle: String {
+        if proxy.tunnelConnected { return "Connected" }
+        if proxy.tunnelStuck { return "Disconnected" }
+        if proxy.sessionAlive { return "Reconnecting…" }
+        return "Stopped"
+    }
+
+    private var healthExplanation: String {
+        let offList = proxy.isFullTunnel
+            ? "Nothing loads until it's back, since all traffic goes through the tunnel."
+            : "Sites outside the tunnel set keep loading directly; tunneled sites wait for it."
+        if proxy.tunnelConnected {
+            return proxy.isFullTunnel
+                ? "All traffic goes through the server."
+                : "Sites in the tunnel set go through the server; everything else connects directly."
+        }
+        if proxy.tunnelStuck {
+            return "The tunnel hasn't reconnected on its own. Retry relaunches the session. " + offList
+        }
+        if proxy.sessionAlive {
+            return "The link dropped and is reconnecting on its own. " + offList
+        }
+        return "The proxy isn't running, so tunneled sites can't load."
+    }
+
+    private var healthIcon: String {
+        if proxy.tunnelConnected { return "bolt.horizontal.circle.fill" }
+        return proxy.tunnelStuck ? "bolt.slash.circle" : "bolt.horizontal.circle"
+    }
+
+    private var healthColor: Color {
+        if proxy.tunnelConnected { return .green }
+        if proxy.tunnelStuck { return .red }
+        if proxy.sessionAlive { return .orange }
+        return .red
+    }
+
+    // MARK: - Tunnel set
+
+    /// The tunnel set the server pushed: the domains/CIDRs routed through the
+    /// tunnel (everything else browses directly), plus the server-side aliases,
+    /// DNS forwards and bridges. Shown even while the link is down so the user
+    /// can see which routes are temporarily unavailable.
+    @ViewBuilder
+    private var tunnelSetSections: some View {
+        if let routes = proxy.forwardedRoutes, routes.isKnown {
+            Section {
+                if routes.isFullTunnel {
+                    Text("All traffic (full tunnel)")
+                } else {
+                    ForEach(routes.domains, id: \.self) { domain in
+                        RouteRow(systemImage: "globe", text: domain)
+                    }
+                    ForEach(routes.cidrs, id: \.self) { cidr in
+                        RouteRow(systemImage: "network", text: cidr)
+                    }
+                }
+            } header: {
+                Text("Tunnel set")
+            } footer: {
+                Text("Set by the server. Hosts not listed here connect directly.")
+            }
+
+            if !routes.hostAliases.isEmpty {
+                Section("Host aliases") {
+                    ForEach(routes.hostAliases, id: \.alias) { alias in
+                        RouteRow(systemImage: "arrow.turn.down.right", text: "\(alias.alias) → \(alias.target)")
+                    }
+                }
+            }
+
+            if !routes.dnsForwards.isEmpty {
+                Section {
+                    ForEach(routes.dnsForwards, id: \.suffix) { forward in
+                        RouteRow(
+                            systemImage: "server.rack",
+                            text: "\(forward.suffix) → \(forward.servers.joined(separator: ", "))")
+                    }
+                } header: {
+                    Text("DNS forwards")
+                } footer: {
+                    Text("Each suffix covers its subdomains too, resolved on the server.")
+                }
+            }
+
+            if !routes.bridges.isEmpty {
+                Section("Bridge routes") {
+                    ForEach(routes.bridges) { bridge in
+                        Text(bridge.summary)
+                            .font(.system(.footnote, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+        } else {
+            Section("Tunnel set") {
+                Text("Not known yet — the server sends it when the tunnel connects.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: - Details
+
+    private var detailsSection: some View {
+        Section("Details") {
+            if let summary = proxy.connectionSummary {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Server node id")
+                    Text(summary.serverNodeID)
+                        .font(.system(.footnote, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                .contextMenu {
+                    Button {
+                        UIPasteboard.general.string = summary.serverNodeID
+                    } label: {
+                        Label("Copy Node ID", systemImage: "doc.on.doc")
+                    }
+                }
+                LabeledContent("Relays") {
+                    Text(summary.relayURLs.isEmpty ? "iroh defaults" : summary.relayURLs.joined(separator: "\n"))
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("Peer discovery", value: "n0 discovery")
+            }
+            // Where the browser sends tunnel-set hosts. Off-list hosts never
+            // touch it (WebKit's matchDomains split happens before any
+            // connection), so while nothing is listening only tunnel-set hosts
+            // fail.
+            LabeledContent("SOCKS listener") {
+                if proxy.sessionAlive {
+                    Text(verbatim: "127.0.0.1:\(proxy.socksPort ?? boundPort)")
+                        .monospacedDigit()
+                } else {
+                    Text("Not listening")
+                        .foregroundStyle(.red)
+                }
+            }
+            LabeledContent("Core status", value: proxy.status)
+        }
+    }
+}
+
+/// "This page" row: the host and whether it goes through the tunnel.
+struct PageRouteRow: View {
+    let host: String
+    let route: PageRoute
+
+    var body: some View {
+        LabeledContent {
+            Label(route == .tunnel ? "Through the tunnel" : "Direct",
+                  systemImage: route == .tunnel ? "bolt.horizontal.circle.fill" : "arrow.up.right.circle")
+                .foregroundStyle(route == .tunnel ? .green : .secondary)
+        } label: {
+            Text(host)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .accessibilityIdentifier("tunnelStatus.pageRoute")
+    }
+}
+
+/// One tunnel-set entry: an icon and the monospaced pattern.
+private struct RouteRow: View {
+    let systemImage: String
+    let text: String
+
+    var body: some View {
+        Label {
+            Text(text)
+                .font(.system(.callout, design: .monospaced))
+                .textSelection(.enabled)
+        } icon: {
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityIdentifier("tunnelStatus.route")
+    }
+}

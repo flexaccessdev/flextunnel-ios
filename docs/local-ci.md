@@ -14,6 +14,7 @@ is split along that line, and only along that line:
 ci/ci.sh                # the default jobs, all local
 ci/ci.sh unsigned       # just one
 ci/ci.sh --list         # what jobs exist
+ci/e2e.sh               # browser UI tests against a real local server (also `ci/ci.sh e2e`)
 
 scripts/run-device-ios-host.sh            # build here, install + launch on the phone
 scripts/run-device-ios-host.sh doctor     # report on the host, change nothing
@@ -72,8 +73,12 @@ that Actions does not bother with:
   project against the pinned release again on the way out, so it does not leave
   a project wired to a local build behind.
 
-There are **no unit tests to run**: `project.yml` declares no test target, so
-"CI" for this repo is builds and bundle assertions. When a job and the workflow
+- **`e2e`** — `ci/e2e.sh`, the browser's end-to-end UI tests (below). Not in
+  the default set either: it needs a Rust toolchain and internet access, and
+  takes a few minutes.
+
+There are **no unit tests**: apart from the end-to-end UI tests, "CI" for this
+repo is builds and bundle assertions. When a job and the workflow
 it mirrors disagree, the workflow is right and the script is stale — nothing
 enforces that.
 
@@ -162,3 +167,41 @@ other.
 - **The GitHub runners build unsigned, from a clean checkout.** Anything that
   depends on state in this working tree — a stale generated project, a local
   xcframework left linked — passes here and fails there.
+
+## End-to-end UI tests
+
+```sh
+ci/e2e.sh                                    # every test
+ci/e2e.sh -only-testing:FlextunnelUITests/BrowserE2ETests/testDisconnectFromTunnelStatusReturnsToSetup
+FLEXTUNNEL_LOCAL_XCFRAMEWORK=1 ci/e2e.sh     # app and server both from the ../flextunnel working tree
+```
+
+`Sources/FlextunnelUITests` drives the browser on a simulator (`iPhone 17`, or
+`FLEXTUNNEL_CI_SIM`) through a **real** tunnel. `ci/e2e.sh` stands it all up on
+loopback and tears it down on exit:
+
+- **The server** is built from `../flextunnel` at the tag the pinned
+  `libflextunnel` release comes from (read from `Packages/Flextunnel/Package.swift`),
+  because client and server share one protocol version and keep no backward
+  compatibility. With `FLEXTUNNEL_LOCAL_XCFRAMEWORK=1` it is built from the
+  sibling working tree instead, to match the local app build. `flexaccess-keys`
+  comes from the tag the sibling's `Cargo.toml` pins. Both land in
+  `build/e2e/tools`, built once per tag; `cargo install --git file://…` clones
+  from the sibling's history, so the sibling checkout is never touched. The
+  server runs with its own `HOME`, so its lock and blocklist are scratch files.
+- **The fixture site** (`ci/e2e/fixtures`) sits behind the server's host alias
+  `e2e.flextunnel.test`. Only the server resolves that name, so a page that
+  loads came through the tunnel.
+- **The app** gets the server id, a fresh client secret and the site URL through
+  `TEST_RUNNER_FLEXTUNNEL_E2E_*`. Its Debug-only launch hook
+  (`E2ELaunchConfig.swift`) seeds an `E2E` profile and key and empties the
+  library on every launch. The app is uninstalled first, so each run starts
+  clean.
+
+The simulator finds the server through iroh's n0 discovery and default relays,
+as a real client would, so the run needs internet access. Results, including
+screenshots of each screen the tests visit, are in
+`build/e2e/run/results.xcresult`; the server and site logs are next to it.
+
+Nothing here is macOS-desktop-specific. A test that needs the desktop client
+belongs on `macvm`, not here.

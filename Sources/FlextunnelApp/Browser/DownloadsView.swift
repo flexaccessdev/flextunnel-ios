@@ -1,49 +1,67 @@
 import SwiftUI
 
-/// Firefox-style downloads panel: a list of this session's downloads with live
-/// progress, completion state, and tap-to-open via QuickLook.
-struct DownloadsView: View {
-    @Bindable var model: BrowserModel
-    @Environment(\.dismiss) private var dismiss
+/// The Library's Downloads segment: this session's downloads with live
+/// progress, completion state, and tap-to-open via QuickLook. Rows swipe to
+/// delete (cancelling one still in flight) and finished files share.
+struct DownloadsList: View {
+    let downloads: BrowserDownloadManager
+    /// Lowercased search text from the Library; empty shows everything.
+    let query: String
     @State private var preview: PreviewItem?
 
-    private var downloads: BrowserDownloadManager { model.downloads }
-
     var body: some View {
-        NavigationStack {
-            Group {
-                if downloads.items.isEmpty {
-                    ContentUnavailableView(
-                        "No Downloads",
-                        systemImage: "arrow.down.circle",
-                        description: Text("Files you download appear here for this session."))
-                } else {
-                    List {
-                        ForEach(downloads.items) { item in
-                            row(item)
-                        }
-                        .onDelete { offsets in
-                            offsets.map { downloads.items[$0] }.forEach(downloads.remove)
-                        }
+        let items = downloads.items.filter { query.isEmpty || $0.filename.lowercased().contains(query) }
+        Group {
+            if downloads.items.isEmpty {
+                ContentUnavailableView(
+                    "No Downloads",
+                    systemImage: "arrow.down.circle",
+                    description: Text("Files you download appear here for this session."))
+            } else if items.isEmpty {
+                ContentUnavailableView.search(text: query)
+            } else {
+                List {
+                    ForEach(items) { item in
+                        row(item)
+                            .swipeActions {
+                                if case .downloading = item.state {
+                                    Button(role: .destructive) {
+                                        downloads.remove(item)
+                                    } label: {
+                                        Label("Cancel", systemImage: "xmark")
+                                    }
+                                } else {
+                                    Button(role: .destructive) {
+                                        downloads.remove(item)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                            }
+                            .contextMenu {
+                                if case .finished(let url) = item.state {
+                                    ShareLink(item: url) {
+                                        Label("Share", systemImage: "square.and.arrow.up")
+                                    }
+                                }
+                                Button(role: .destructive) {
+                                    downloads.remove(item)
+                                } label: {
+                                    if case .downloading = item.state {
+                                        Label("Cancel Download", systemImage: "xmark")
+                                    } else {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                            }
                     }
                 }
+                .listStyle(.plain)
             }
-            .navigationTitle("Downloads")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-                if !downloads.items.isEmpty {
-                    ToolbarItem(placement: .bottomBar) {
-                        Button("Clear All", role: .destructive) { downloads.clearAll() }
-                    }
-                }
-            }
-            .sheet(item: $preview) { item in
-                FilePreviewView(url: item.url, onDone: { preview = nil })
-                    .ignoresSafeArea()
-            }
+        }
+        .sheet(item: $preview) { item in
+            FilePreviewView(url: item.url, onDone: { preview = nil })
+                .ignoresSafeArea()
         }
     }
 
