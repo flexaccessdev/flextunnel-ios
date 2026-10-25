@@ -392,11 +392,13 @@ private struct CollapsedToolbarStrip: View {
         .accessibilityIdentifier("browser.showToolbars")
     }
 
-    /// The registrable domain alone (`example.com` for `www.example.com`), the
-    /// part that says whose page this is.
+    /// The full host (and any non-default port). While the toolbars are hidden
+    /// this is the only origin indicator, so it never trims to a guessed
+    /// registrable domain — without the Public Suffix List, `tenant.pages.dev`
+    /// would read as just `pages.dev`.
     private var hostText: String {
         guard let tab else { return "" }
-        if let parts = AddressDisplayParts(tab: tab) { return parts.primaryText }
+        if let parts = AddressDisplayParts(tab: tab) { return parts.subduedPrefix + parts.primaryText }
         return tab.visibleURL?.host() ?? tab.addressText
     }
 }

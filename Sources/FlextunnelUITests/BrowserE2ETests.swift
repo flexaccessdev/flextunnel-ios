@@ -64,7 +64,7 @@ final class BrowserE2ETests: XCTestCase {
 
         let strip = app.buttons["browser.showToolbars"]
         XCTAssertTrue(strip.waitForExistence(timeout: 5))
-        XCTAssertTrue((strip.value as? String ?? "").contains("flextunnel.test"))
+        XCTAssertTrue((strip.value as? String ?? "").hasPrefix("e2e.flextunnel.test"), "strip shows the full host")
         snapshot("toolbars-hidden")
         XCTAssertFalse(app.buttons["browser.address"].exists)
         XCTAssertFalse(app.buttons["browser.back"].exists)

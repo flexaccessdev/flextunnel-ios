@@ -10,8 +10,8 @@ enum PageRoute {
 extension ProxyController {
     /// Whether the browser sends `url`'s host through the tunnel, or nil while
     /// no tunnel set is known (no handshake yet) or the URL has no host.
-    /// Advisory, like `RouteMatch`: the core's routed set makes the real call,
-    /// so a mismatch mislabels a hint, nothing more. The reserved
+    /// `RouteMatch` follows the core's routed-set rules, but the core still
+    /// makes the real call per connection; this only labels it. The reserved
     /// `flextunnel.internal` namespace always goes through the tunnel.
     func pageRoute(for url: URL?) -> PageRoute? {
         guard let host = url?.host(), let routes = forwardedRoutes, routes.isKnown else { return nil }
