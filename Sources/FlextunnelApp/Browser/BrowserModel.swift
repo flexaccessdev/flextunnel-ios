@@ -72,10 +72,13 @@ final class BrowserModel {
 
     /// Reloads the tabs whose last load failed on a URL `shouldRetry` accepts —
     /// the tunneled ones, once the link is back — the way a mainstream browser
-    /// reloads its offline pages when the network returns.
+    /// reloads its offline pages when the network returns. Only idempotent
+    /// requests: a retry reloads the URL, which would turn a failed form POST
+    /// into a GET.
     func retryFailedLoads(where shouldRetry: (URL) -> Bool) {
         for tab in tabs {
-            guard let url = tab.loadFailure?.url, shouldRetry(url) else { continue }
+            guard let failure = tab.loadFailure, failure.isIdempotent,
+                  shouldRetry(failure.url) else { continue }
             tab.retryFailedLoad()
         }
     }

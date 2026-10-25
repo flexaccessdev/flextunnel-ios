@@ -490,6 +490,9 @@ struct ContentView: View {
             browserModel != nil
         } set: { isPresented in
             if !isPresented, !proxy.sessionAlive, !proxy.isRelaunching {
+                // End the dead session with its screen, so it isn't left
+                // `.connected` behind the setup screen.
+                proxy.stop()
                 browserModel = nil
             }
         }
@@ -502,6 +505,7 @@ struct ContentView: View {
             proxyOnlyActive
         } set: { isPresented in
             if !isPresented, !proxy.sessionAlive, !proxy.isRelaunching {
+                proxy.stop()
                 proxyOnlyActive = false
             }
         }

@@ -135,6 +135,13 @@ final class ProxyController: ObservableObject {
     private var linkDownSince: Date?
     /// A link down longer than this stops reading as a transient reconnect.
     private static let reconnectGrace: TimeInterval = 30
+    /// How long the link stays down before the app relaunches the session on
+    /// its own. Past the core's own recovery: its 45s hold on tunneled
+    /// requests, and the reconnect attempt that follows its first full backoff
+    /// steps (1s doubling to 32s, then a 60s cap) — a relaunch any earlier
+    /// would cut off a reconnect that was about to land, failing the held
+    /// requests with it.
+    private static let autoRelaunchAfter: TimeInterval = 90
     /// Last settings that drove a launch, replayed by the manual Reconnect.
     private var lastSettings: Settings?
     /// Bumped on every start and teardown so an in-flight async start whose FFI
@@ -385,19 +392,24 @@ final class ProxyController: ObservableObject {
         let message: String
     }
 
-    /// User-initiated start, and the relaunch behind Retry and the recoveries.
+    /// User-initiated start from the setup screen: always a fresh session that
+    /// goes through the initial connect, whatever state a previous one was
+    /// left in.
+    func start(_ s: Settings) {
+        launch(s, relaunch: false)
+    }
+
     /// Builds the FFI config, starts the proxy, and publishes the bound port.
     ///
     /// The connecting state is published immediately, then the blocking
     /// `flextunnel_start` (and any previous handle's teardown) runs on the
     /// lifecycle queue so the UI shows the spinner instead of freezing on the tap.
     ///
-    /// Once a session is established (its screen is up), a start replaces its
-    /// handle in place and the phase stays `.connected`: going back through the
-    /// initial connect would let its timeout end the session behind its own
-    /// screen, where nothing recovers it.
-    func start(_ s: Settings) {
-        let relaunch = phase == .connected
+    /// A relaunch replaces an established session's handle in place and the
+    /// phase stays `.connected`: going back through the initial connect would
+    /// let its timeout end the session behind its own screen, where nothing
+    /// recovers it.
+    private func launch(_ s: Settings, relaunch: Bool) {
         lastSettings = s
         lastError = nil
 
@@ -537,7 +549,7 @@ final class ProxyController: ObservableObject {
     /// frozen, and the lifecycle queue makes back-to-back launches safe.
     func relaunch() {
         guard phase == .connected, let lastSettings else { return }
-        start(lastSettings)
+        launch(lastSettings, relaunch: true)
     }
 
     /// Suspension is imminent: close the core's local listeners (the SOCKS5
@@ -695,12 +707,15 @@ final class ProxyController: ObservableObject {
                 autoRelaunchedThisOutage = false
                 status = connectedStatus
             } else if tunnelStuck {
-                // The core's reconnect is presumed wedged: relaunch once on our
-                // own — a fresh handle is what a manual Retry (or quitting and
-                // starting again) would get — and only then leave it to the user.
-                // Not without a network path (the core is parked, not stuck) or
-                // in the background (the suspension recovery covers that).
-                if !autoRelaunchedThisOutage, pathAvailable, !isBackgrounded {
+                // Once the core's own recovery has had its full window, its
+                // reconnect is presumed wedged: relaunch once on our own — a
+                // fresh handle is what a manual Retry (or quitting and starting
+                // again) would get — and only then leave it to the user. Not
+                // without a network path (the core is parked, not stuck) or in
+                // the background (the suspension recovery covers that).
+                if !autoRelaunchedThisOutage, pathAvailable, !isBackgrounded,
+                   let downSince = linkDownSince,
+                   Date().timeIntervalSince(downSince) >= Self.autoRelaunchAfter {
                     autoRelaunchedThisOutage = true
                     relaunch()
                     return

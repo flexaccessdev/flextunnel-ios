@@ -241,6 +241,9 @@ final class BrowserDownloadManager: NSObject, URLSessionDownloadDelegate {
             try? FileManager.default.removeItem(at: url)
         }
         items.removeAll { $0.id == item.id }
+        // A cancel's delegate event is swallowed as a non-failure, so a proxy
+        // change deferred for this download must be applied from here.
+        rebuildSessionIfIdle()
     }
 
     func clearAll() {
