@@ -206,11 +206,19 @@ extension ProxyConfiguration {
     /// connects to everything else directly; nil/empty proxies every host.
     /// SOCKS5 passes matched hostnames to the proxy (ATYP_DOMAIN), so DNS for
     /// tunnel-set names still resolves on the flextunnel server.
+    ///
+    /// Failover is pinned off: a proxied (tunnel-set) host whose proxy
+    /// connection fails — listener closed across a relaunch, tunnel down —
+    /// fails the load instead of being retried directly. A private host that
+    /// also happens to resolve and answer off-tunnel would otherwise flap
+    /// between the tunnel and a direct path with every link blip, and a
+    /// direct retry leaks the request past the server's routing.
     static func loopbackSocks5(port: UInt16, matchDomains: [String]?) -> ProxyConfiguration {
         var config = ProxyConfiguration(socksv5Proxy: .hostPort(
             host: "127.0.0.1",
             port: NWEndpoint.Port(rawValue: port)!))
         config.matchDomains = matchDomains ?? []
+        config.allowFailover = false
         return config
     }
 }

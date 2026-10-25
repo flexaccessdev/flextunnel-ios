@@ -33,8 +33,13 @@ The match list is derived from the pushed set in
 and wildcard (`*.example.com`) rules map to the bare domain, since WebKit's
 suffix match already covers the apex and all subdomains — a superset of the
 core's rules. The always-tunneled `flextunnel.internal` namespace is always
-included. `allowFailover` stays off (the default), so a tunnel-set host **fails
-rather than silently leaking direct** when the proxy is down.
+included. `allowFailover` is explicitly pinned off (`ProxyConfiguration.loopbackSocks5`,
+covered by `ProxyConfigurationTests`), so a tunnel-set host **fails rather than
+silently leaking direct** when the proxy is down — even when the host also
+answers off-tunnel, it never flaps between the tunnel and a direct path across
+link blips or relaunch gaps. The core does the same on its side: an on-list
+request during an outage holds for the reconnect or is refused, never dialed
+directly.
 
 Over-matching is safe: WebKit only decides *whether to send a host to the
 proxy*, and the core makes the real tunnel-vs-direct call for whatever arrives.
@@ -48,10 +53,17 @@ pre-optimization behavior — when hostname suffixes can't faithfully express th
 set:
 
 - **Full tunnel** (`*` / `0.0.0.0/0`): everything is tunneled anyway.
-- **Any CIDR rule**: `matchDomains` matches hostnames, not IPs, so an
+- **Any CIDR rule**: `matchDomains` suffix-matches hostnames and matches an IP
+  literal only as an exact string, so a CIDR range can't be expressed and an
   IP-literal URL must still reach the proxy's CIDR check.
 
-In these cases the core alone routes, exactly as before.
+In these cases the core alone routes, exactly as before. Unscoped, the system
+does send IP-literal URLs to the proxy (private, public and IPv6 alike), with
+one exception: **loopback and the device's own addresses are never proxied**,
+so a CIDR covering them is reached directly by the browser. Port forwards are
+unaffected (they dial through the core). `ProxyConfigurationTests` pins this
+behavior, and the e2e CIDR fixture uses TEST-NET-3 rather than a local address
+because of it.
 
 ## Browser independence
 
@@ -75,7 +87,14 @@ when the set routes everything). The status popover's **Bound SOCKS** row shows
 the loopback address while the listener is serving, or `none — … not listening`
 in red whenever the listener is unavailable — startup, a reconnect gap, a bind
 failure, or the core stopped — a reminder that only tunnel-set hosts depend
-on it.
+on it (every host, while the set has a CIDR rule).
+
+When the set has CIDR rules, the browser's tunnel-set footer adds a note: IP
+ranges cover IP-address URLs and port forwards, never hostnames, and while any
+are present every page goes through the in-app proxy (the WebKit layer is off,
+see above), except loopback and the device's own addresses, which the system
+never proxies. CIDRs exist mostly for port forwards to private IPs; Safari and
+other apps never use the browser's proxy, only the forwards.
 
 ## Verifying the split
 

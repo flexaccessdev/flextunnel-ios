@@ -6,8 +6,9 @@ import XCTest
 /// `e2e.flextunnel.test` — a name only the server resolves, so a page that
 /// loads came through the tunnel — and passes the server id, a client secret
 /// and the site URL in through `TEST_RUNNER_FLEXTUNNEL_E2E_*`, along with a
-/// second server that has no routed set. Run directly from Xcode without them,
-/// every test skips.
+/// second server that has no routed set, a third whose set is a CIDR, and a
+/// control endpoint that stops and restarts a server. Run directly from Xcode
+/// without them, every test skips.
 final class BrowserE2ETests: XCTestCase {
     /// Which of `ci/e2e.sh`'s servers a test connects to.
     private enum Server {
@@ -16,6 +17,18 @@ final class BrowserE2ETests: XCTestCase {
         /// Has no routed set, so only the reserved `flextunnel.internal`
         /// namespace goes through the tunnel.
         case emptySet
+        /// Routes a CIDR (TEST-NET-3), so the browser sends every page to the
+        /// in-app proxy.
+        case cidr
+
+        /// Its name on `ci/e2e.sh`'s control endpoint, for one it can stop.
+        var controlName: String? {
+            switch self {
+            case .routed: "routed"
+            case .cidr: "cidr"
+            case .emptySet: nil
+            }
+        }
     }
 
     private var app: XCUIApplication!
@@ -23,24 +36,32 @@ final class BrowserE2ETests: XCTestCase {
     private var site: String!
     /// A loopback port nothing listens on, for a direct connection that fails.
     private var closedPort: String!
+    /// `ci/e2e.sh`'s control endpoint, which stops and restarts a server.
+    private var control: String!
 
     /// The handshake goes through iroh discovery, so allow it some time.
     private static let connectTimeout: TimeInterval = 90
     private static let loadTimeout: TimeInterval = 30
+    /// The core holds a tunneled request up to 45s for a reconnect before
+    /// failing it, and the page's error comes after that.
+    private static let outageFailureTimeout: TimeInterval = 90
 
     override func setUpWithError() throws {
         continueAfterFailure = false
         let env = ProcessInfo.processInfo.environment
         guard let node = env["FLEXTUNNEL_E2E_SERVER_NODE_ID"],
               let emptyNode = env["FLEXTUNNEL_E2E_EMPTY_SERVER_NODE_ID"],
+              let cidrNode = env["FLEXTUNNEL_E2E_CIDR_SERVER_NODE_ID"],
+              let control = env["FLEXTUNNEL_E2E_CONTROL"],
               let secret = env["FLEXTUNNEL_E2E_AUTH_SECRET"],
               let site = env["FLEXTUNNEL_E2E_SITE"],
               let closedPort = env["FLEXTUNNEL_E2E_CLOSED_PORT"] else {
             throw XCTSkip("Run through ci/e2e.sh, which starts the local flextunnel server.")
         }
-        nodes = [.routed: node, .emptySet: emptyNode]
+        nodes = [.routed: node, .emptySet: emptyNode, .cidr: cidrNode]
         self.site = site
         self.closedPort = closedPort
+        self.control = control
         app = XCUIApplication()
         app.launchEnvironment["FLEXTUNNEL_E2E_AUTH_SECRET"] = secret
     }
@@ -217,6 +238,73 @@ final class BrowserE2ETests: XCTestCase {
         waitForExpectations(timeout: Self.loadTimeout)
     }
 
+    /// `localhost` is in the tunnel set and also answers directly. While the
+    /// tunnel is down a tunneled page fails rather than falling back to that
+    /// direct path, and an off-list host keeps loading; once the tunnel is
+    /// back the failed page reloads on its own.
+    func testTunneledHostNeverFallsBackDirectWhileTheTunnelIsDown() {
+        connect()
+        let tunneled = "http://localhost:\(sitePort)"
+        open(tunneled + "/")
+        waitForPageText("flextunnel e2e home")
+
+        takeDown(.routed)
+        // Off the set (an IP literal, and the set has no CIDRs): unaffected.
+        open("http://127.0.0.1:\(sitePort)/page2.html")
+        waitForPageText("flextunnel e2e page two")
+
+        // A URL never loaded before, so no cached copy can stand in for it.
+        open(tunneled + "/?during-outage")
+        let hint = app.staticTexts.matching(identifier: "browser.failureRoute").firstMatch
+        XCTAssertTrue(hint.waitForExistence(timeout: Self.outageFailureTimeout), "the tunneled page never failed")
+        XCTAssertTrue(hint.label.contains("isn't connected right now"), hint.label)
+        XCTAssertFalse(app.webViews.staticTexts["flextunnel e2e home"].exists, "the tunneled page loaded directly")
+        snapshot("failure-outage")
+
+        bringBack(.routed)
+        waitForPageText("flextunnel e2e home")
+    }
+
+    /// With a CIDR in the set the tunnel status says what IP ranges cover, and
+    /// every page goes through the in-app proxy — which still dials off-list
+    /// hosts directly while the tunnel is down, and holds an address in the
+    /// range for the tunnel: the server's log shows it arriving once the
+    /// tunnel is back. (The range is TEST-NET-3, which nothing answers, so the
+    /// log is the only evidence of the path: loopback and this device's own
+    /// addresses are never proxied, so no local IP can stand in.)
+    func testCIDRSetTunnelsItsIPRangeAndKeepsOffListHostsLoading() {
+        connect(to: .cidr)
+
+        app.buttons["browser.tunnelStatus"].tap()
+        let sheet = app.collectionViews["tunnelStatus.sheet"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        let note = app.staticTexts["tunnelStatus.cidrNote"]
+        for _ in 0..<3 where !note.exists {
+            sheet.swipeUp()
+        }
+        XCTAssertTrue(note.waitForExistence(timeout: 5))
+        XCTAssertTrue(note.label.contains("IP-address URLs"), note.label)
+        snapshot("tunnel-status-cidr-set")
+        app.navigationBars["Tunnel"].buttons["Done"].tap()
+
+        let offList = "http://localhost:\(sitePort)"
+        open(offList + "/")
+        waitForPageText("flextunnel e2e home")
+
+        let tunneledAddress = "203.0.113.9"
+        XCTAssertFalse(serverLog(.cidr).contains(tunneledAddress))
+
+        takeDown(.cidr)
+        open(offList + "/page2.html")
+        waitForPageText("flextunnel e2e page two")
+
+        open("http://\(tunneledAddress)/")
+        bringBack(.cidr)
+        XCTAssertTrue(
+            waitForServerLog(.cidr, toContain: tunneledAddress, timeout: Self.outageFailureTimeout),
+            "\(tunneledAddress) never came through the tunnel")
+    }
+
     func testDisconnectFromTunnelStatusReturnsToSetup() {
         connect()
         disconnect()
@@ -235,6 +323,63 @@ final class BrowserE2ETests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    private var sitePort: Int { URLComponents(string: site)!.port! }
+
+    /// Stops `server` and waits for the browser to see its tunnel go down.
+    /// The server is started again when the test ends, should it fail first.
+    private func takeDown(_ server: Server) {
+        controlServer(server, "stop")
+        addTeardownBlock { [self] in controlServer(server, "start") }
+        expectation(for: NSPredicate(format: "value != 'Connected'"), evaluatedWith: app.buttons["browser.tunnelStatus"])
+        waitForExpectations(timeout: Self.connectTimeout)
+    }
+
+    /// Starts `server` again and waits for the tunnel to reconnect.
+    private func bringBack(_ server: Server) {
+        controlServer(server, "start")
+        expectation(for: NSPredicate(format: "value == 'Connected'"), evaluatedWith: app.buttons["browser.tunnelStatus"])
+        waitForExpectations(timeout: Self.connectTimeout)
+    }
+
+    /// Stops or starts `server` through `ci/e2e.sh`'s control endpoint, and
+    /// waits until it has.
+    private func controlServer(_ server: Server, _ action: String) {
+        _ = controlRequest("POST", server, action)
+    }
+
+    /// `server`'s log so far, read through the control endpoint.
+    private func serverLog(_ server: Server) -> String {
+        controlRequest("GET", server, "log")
+    }
+
+    /// Polls `server`'s log until it contains `text`.
+    private func waitForServerLog(_ server: Server, toContain text: String, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !serverLog(server).contains(text) {
+            guard Date() < deadline else { return false }
+            Thread.sleep(forTimeInterval: 1)
+        }
+        return true
+    }
+
+    /// Sends `method` to the control endpoint's `/<server>/<action>` and
+    /// returns the response body, asserting a 200.
+    private func controlRequest(_ method: String, _ server: Server, _ action: String) -> String {
+        var request = URLRequest(url: URL(string: "\(control!)/\(server.controlName!)/\(action)")!)
+        request.httpMethod = method
+        let done = expectation(description: "\(method) \(action) \(server)")
+        var code = 0
+        var body = ""
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            body = data.map { String(decoding: $0, as: UTF8.self) } ?? ""
+            done.fulfill()
+        }.resume()
+        wait(for: [done], timeout: 30)
+        XCTAssertEqual(code, 200, "control \(method) \(action) \(server)")
+        return body
+    }
 
     /// Launches the app pointed at `server` (the app's E2E launch hook fills
     /// the setup screen in), starts a browser session and waits for the tunnel

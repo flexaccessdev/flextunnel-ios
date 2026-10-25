@@ -207,7 +207,18 @@ struct TunnelStatusSheet: View {
             } header: {
                 Text("Tunnel set")
             } footer: {
-                Text("Set by the server. Hosts not listed here connect directly.")
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Set by the server. Hosts not listed here connect directly.")
+                    // A CIDR turns off WebKit's hostname scoping
+                    // (`ForwardedRoutes.proxyMatchDomains`), so say what that
+                    // costs: off-list sites then depend on the in-app listener.
+                    // The system never proxies loopback or the device's own
+                    // addresses, so those stay direct whatever the set says.
+                    if !routes.isFullTunnel && !routes.cidrs.isEmpty {
+                        Text("IP ranges cover IP-address URLs (like http://10.0.0.5) and port forwards, never hostnames. While the set has any, every page except loopback and this device's own addresses goes through the in-app proxy, which still sends hosts outside the set out directly.")
+                            .accessibilityIdentifier("tunnelStatus.cidrNote")
+                    }
+                }
             }
 
             if !routes.hostAliases.isEmpty {
