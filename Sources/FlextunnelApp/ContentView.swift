@@ -252,8 +252,14 @@ struct ContentView: View {
             .onChange(of: proxy.tunnelConnected) { _, connected in
                 syncLiveActivity()
                 // Pages that failed on a tunneled host while the link was down
-                // reload once it's back, instead of leaving the error up.
+                // reload once it's back, instead of leaving the error up. The
+                // handshake may have pushed a changed tunnel set: install its
+                // scoping first (the `browserMatchDomains` handler may run after
+                // this one), or a host that just became tunneled retries direct.
                 if connected {
+                    if let matchDomains = proxy.browserMatchDomains {
+                        browserModel?.updateProxyMatchDomains(matchDomains)
+                    }
                     browserModel?.retryFailedLoads { proxy.pageRoute(for: $0) == .tunnel }
                 }
             }

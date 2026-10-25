@@ -133,6 +133,12 @@ final class ProxyController: ObservableObject {
     private var connectDeadline: Date?
     /// When the tunnel link dropped while connected; nil while the link is up.
     private var linkDownSince: Date?
+    /// When the core's current reconnect series began: the drop, or the last
+    /// time it started over with a fresh backoff (the network path returning,
+    /// the app coming to the foreground). The stuck-link relaunch measures
+    /// from here, so time offline or backgrounded never counts as the core
+    /// failing to reconnect. Nil while the link is up.
+    private var recoverySince: Date?
     /// A link down longer than this stops reading as a transient reconnect.
     private static let reconnectGrace: TimeInterval = 30
     /// How long the link stays down before the app relaunches the session on
@@ -368,6 +374,9 @@ final class ProxyController: ObservableObject {
         guard backgrounded != isBackgrounded else { return }
         isBackgrounded = backgrounded
         if let handle { _ = flextunnel_set_background(handle, backgrounded ? 1 : 0) }
+        // Foregrounded, the core ends any backoff wait and retries at once.
+        // Before the immediate poll below, which could otherwise relaunch.
+        if !backgrounded { restartRecoveryClock() }
         reschedulePolling()
     }
 
@@ -375,6 +384,14 @@ final class ProxyController: ObservableObject {
         guard available != pathAvailable else { return }
         pathAvailable = available
         if let handle { _ = flextunnel_set_network_available(handle, available ? 1 : 0) }
+        // The path's return reconnects immediately with a fresh backoff series.
+        if available { restartRecoveryClock() }
+    }
+
+    /// The core just started its reconnect over: give it a full window before
+    /// the stuck-link relaunch can cut in.
+    private func restartRecoveryClock() {
+        if recoverySince != nil { recoverySince = Date() }
     }
 
     /// Re-arm the poll timer at the cadence for the current scene phase and
@@ -427,6 +444,7 @@ final class ProxyController: ObservableObject {
         sessionAlive = false
         tunnelConnected = false
         linkDownSince = nil
+        recoverySince = nil
         tunnelStuck = false
         connectionSummary = nil
         forwardedRoutes = nil
@@ -601,6 +619,7 @@ final class ProxyController: ObservableObject {
         sessionAlive = false
         tunnelConnected = false
         linkDownSince = nil
+        recoverySince = nil
         tunnelStuck = false
         isRelaunching = false
         connectionSummary = nil
@@ -680,6 +699,7 @@ final class ProxyController: ObservableObject {
                 sessionAlive = false
                 tunnelConnected = false
                 linkDownSince = nil
+                recoverySince = nil
                 tunnelStuck = false
                 isRelaunching = false
                 status = "session stopped — tap Reconnect"
@@ -722,8 +742,8 @@ final class ProxyController: ObservableObject {
                 // without a network path (the core is parked, not stuck) or in
                 // the background (the suspension recovery covers that).
                 if !autoRelaunchedThisOutage, pathAvailable, !isBackgrounded,
-                   let downSince = linkDownSince,
-                   Date().timeIntervalSince(downSince) >= Self.autoRelaunchAfter {
+                   let since = recoverySince,
+                   Date().timeIntervalSince(since) >= Self.autoRelaunchAfter {
                     autoRelaunchedThisOutage = true
                     relaunch()
                     return
@@ -748,11 +768,13 @@ final class ProxyController: ObservableObject {
     private func trackLinkOutage() {
         guard phase == .connected, !tunnelConnected else {
             linkDownSince = nil
+            recoverySince = nil
             tunnelStuck = false
             return
         }
         let downSince = linkDownSince ?? Date()
         linkDownSince = downSince
+        recoverySince = recoverySince ?? downSince
         tunnelStuck = Date().timeIntervalSince(downSince) >= Self.reconnectGrace
     }
 
