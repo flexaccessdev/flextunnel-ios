@@ -93,7 +93,7 @@ final class BrowserDownloadManager: NSObject, URLSessionDownloadDelegate {
     /// chrome.
     var toast: DownloadToast?
 
-    private let socksPort: UInt16
+    @ObservationIgnored private var socksPort: UInt16
     private let websiteDataStore: WKWebsiteDataStore
     private let log = Logger(subsystem: "com.example.flextunnel", category: "download")
     /// The tunnel set's host patterns, mirroring the tabs' split-tunneling;
@@ -125,12 +125,13 @@ final class BrowserDownloadManager: NSObject, URLSessionDownloadDelegate {
         return created
     }
 
-    /// Applies an updated tunnel set. The proxy scoping is baked into the
+    /// Applies an updated tunnel set or SOCKS port. The proxy is baked into the
     /// session's configuration, so an idle session is dropped now (the next
     /// download builds a fresh one); one with downloads in flight keeps its
-    /// scoping until they settle, then the terminal delegate event rebuilds.
-    func updateProxyMatchDomains(_ matchDomains: [String]?) {
-        guard matchDomains != proxyMatchDomains else { return }
+    /// proxy until they settle, then the terminal delegate event rebuilds.
+    func updateProxy(socksPort: UInt16, matchDomains: [String]?) {
+        guard socksPort != self.socksPort || matchDomains != proxyMatchDomains else { return }
+        self.socksPort = socksPort
         proxyMatchDomains = matchDomains
         needsSessionRebuild = true
         rebuildSessionIfIdle()

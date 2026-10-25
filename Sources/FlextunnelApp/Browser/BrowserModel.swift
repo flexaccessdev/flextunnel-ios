@@ -10,7 +10,9 @@ import WebKit
 @MainActor
 @Observable
 final class BrowserModel {
-    let socksPort: UInt16
+    /// The session's loopback SOCKS port. Changes in place when a relaunched
+    /// session couldn't get its pinned port back (`updateSocksPort`).
+    private(set) var socksPort: UInt16
     let library: BrowserLibrary
     let downloads: BrowserDownloadManager
     private(set) var tabs: [BrowserTab]
@@ -50,10 +52,32 @@ final class BrowserModel {
     func updateProxyMatchDomains(_ matchDomains: [String]?) {
         guard matchDomains != proxyMatchDomains else { return }
         proxyMatchDomains = matchDomains
+        applyProxyConfiguration()
+    }
+
+    /// Repoints every tab at a relaunched session's new SOCKS port (its pinned
+    /// one was taken while suspended), keeping the tabs and their pages.
+    func updateSocksPort(_ port: UInt16) {
+        guard port != socksPort else { return }
+        socksPort = port
+        applyProxyConfiguration()
+    }
+
+    private func applyProxyConfiguration() {
         websiteDataStore.proxyConfigurations = [
-            .loopbackSocks5(port: socksPort, matchDomains: matchDomains)
+            .loopbackSocks5(port: socksPort, matchDomains: proxyMatchDomains)
         ]
-        downloads.updateProxyMatchDomains(matchDomains)
+        downloads.updateProxy(socksPort: socksPort, matchDomains: proxyMatchDomains)
+    }
+
+    /// Reloads the tabs whose last load failed on a URL `shouldRetry` accepts —
+    /// the tunneled ones, once the link is back — the way a mainstream browser
+    /// reloads its offline pages when the network returns.
+    func retryFailedLoads(where shouldRetry: (URL) -> Bool) {
+        for tab in tabs {
+            guard let url = tab.loadFailure?.url, shouldRetry(url) else { continue }
+            tab.retryFailedLoad()
+        }
     }
 
     var selectedTab: BrowserTab? {

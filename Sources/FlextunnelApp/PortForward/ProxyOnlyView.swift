@@ -27,13 +27,15 @@ struct ProxyOnlyView: View {
                 Section {
                     // Offered whenever the link is down, not just when the proxy
                     // died: if the core's own reconnect is stuck this is the only
-                    // way out — it relaunches the session.
+                    // way out — it relaunches the session. Held off while a
+                    // relaunch is still establishing.
                     if !proxy.sessionAlive || !proxy.tunnelConnected {
                         Button {
                             proxy.retryNow()
                         } label: {
                             Label("Reconnect", systemImage: "arrow.clockwise")
                         }
+                        .disabled(!proxy.canRetry)
                     }
                     Button(role: .destructive, action: onStop) {
                         Label("Stop Forwarding", systemImage: "stop.circle")
@@ -83,7 +85,7 @@ struct ProxyOnlyView: View {
                     .font(.headline)
                     .foregroundStyle(healthColor)
                 Spacer()
-                if proxy.sessionAlive && !proxy.tunnelConnected && !proxy.tunnelStuck {
+                if proxy.isReconnecting && !proxy.tunnelStuck {
                     ProgressView()
                 }
             }
@@ -118,7 +120,7 @@ struct ProxyOnlyView: View {
                 InfoRow("Last error", error, valueColor: .red)
             }
 
-            if proxy.sessionAlive && !proxy.tunnelConnected {
+            if proxy.isReconnecting {
                 Text(proxy.tunnelStuck
                     ? "The tunnel hasn't reconnected on its own — Reconnect relaunches the session. Port forwards are unavailable."
                     : "Port forwards are unavailable until the tunnel link recovers.")
@@ -239,14 +241,14 @@ struct ProxyOnlyView: View {
 
     private var tunnelLinkText: String {
         if proxy.tunnelConnected { return "connected" }
-        if !proxy.sessionAlive { return "down" }
+        if !proxy.isReconnecting { return "down" }
         return proxy.tunnelStuck ? "disconnected" : "reconnecting"
     }
 
     private var healthTitle: String {
         if proxy.tunnelConnected { return "Tunnel connected" }
         if proxy.tunnelStuck { return "Tunnel disconnected" }
-        if proxy.sessionAlive { return "Tunnel reconnecting" }
+        if proxy.isReconnecting { return "Tunnel reconnecting" }
         return "Tunnel unavailable"
     }
 
@@ -258,7 +260,7 @@ struct ProxyOnlyView: View {
     private var healthColor: Color {
         if proxy.tunnelConnected { return .green }
         if proxy.tunnelStuck { return .red }
-        if proxy.sessionAlive { return .orange }
+        if proxy.isReconnecting { return .orange }
         return .red
     }
 }
