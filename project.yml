@@ -48,6 +48,11 @@ schemes:
       config: Debug
     test:
       config: Debug
+      # End-to-end UI tests against a real local flextunnel server; they skip
+      # unless ci/e2e.sh provides the server (see docs/local-ci.md).
+      targets:
+        - FlextunnelTests
+        - FlextunnelUITests
     profile:
       config: Release
     analyze:
@@ -97,8 +102,8 @@ targets:
         # (cleartext http:// is blocked by default, which silently fails loads
         # like http://server.ezvpn:8000 before they ever reach the proxy).
         INFOPLIST_FILE: Sources/FlextunnelApp/Info.plist
-        MARKETING_VERSION: "0.0.3"
-        CURRENT_PROJECT_VERSION: "3"
+        MARKETING_VERSION: "0.0.4"
+        CURRENT_PROJECT_VERSION: "4"
         # The pinned libflextunnel release, surfaced in the app's version footer
         # (Info.plist -> FlextunnelCoreVersion). scripts/bump-xcframework.sh
         # rewrites this alongside the url+checksum in Package.swift, so the two
@@ -132,5 +137,41 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.flexaccess.flextunnel.widgets
         INFOPLIST_FILE: Sources/FlextunnelWidgets/Info.plist
-        MARKETING_VERSION: "0.0.3"
-        CURRENT_PROJECT_VERSION: "3"
+        MARKETING_VERSION: "0.0.4"
+        CURRENT_PROJECT_VERSION: "4"
+
+  # Unit tests for the app's pure logic (routing labels, URL resolution, the
+  # library store), hosted by the app so they can @testable import it. Run by
+  # `ci/ci.sh unit`.
+  FlextunnelTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Sources/FlextunnelTests
+    dependencies:
+      - target: FlextunnelApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.flexaccess.flextunnel.tests
+        GENERATE_INFOPLIST_FILE: YES
+        # The app's product is Flextunnel.app (PRODUCT_NAME), not the target
+        # name xcodegen would derive the host path from.
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Flextunnel.app/Flextunnel
+        BUNDLE_LOADER: $(TEST_HOST)
+
+  # End-to-end UI tests (XCUITest), driven by ci/e2e.sh: it starts a local
+  # flextunnel server and fixture site, then hands the server id and a client
+  # secret to the tests through TEST_RUNNER_FLEXTUNNEL_E2E_* (see
+  # docs/local-ci.md). Debug only — the app's E2E launch hook is #if DEBUG.
+  FlextunnelUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - Sources/FlextunnelUITests
+    dependencies:
+      - target: FlextunnelApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.flexaccess.flextunnel.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: FlextunnelApp

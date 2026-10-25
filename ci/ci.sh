@@ -17,15 +17,19 @@
 # Jobs:
 #   simulator  build for the Simulator (arm64) — the README's verify command
 #   smoke      boot a simulator, install the build, launch it, check it stays up
+#   unit       the unit tests (Sources/FlextunnelTests) on the simulator
 #   unsigned   Release device archive with signing off, plus the bundle
 #              assertions from .github/workflows/unsigned-ios.yml
 #   device     signed device-slice .app — the artifact scripts/run-device-ios-host.sh installs
 #   ffi        rebuild libflextunnel from the sibling ../flextunnel working tree
 #              and link against it (.github/workflows/verify-flextunnel-commit.yml)
+#   e2e        the browser UI tests on a simulator against a real local
+#              flextunnel server (ci/e2e.sh)
 #
 # `ffi` is not in the default set: it compiles the Rust core for iOS, which is
 # minutes rather than seconds, and it is only meaningful when you are changing
-# ../flextunnel. Ask for it by name.
+# ../flextunnel. Ask for it by name. Neither is `e2e`: it needs a Rust toolchain
+# and internet access (iroh discovery), and takes a few minutes.
 #
 # When a job and the workflow it mirrors disagree, the workflow is right and
 # this script is stale. Keep them in step by hand; nothing enforces it.
@@ -33,8 +37,8 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-ALL_JOBS=(simulator smoke unsigned device ffi)
-DEFAULT_JOBS=(simulator smoke unsigned device)
+ALL_JOBS=(simulator smoke unit unsigned device ffi e2e)
+DEFAULT_JOBS=(simulator smoke unit unsigned device)
 
 # A named simulator rather than a UDID: whichever iOS runtime is installed gets
 # used, the same way the README's destination leaves OS= off on purpose.
@@ -43,6 +47,7 @@ BUNDLE_ID=dev.flexaccess.flextunnel
 DERIVED_SIM=build/ci/DerivedData-sim
 DERIVED_DEVICE=build/ci/DerivedData-device
 DERIVED_FFI=build/ci/DerivedData-ffi
+DERIVED_UNIT=build/ci/DerivedData-unit
 ARCHIVE=build/ci/flextunnel-ios-unsigned.xcarchive
 
 usage() { echo "usage: $0 [--list] [${ALL_JOBS[*]}]" >&2; exit 2; }
@@ -247,6 +252,24 @@ job_ffi() {
     # here. The build's status is re-raised after the cleanup, not swallowed.
     generate pinned
     return "$status"
+}
+
+job_unit() {
+    step "unit tests on the $SIM_NAME simulator"
+    generate pinned
+    xcodebuild test \
+        -project Flextunnel.xcodeproj \
+        -scheme FlextunnelApp \
+        -configuration Debug \
+        -destination "platform=iOS Simulator,name=$SIM_NAME" \
+        -derivedDataPath "$DERIVED_UNIT" \
+        -only-testing:FlextunnelTests \
+        ARCHS=arm64
+}
+
+job_e2e() {
+    step "end-to-end UI tests on the $SIM_NAME simulator"
+    FLEXTUNNEL_CI_SIM=$SIM_NAME ci/e2e.sh
 }
 
 info "jobs: ${jobs[*]}"

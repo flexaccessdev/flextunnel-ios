@@ -11,12 +11,23 @@ struct BookmarkDraft: Identifiable {
 /// Editable form shown before a bookmark is saved, prefilled with the page
 /// title and URL. Save is disabled until both fields resolve to a usable value.
 struct BookmarkEditView: View {
+    let title: String
+    /// Whether a URL is already taken by another bookmark. Save stays disabled
+    /// for it, since the library refuses duplicates and the edit would be lost.
+    let isTaken: (URL) -> Bool
     let onSave: (_ name: String, _ url: URL) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var name: String
     @State private var urlString: String
 
-    init(draft: BookmarkDraft, onSave: @escaping (_ name: String, _ url: URL) -> Void) {
+    init(
+        draft: BookmarkDraft,
+        title: String = "Add Bookmark",
+        isTaken: @escaping (URL) -> Bool,
+        onSave: @escaping (_ name: String, _ url: URL) -> Void
+    ) {
+        self.title = title
+        self.isTaken = isTaken
         self.onSave = onSave
         _name = State(initialValue: draft.name)
         _urlString = State(initialValue: draft.url.absoluteString)
@@ -28,14 +39,21 @@ struct BookmarkEditView: View {
                 Section("Name") {
                     TextField("Name", text: $name)
                 }
-                Section("URL") {
+                Section {
                     TextField("URL", text: $urlString)
                         .keyboardType(.URL)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
+                } header: {
+                    Text("URL")
+                } footer: {
+                    if let url = normalizedURL, isTaken(url) {
+                        Text("Another bookmark already has this URL.")
+                            .foregroundStyle(.red)
+                    }
                 }
             }
-            .navigationTitle("Add Bookmark")
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -83,6 +101,7 @@ struct BookmarkEditView: View {
     }
 
     private var canSave: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && normalizedURL != nil
+        guard let url = normalizedURL else { return false }
+        return !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isTaken(url)
     }
 }

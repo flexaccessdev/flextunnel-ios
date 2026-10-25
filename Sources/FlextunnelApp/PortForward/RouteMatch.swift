@@ -1,53 +1,73 @@
 import Foundation
 import Network
 
-/// Advisory-only mirror of the core's split-tunnel decision, used to badge a
-/// forward target as tunneled or direct. The core (and the server) remain the
-/// authority; a mismatch here mislabels a badge, nothing more.
+/// Advisory-only mirror of the core's split-tunnel decision (`RoutedSet` in
+/// flextunnel-core), used to badge a forward target and label a browser page as
+/// tunneled or direct. The core (and the server) remain the authority, but the
+/// rules here follow it exactly so a label never reports the opposite route.
 enum RouteMatch {
-    /// Whether `host` (hostname or IP literal) falls in the routed tunnel set.
+    /// Whether `host` (hostname or IP literal, optionally bracketed) falls in
+    /// the routed tunnel set. As in the core, a hostname is matched only against
+    /// the domain rules and an IP literal only against the CIDRs: `*` never
+    /// covers an IP, and a default-route CIDR never covers a hostname.
     static func isTunneled(host: String, routes: ProxyController.ForwardedRoutes) -> Bool {
-        if routes.isFullTunnel { return true }
-        let normalized = host.lowercased()
+        var normalized = host.lowercased()
+        if normalized.hasPrefix("[") && normalized.hasSuffix("]") {
+            normalized = String(normalized.dropFirst().dropLast())
+        }
 
-        // IP literals are gated by CIDRs, never by domain wildcards — same rule
-        // as the core's RoutedSet.
         if let ip = IPv4Address(normalized) {
-            return routes.cidrs.contains { cidrContains($0, ip) }
+            return routes.cidrs.contains { cidrContains($0, ip.rawValue) }
         }
-        if IPv6Address(normalized) != nil {
-            // Non-catch-all IPv6 CIDR matching is skipped; the badge is advisory.
-            return false
+        if let ip = IPv6Address(normalized) {
+            return routes.cidrs.contains { cidrContains($0, ip.rawValue) }
         }
 
+        // The core trims each rule but publishes the raw arrays, so trim here too.
         return routes.domains.contains { pattern in
-            let pattern = pattern.lowercased()
+            let pattern = pattern.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if pattern == "*" { return true }
             if pattern.hasPrefix("*.") {
-                let suffix = String(pattern.dropFirst(2))
-                return normalized == suffix || normalized.hasSuffix("." + suffix)
+                // Subdomains only — the core excludes the bare apex.
+                return normalized.hasSuffix(String(pattern.dropFirst()))
             }
             return normalized == pattern
         }
     }
 
-    /// IPv4 CIDR containment (`10.0.0.0/8`); a bare IP matches as /32.
-    private static func cidrContains(_ cidr: String, _ ip: IPv4Address) -> Bool {
-        let parts = cidr.split(separator: "/")
-        guard let first = parts.first, let base = IPv4Address(String(first)) else { return false }
-        let bits: UInt32
-        switch parts.count {
-        case 1: bits = 32
-        case 2:
-            guard let parsed = UInt32(parts[1]), parsed <= 32 else { return false }
-            bits = parsed
-        default: return false
+    /// CIDR containment for either family (`10.0.0.0/8`, `fd00::/8`); a bare IP
+    /// matches as a single host. Never true across families.
+    private static func cidrContains(_ cidr: String, _ address: Data) -> Bool {
+        let parts = cidr.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count <= 2, let first = parts.first else { return false }
+        let base: Data
+        if let v4 = IPv4Address(String(first)) {
+            base = v4.rawValue
+        } else if let v6 = IPv6Address(String(first)) {
+            base = v6.rawValue
+        } else {
+            return false
         }
-        let mask: UInt32 = bits == 0 ? 0 : ~UInt32(0) << (32 - bits)
-        return (value(of: base) & mask) == (value(of: ip) & mask)
-    }
+        guard base.count == address.count else { return false }
 
-    private static func value(of ip: IPv4Address) -> UInt32 {
-        ip.rawValue.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+        let maxBits = base.count * 8
+        let bits: Int
+        if parts.count == 2 {
+            guard let parsed = Int(parts[1]), (0...maxBits).contains(parsed) else { return false }
+            bits = parsed
+        } else {
+            bits = maxBits
+        }
+
+        let baseBytes = [UInt8](base)
+        let addressBytes = [UInt8](address)
+        var remaining = bits
+        for index in 0..<baseBytes.count where remaining > 0 {
+            let mask: UInt8 = remaining >= 8 ? 0xFF : ~(0xFF >> UInt8(remaining))
+            if baseBytes[index] & mask != addressBytes[index] & mask { return false }
+            remaining -= 8
+        }
+        return true
     }
 }

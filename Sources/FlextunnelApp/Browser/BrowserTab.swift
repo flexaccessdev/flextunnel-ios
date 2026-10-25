@@ -638,7 +638,7 @@ final class BrowserNavigationDecider: WebPage.NavigationDeciding {
 
     /// Case-folded, with the brackets an IPv6 literal carries in a URL but not
     /// in a protection space.
-    static func normalizedHost(_ host: String) -> String {
+    nonisolated static func normalizedHost(_ host: String) -> String {
         var host = host.lowercased()
         if host.hasPrefix("[") && host.hasSuffix("]") {
             host = String(host.dropFirst().dropLast())

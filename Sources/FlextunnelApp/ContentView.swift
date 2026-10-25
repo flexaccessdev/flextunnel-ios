@@ -181,6 +181,7 @@ struct ContentView: View {
                         .controlSize(.large)
                         .frame(maxWidth: .infinity)
                         .disabled(!canStartProxy)
+                        .accessibilityIdentifier("setup.start")
                         .listRowInsets(EdgeInsets())
                         .listRowBackground(Color.clear)
                     }
@@ -282,6 +283,12 @@ struct ContentView: View {
                 portForwards.pruneProfiles(keeping: Set(ids))
             }
             .onAppear {
+                #if DEBUG
+                if let e2e = E2ELaunchConfig.current {
+                    E2ELaunchConfig.apply(e2e, profiles: profiles, authKeys: authKeys, library: library)
+                    sessionMode = .browser
+                }
+                #endif
                 loadStoredSecrets()
                 clearDanglingAuthKey()
                 portForwards.setProfile(profiles.selectedID)
