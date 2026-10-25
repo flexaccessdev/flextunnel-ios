@@ -10,9 +10,7 @@ import WebKit
 @MainActor
 @Observable
 final class BrowserModel {
-    /// The session's loopback SOCKS port. Changes in place when a relaunched
-    /// session couldn't get its pinned port back (`updateSocksPort`).
-    private(set) var socksPort: UInt16
+    let socksPort: UInt16
     let library: BrowserLibrary
     let downloads: BrowserDownloadManager
     private(set) var tabs: [BrowserTab]
@@ -52,22 +50,10 @@ final class BrowserModel {
     func updateProxyMatchDomains(_ matchDomains: [String]?) {
         guard matchDomains != proxyMatchDomains else { return }
         proxyMatchDomains = matchDomains
-        applyProxyConfiguration()
-    }
-
-    /// Repoints every tab at a relaunched session's new SOCKS port (its pinned
-    /// one was taken while suspended), keeping the tabs and their pages.
-    func updateSocksPort(_ port: UInt16) {
-        guard port != socksPort else { return }
-        socksPort = port
-        applyProxyConfiguration()
-    }
-
-    private func applyProxyConfiguration() {
         websiteDataStore.proxyConfigurations = [
-            .loopbackSocks5(port: socksPort, matchDomains: proxyMatchDomains)
+            .loopbackSocks5(port: socksPort, matchDomains: matchDomains)
         ]
-        downloads.updateProxy(socksPort: socksPort, matchDomains: proxyMatchDomains)
+        downloads.updateProxyMatchDomains(matchDomains)
     }
 
     /// Reloads the tabs whose last load failed on a URL `shouldRetry` accepts —

@@ -160,8 +160,9 @@ final class ProxyController: ObservableObject {
         var authKey: String
         /// Loopback SOCKS5 port for browser mode. `nil` means a forwarding-only
         /// session with no SOCKS5 listener; `0` requests an OS-assigned
-        /// ephemeral port. Nonzero is a preference the core falls back from if
-        /// the port is taken; the bound port is published as `socksPort`.
+        /// ephemeral port; the bound port is published as `socksPort`. Nonzero
+        /// is the session's pinned port, replayed by relaunches, and is
+        /// required: a relaunch that can't bind it fails.
         var socksPort: UInt16?
         var relayURLs: [String]
         /// Shared bearer token sent to every custom relay's WebSocket upgrade.
@@ -490,6 +491,14 @@ final class ProxyController: ObservableObject {
             launchFailed("bad result JSON: \(result.message)")
             return
         }
+        // The browser's proxy configuration names the session's pinned port,
+        // which stays fixed until the session quits. A core that still falls
+        // back to another port when it's taken is refused here like a failed
+        // bind, ending the relaunch rather than moving the session.
+        if let requested = s.socksPort, requested != 0, port != requested {
+            launchFailed("SOCKS port \(requested) is in use by another app — disconnect and start again")
+            return
+        }
 
         self.handle = handle
         // A fresh handle starts foregrounded-and-online in the core; replay the
@@ -502,9 +511,8 @@ final class ProxyController: ObservableObject {
             relayURLs: s.relayURLs)
         socksPort = port
         // Pin the OS-assigned SOCKS port so relaunches of this session (manual
-        // Reconnect, suspend recovery) prefer the same port and the browser's
-        // proxy config stays valid. If it gets stolen while suspended, the core
-        // falls back to a fresh port and the browser is rebuilt on the change.
+        // Reconnect, suspend recovery) bind the same port and the browser's
+        // proxy config stays valid; one that can't get it back fails above.
         lastSettings?.socksPort = port
         forwardingSessionID = UUID()
         // Not usable yet: the handle only means the listener bound and the connect

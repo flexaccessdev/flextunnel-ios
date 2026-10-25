@@ -576,16 +576,13 @@ struct ContentView: View {
             guard let socksPort = proxy.socksPort else { return }
             // Routes are known here: the poll learns them before flipping the
             // phase to connected. Nil (defensively) proxies every host.
-            if let browserModel {
-                // A relaunch that couldn't get its pinned port back: repoint the
-                // browser in place so its tabs survive.
-                browserModel.updateSocksPort(socksPort)
-            } else {
-                browserModel = BrowserModel(
-                    socksPort: socksPort,
-                    proxyMatchDomains: proxy.forwardedRoutes?.proxyMatchDomains,
-                    library: library)
-            }
+            // The port is pinned for the session (a relaunch that can't bind
+            // it fails), so the browser is built once and never repointed.
+            guard browserModel == nil else { return }
+            browserModel = BrowserModel(
+                socksPort: socksPort,
+                proxyMatchDomains: proxy.forwardedRoutes?.proxyMatchDomains,
+                library: library)
         case .proxyOnly:
             proxyOnlyActive = true
         }
