@@ -17,6 +17,7 @@
 # Jobs:
 #   simulator  build for the Simulator (arm64) — the README's verify command
 #   smoke      boot a simulator, install the build, launch it, check it stays up
+#   unit       the unit tests (Sources/FlextunnelTests) on the simulator
 #   unsigned   Release device archive with signing off, plus the bundle
 #              assertions from .github/workflows/unsigned-ios.yml
 #   device     signed device-slice .app — the artifact scripts/run-device-ios-host.sh installs
@@ -36,8 +37,8 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-ALL_JOBS=(simulator smoke unsigned device ffi e2e)
-DEFAULT_JOBS=(simulator smoke unsigned device)
+ALL_JOBS=(simulator smoke unit unsigned device ffi e2e)
+DEFAULT_JOBS=(simulator smoke unit unsigned device)
 
 # A named simulator rather than a UDID: whichever iOS runtime is installed gets
 # used, the same way the README's destination leaves OS= off on purpose.
@@ -46,6 +47,7 @@ BUNDLE_ID=dev.flexaccess.flextunnel
 DERIVED_SIM=build/ci/DerivedData-sim
 DERIVED_DEVICE=build/ci/DerivedData-device
 DERIVED_FFI=build/ci/DerivedData-ffi
+DERIVED_UNIT=build/ci/DerivedData-unit
 ARCHIVE=build/ci/flextunnel-ios-unsigned.xcarchive
 
 usage() { echo "usage: $0 [--list] [${ALL_JOBS[*]}]" >&2; exit 2; }
@@ -250,6 +252,19 @@ job_ffi() {
     # here. The build's status is re-raised after the cleanup, not swallowed.
     generate pinned
     return "$status"
+}
+
+job_unit() {
+    step "unit tests on the $SIM_NAME simulator"
+    generate pinned
+    xcodebuild test \
+        -project Flextunnel.xcodeproj \
+        -scheme FlextunnelApp \
+        -configuration Debug \
+        -destination "platform=iOS Simulator,name=$SIM_NAME" \
+        -derivedDataPath "$DERIVED_UNIT" \
+        -only-testing:FlextunnelTests \
+        ARCHS=arm64
 }
 
 job_e2e() {

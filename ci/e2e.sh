@@ -5,7 +5,8 @@
 #   ci/e2e.sh                                   # every test
 #   ci/e2e.sh -only-testing:FlextunnelUITests/BrowserE2ETests/testDisconnectFromTunnelStatusReturnsToSetup
 #
-# Extra arguments go to `xcodebuild test` as they are.
+# Extra arguments go to `xcodebuild test` as they are; without any, only the
+# UI tests run (the unit tests are `ci/ci.sh unit`).
 #
 # What it stands up, all on loopback and all torn down on exit:
 #   - the flextunnel server, built at the tag the app's pinned libflextunnel
@@ -149,6 +150,7 @@ xcrun simctl bootstatus "$SIM_NAME" -b >/dev/null
 xcrun simctl uninstall "$SIM_NAME" "$BUNDLE_ID" 2>/dev/null || true
 
 rm -rf "$RUN/results.xcresult"
+[ $# -gt 0 ] || set -- -only-testing:FlextunnelUITests
 TEST_RUNNER_FLEXTUNNEL_E2E_SERVER_NODE_ID=$node_id \
 TEST_RUNNER_FLEXTUNNEL_E2E_AUTH_SECRET=$secret \
 TEST_RUNNER_FLEXTUNNEL_E2E_SITE=http://e2e.flextunnel.test:$port \

@@ -5,21 +5,26 @@ import UIKit
 enum PageRoute {
     case tunnel
     case direct
-}
 
-extension ProxyController {
-    /// Whether the browser sends `url`'s host through the tunnel, or nil while
-    /// no tunnel set is known (no handshake yet) or the URL has no host.
+    /// Whether `url`'s host goes through the tunnel under `routes`, or nil
+    /// while no tunnel set is known (no handshake yet) or the URL has no host.
     /// `RouteMatch` follows the core's routed-set rules, but the core still
     /// makes the real call per connection; this only labels it. The reserved
     /// `flextunnel.internal` namespace always goes through the tunnel.
-    func pageRoute(for url: URL?) -> PageRoute? {
-        guard let host = url?.host(), let routes = forwardedRoutes, routes.isKnown else { return nil }
+    static func resolve(_ url: URL?, routes: ProxyController.ForwardedRoutes?) -> PageRoute? {
+        guard let host = url?.host(), let routes, routes.isKnown else { return nil }
         let normalized = BrowserNavigationDecider.normalizedHost(host)
         if normalized == "flextunnel.internal" || normalized.hasSuffix(".flextunnel.internal") {
             return .tunnel
         }
         return RouteMatch.isTunneled(host: normalized, routes: routes) ? .tunnel : .direct
+    }
+}
+
+extension ProxyController {
+    /// How the browser reaches `url` under the current tunnel set.
+    func pageRoute(for url: URL?) -> PageRoute? {
+        PageRoute.resolve(url, routes: forwardedRoutes)
     }
 }
 

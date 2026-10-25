@@ -51,6 +51,7 @@ schemes:
       # End-to-end UI tests against a real local flextunnel server; they skip
       # unless ci/e2e.sh provides the server (see docs/local-ci.md).
       targets:
+        - FlextunnelTests
         - FlextunnelUITests
     profile:
       config: Release
@@ -138,6 +139,25 @@ targets:
         INFOPLIST_FILE: Sources/FlextunnelWidgets/Info.plist
         MARKETING_VERSION: "0.0.3"
         CURRENT_PROJECT_VERSION: "3"
+
+  # Unit tests for the app's pure logic (routing labels, URL resolution, the
+  # library store), hosted by the app so they can @testable import it. Run by
+  # `ci/ci.sh unit`.
+  FlextunnelTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Sources/FlextunnelTests
+    dependencies:
+      - target: FlextunnelApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.flexaccess.flextunnel.tests
+        GENERATE_INFOPLIST_FILE: YES
+        # The app's product is Flextunnel.app (PRODUCT_NAME), not the target
+        # name xcodegen would derive the host path from.
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Flextunnel.app/Flextunnel
+        BUNDLE_LOADER: $(TEST_HOST)
 
   # End-to-end UI tests (XCUITest), driven by ci/e2e.sh: it starts a local
   # flextunnel server and fixture site, then hands the server id and a client

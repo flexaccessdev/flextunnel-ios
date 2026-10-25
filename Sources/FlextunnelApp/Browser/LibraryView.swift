@@ -233,7 +233,7 @@ struct LibraryView: View {
 }
 
 /// History entries bucketed by how long ago they were visited, newest first.
-private struct HistoryGroup: Identifiable {
+struct HistoryGroup: Identifiable {
     let title: String
     let entries: [HistoryEntry]
     var id: String { title }

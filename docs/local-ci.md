@@ -14,6 +14,7 @@ is split along that line, and only along that line:
 ci/ci.sh                # the default jobs, all local
 ci/ci.sh unsigned       # just one
 ci/ci.sh --list         # what jobs exist
+ci/ci.sh unit           # unit tests (part of the default set)
 ci/e2e.sh               # browser UI tests against a real local server (also `ci/ci.sh e2e`)
 
 scripts/run-device-ios-host.sh            # build here, install + launch on the phone
@@ -56,6 +57,11 @@ that Actions does not bother with:
   the process is still alive five seconds later. The only check here that proves
   the Rust core actually loads and the app survives launch; everything else
   stops at compile and link.
+- **`unit`** — the unit tests in `Sources/FlextunnelTests`, hosted by the app on
+  the same simulator: the pure logic behind the browser — route labels
+  (`RouteMatch`, kept in step with flextunnel-core's `RoutedSet` tests),
+  address-bar URL resolution, the bookmark/history store and history grouping.
+  Seconds, so it is in the default set.
 - **`unsigned`** — `.github/workflows/unsigned-ios.yml`: the Release archive with
   signing off, then its bundle assertions — widget embedded, nothing signed, no
   profile baked in, and the background-location keys still in `Info.plist`. The
@@ -72,15 +78,13 @@ that Actions does not bother with:
   only means something while you are changing the sibling. It regenerates the
   project against the pinned release again on the way out, so it does not leave
   a project wired to a local build behind.
-
 - **`e2e`** — `ci/e2e.sh`, the browser's end-to-end UI tests (below). Not in
   the default set either: it needs a Rust toolchain and internet access, and
   takes a few minutes.
 
-There are **no unit tests**: apart from the end-to-end UI tests, "CI" for this
-repo is builds and bundle assertions. When a job and the workflow
-it mirrors disagree, the workflow is right and the script is stale — nothing
-enforces that.
+The GitHub workflows run neither test suite; they build and package. When a
+job and the workflow it mirrors disagree, the workflow is right and the script
+is stale — nothing enforces that.
 
 ## Running on the phone
 
