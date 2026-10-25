@@ -199,6 +199,8 @@ struct TunnelStatusSheet: View {
             Section {
                 if routes.isFullTunnel {
                     Text("All traffic (full tunnel)")
+                } else if routes.isEmpty {
+                    Text("Nothing but flextunnel.internal")
                 } else {
                     ForEach(routes.domains, id: \.self) { domain in
                         RouteRow(systemImage: "globe", text: domain)

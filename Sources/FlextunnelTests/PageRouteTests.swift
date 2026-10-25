@@ -24,9 +24,17 @@ final class PageRouteTests: XCTestCase {
 
     func testUnknownWithoutAKnownTunnelSetOrHost() {
         XCTAssertNil(PageRoute.resolve(URL(string: "https://wiki.corp.example/"), routes: nil))
-        XCTAssertNil(PageRoute.resolve(URL(string: "https://wiki.corp.example/"), routes: routes()),
-                     "an empty set is not known yet, not 'nothing routed'")
+        XCTAssertNil(PageRoute.resolve(URL(string: "https://wiki.corp.example/"), routes: routes(known: false)),
+                     "a session that has not handshaken yet has no known set")
         XCTAssertNil(PageRoute.resolve(URL(string: "about:blank"), routes: set))
         XCTAssertNil(PageRoute.resolve(nil, routes: set))
+    }
+
+    func testEmptySetRoutesOnlyTheReservedNamespace() {
+        let empty = routes()
+        XCTAssertEqual(PageRoute.resolve(URL(string: "https://wiki.corp.example/"), routes: empty), .direct)
+        XCTAssertEqual(PageRoute.resolve(URL(string: "http://10.1.2.3/"), routes: empty), .direct)
+        XCTAssertEqual(PageRoute.resolve(URL(string: "http://localhost.flextunnel.internal:8080/"), routes: empty), .tunnel)
+        XCTAssertEqual(empty.proxyMatchDomains, ["flextunnel.internal"])
     }
 }

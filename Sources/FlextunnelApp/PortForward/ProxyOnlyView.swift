@@ -136,6 +136,8 @@ struct ProxyOnlyView: View {
         if let routes = proxy.forwardedRoutes {
             if routes.isFullTunnel {
                 InfoRow("Tunnel set", "Full tunnel (all traffic)")
+            } else if routes.isKnown && routes.isEmpty {
+                InfoRow("Tunnel set", "Nothing but flextunnel.internal")
             } else {
                 if !routes.domains.isEmpty {
                     InfoRow("Tunneled domains", routes.domains.joined(separator: "\n"), monospace: true)

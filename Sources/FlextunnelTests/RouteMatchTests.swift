@@ -90,8 +90,8 @@ final class RouteMatchTests: XCTestCase {
 }
 
 /// A tunnel set with only the routing rules filled in.
-func routes(domains: [String] = [], cidrs: [String] = []) -> ProxyController.ForwardedRoutes {
+func routes(domains: [String] = [], cidrs: [String] = [], known: Bool = true) -> ProxyController.ForwardedRoutes {
     ProxyController.ForwardedRoutes(
-        connected: true, domains: domains, cidrs: cidrs,
+        connected: known, isKnown: known, domains: domains, cidrs: cidrs,
         hostAliases: [], dnsForwards: [], bridges: [])
 }
