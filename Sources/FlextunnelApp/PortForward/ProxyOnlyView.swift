@@ -136,6 +136,8 @@ struct ProxyOnlyView: View {
         if let routes = proxy.forwardedRoutes {
             if routes.isFullTunnel {
                 InfoRow("Tunnel set", "Full tunnel (all traffic)")
+            } else if routes.isKnown && routes.isEmpty {
+                InfoRow("Tunnel set", "Nothing but flextunnel.internal")
             } else {
                 if !routes.domains.isEmpty {
                     InfoRow("Tunneled domains", routes.domains.joined(separator: "\n"), monospace: true)
@@ -293,7 +295,7 @@ private struct ForwardRow: View {
 
     @ViewBuilder
     private var routeBadge: some View {
-        if forward.enabled, let routes {
+        if forward.enabled, let routes, routes.isKnown {
             let allowed = RouteMatch.isTunneled(host: forward.remoteHost, routes: routes)
             Text(allowed ? "server-direct" : "not routed")
                 .font(.caption2.weight(.semibold))

@@ -5,10 +5,21 @@ import XCTest
 /// `ci/e2e.sh` starts the server and a fixture site behind its host alias
 /// `e2e.flextunnel.test` — a name only the server resolves, so a page that
 /// loads came through the tunnel — and passes the server id, a client secret
-/// and the site URL in through `TEST_RUNNER_FLEXTUNNEL_E2E_*`. Run directly
-/// from Xcode without them, every test skips.
+/// and the site URL in through `TEST_RUNNER_FLEXTUNNEL_E2E_*`, along with a
+/// second server that has no routed set. Run directly from Xcode without them,
+/// every test skips.
 final class BrowserE2ETests: XCTestCase {
+    /// Which of `ci/e2e.sh`'s servers a test connects to.
+    private enum Server {
+        /// Routes the fixture site's host alias.
+        case routed
+        /// Has no routed set, so only the reserved `flextunnel.internal`
+        /// namespace goes through the tunnel.
+        case emptySet
+    }
+
     private var app: XCUIApplication!
+    private var nodes: [Server: String] = [:]
     private var site: String!
     /// A loopback port nothing listens on, for a direct connection that fails.
     private var closedPort: String!
@@ -21,17 +32,17 @@ final class BrowserE2ETests: XCTestCase {
         continueAfterFailure = false
         let env = ProcessInfo.processInfo.environment
         guard let node = env["FLEXTUNNEL_E2E_SERVER_NODE_ID"],
+              let emptyNode = env["FLEXTUNNEL_E2E_EMPTY_SERVER_NODE_ID"],
               let secret = env["FLEXTUNNEL_E2E_AUTH_SECRET"],
               let site = env["FLEXTUNNEL_E2E_SITE"],
               let closedPort = env["FLEXTUNNEL_E2E_CLOSED_PORT"] else {
             throw XCTSkip("Run through ci/e2e.sh, which starts the local flextunnel server.")
         }
+        nodes = [.routed: node, .emptySet: emptyNode]
         self.site = site
         self.closedPort = closedPort
         app = XCUIApplication()
-        app.launchEnvironment["FLEXTUNNEL_E2E_SERVER_NODE_ID"] = node
         app.launchEnvironment["FLEXTUNNEL_E2E_AUTH_SECRET"] = secret
-        app.launch()
     }
 
     override func tearDown() {
@@ -172,6 +183,40 @@ final class BrowserE2ETests: XCTestCase {
         snapshot("failure-direct")
     }
 
+    func testEmptyTunnelSetTunnelsOnlyTheReservedNamespace() {
+        connect(to: .emptySet)
+
+        // The server's built-in loopback name reaches the fixture site, which
+        // listens only on the server's localhost.
+        let port = URLComponents(string: site)!.port!
+        open("http://localhost.flextunnel.internal:\(port)/")
+        waitForPageText("flextunnel e2e home")
+
+        app.buttons["browser.tunnelStatus"].tap()
+        // The sheet opens at half height over a lazy list, so the tunnel set
+        // section isn't laid out until it has been scrolled into view.
+        let sheet = app.collectionViews["tunnelStatus.sheet"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        let empty = app.staticTexts["tunnelStatus.emptyTunnelSet"]
+        for _ in 0..<3 where !empty.exists {
+            sheet.swipeUp()
+        }
+        XCTAssertTrue(empty.waitForExistence(timeout: 5))
+        XCTAssertEqual(empty.label, "Nothing but flextunnel.internal")
+        XCTAssertTrue(app.staticTexts["Through the tunnel"].exists, "this page's route")
+        snapshot("tunnel-status-empty-set")
+        app.navigationBars["Tunnel"].buttons["Done"].tap()
+
+        // The routed server's alias is off this set: it goes out directly,
+        // where the device's DNS can't resolve it.
+        open(site + "/")
+        let hint = app.staticTexts.matching(identifier: "browser.failureRoute").firstMatch
+        XCTAssertTrue(hint.waitForExistence(timeout: Self.loadTimeout))
+        let direct = NSPredicate(format: "label CONTAINS 'Connected directly'")
+        expectation(for: direct, evaluatedWith: hint)
+        waitForExpectations(timeout: Self.loadTimeout)
+    }
+
     func testDisconnectFromTunnelStatusReturnsToSetup() {
         connect()
         app.buttons["browser.tunnelStatus"].tap()
@@ -184,9 +229,13 @@ final class BrowserE2ETests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// Starts a browser session from the setup screen (which the app's E2E
-    /// launch hook has filled in) and waits for the tunnel to come up.
-    private func connect() {
+    /// Launches the app pointed at `server` (the app's E2E launch hook fills
+    /// the setup screen in), starts a browser session and waits for the tunnel
+    /// to come up.
+    private func connect(to server: Server = .routed) {
+        app.launchEnvironment["FLEXTUNNEL_E2E_SERVER_NODE_ID"] = nodes[server]
+        app.launch()
+
         // The CTA sits below the fold, and the setup Form is lazy: the button
         // isn't in the hierarchy until it has been scrolled into view.
         let start = app.buttons["setup.start"]

@@ -4,8 +4,29 @@ import XCTest
 /// `RouteMatch` must agree with flextunnel-core's `RoutedSet` (the cases mirror
 /// its tests in `crates/flextunnel-core/src/proxy/routed_set.rs`), so the
 /// browser's route labels and the port-forward badges never report the
-/// opposite of the route the core takes.
+/// opposite of the route the core takes. The reserved-namespace cases mirror
+/// `crates/flextunnel-core/src/proxy/reserved.rs`.
 final class RouteMatchTests: XCTestCase {
+    func testReservedNamespaceIsTunneledEvenWithAnEmptySet() {
+        let empty = routes()
+        XCTAssertTrue(tunneled("flextunnel.internal", empty))
+        XCTAssertTrue(tunneled("localhost.flextunnel.internal", empty))
+        XCTAssertTrue(tunneled("LocalHost.FlexTunnel.Internal", empty))
+        XCTAssertTrue(tunneled("a.b.flextunnel.internal", empty))
+        XCTAssertFalse(tunneled(".flextunnel.internal", empty))
+        XCTAssertFalse(tunneled("flextunnel.internal.evil.com", empty))
+        XCTAssertFalse(tunneled("localhost", empty))
+    }
+
+    func testBracketsAreStrippedOnlyFromIPLiterals() {
+        // The core unbrackets only to parse an IP; a bracketed hostname is
+        // matched as it is: not reserved, on no named rule, but still under `*`.
+        XCTAssertFalse(tunneled("[localhost.flextunnel.internal]", routes()))
+        XCTAssertFalse(tunneled("[example.com]", routes(domains: ["example.com"])))
+        XCTAssertTrue(tunneled("[example.com]", routes(domains: ["*"])))
+        XCTAssertTrue(tunneled("[10.1.2.3]", routes(cidrs: ["10.0.0.0/8"])))
+    }
+
     func testStarMatchesEveryHostnameButNoIP() {
         let star = routes(domains: ["*"])
         XCTAssertTrue(tunneled("anything.example", star))
@@ -90,8 +111,8 @@ final class RouteMatchTests: XCTestCase {
 }
 
 /// A tunnel set with only the routing rules filled in.
-func routes(domains: [String] = [], cidrs: [String] = []) -> ProxyController.ForwardedRoutes {
+func routes(domains: [String] = [], cidrs: [String] = [], known: Bool = true) -> ProxyController.ForwardedRoutes {
     ProxyController.ForwardedRoutes(
-        connected: true, domains: domains, cidrs: cidrs,
+        connected: known, isKnown: known, domains: domains, cidrs: cidrs,
         hostAliases: [], dnsForwards: [], bridges: [])
 }

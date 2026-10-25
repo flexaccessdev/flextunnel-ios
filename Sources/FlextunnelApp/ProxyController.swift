@@ -153,10 +153,19 @@ final class ProxyController: ObservableObject {
     }
 
     /// The tunnel set as reported by the core: the domains/CIDRs routed through
-    /// the tunnel (off-list targets connect directly). The set is required, so it
-    /// is never empty once connected.
+    /// the tunnel (off-list targets connect directly). The set is optional: an
+    /// empty one routes nothing but the reserved `flextunnel.internal`
+    /// namespace, which is always tunneled.
     struct ForwardedRoutes {
         var connected: Bool
+        /// Whether this snapshot carries a tunnel set the handshake actually
+        /// learned. An empty set is valid, so emptiness can't tell; instead the
+        /// core publishes the lists together with `connected` and keeps them
+        /// across drops, so the set is known once this session has reported
+        /// connected. Until then — a session relaunched by the manual Reconnect
+        /// or the suspension recovery, polled before its first handshake lands —
+        /// the empty lists mean "not known yet", not "nothing is routed".
+        var isKnown: Bool
         var domains: [String]
         var cidrs: [String]
         /// Server-side host aliases (`alias -> target`), informational only —
@@ -173,12 +182,8 @@ final class ProxyController: ObservableObject {
         /// caller-side; shown in the status popover like the server status page.
         var bridges: [BridgeRoute]
 
-        /// Whether this snapshot carries a tunnel set the handshake actually
-        /// learned. The set is required (the core rejects an empty one), so both
-        /// lists empty means it is not known *yet* — a session relaunched by the
-        /// manual Reconnect or the suspension recovery, polled before its first
-        /// handshake lands — rather than "nothing is routed".
-        var isKnown: Bool { !domains.isEmpty || !cidrs.isEmpty }
+        /// Whether the set routes nothing but the reserved namespace.
+        var isEmpty: Bool { domains.isEmpty && cidrs.isEmpty }
 
         /// A `*` domain or a default-route CIDR means everything is tunneled, so a
         /// tunnel drop is a full outage (nothing is off-list to browse directly).
@@ -767,8 +772,12 @@ final class ProxyController: ObservableObject {
                     domains: entry["domains"] as? [String] ?? [],
                     cidrs: entry["cidrs"] as? [String] ?? [])
             }
+        // `forwardedRoutes` is reset to nil whenever the handle changes, so the
+        // previous snapshot is this session's.
+        let connected = obj["connected"] as? Bool ?? false
         forwardedRoutes = ForwardedRoutes(
-            connected: obj["connected"] as? Bool ?? false,
+            connected: connected,
+            isKnown: connected || forwardedRoutes?.isKnown == true,
             domains: obj["domains"] as? [String] ?? [],
             cidrs: obj["cidrs"] as? [String] ?? [],
             hostAliases: hostAliases,
