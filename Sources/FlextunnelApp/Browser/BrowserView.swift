@@ -378,6 +378,10 @@ private struct CollapsedToolbarStrip: View {
                 Text(hostText)
                     .font(.footnote.weight(.medium))
                     .lineLimit(1)
+                    // Keep the authoritative trailing domain visible on a
+                    // long host; trimming the tail could leave only a
+                    // trusted-looking prefix.
+                    .truncationMode(.head)
                 Circle()
                     .fill(tunnelStatusColor)
                     .frame(width: 6, height: 6)

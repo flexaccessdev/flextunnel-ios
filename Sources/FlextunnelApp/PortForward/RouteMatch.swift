@@ -23,8 +23,9 @@ enum RouteMatch {
             return routes.cidrs.contains { cidrContains($0, ip.rawValue) }
         }
 
+        // The core trims each rule but publishes the raw arrays, so trim here too.
         return routes.domains.contains { pattern in
-            let pattern = pattern.lowercased()
+            let pattern = pattern.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if pattern == "*" { return true }
             if pattern.hasPrefix("*.") {
                 // Subdomains only — the core excludes the bare apex.
@@ -37,7 +38,8 @@ enum RouteMatch {
     /// CIDR containment for either family (`10.0.0.0/8`, `fd00::/8`); a bare IP
     /// matches as a single host. Never true across families.
     private static func cidrContains(_ cidr: String, _ address: Data) -> Bool {
-        let parts = cidr.split(separator: "/", omittingEmptySubsequences: false)
+        let parts = cidr.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count <= 2, let first = parts.first else { return false }
         let base: Data
         if let v4 = IPv4Address(String(first)) {

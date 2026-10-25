@@ -66,6 +66,16 @@ final class RouteMatchTests: XCTestCase {
         XCTAssertTrue(tunneled("192.168.3.4", set))
     }
 
+    func testRulesAreTrimmedLikeTheCore() {
+        let set = routes(domains: [" *.corp.example ", "\twiki.example\n"], cidrs: [" 10.0.0.0/8 ", " fd00::1 "])
+        XCTAssertTrue(tunneled("a.corp.example", set))
+        XCTAssertFalse(tunneled("corp.example", set))
+        XCTAssertTrue(tunneled("wiki.example", set))
+        XCTAssertTrue(tunneled("10.1.2.3", set))
+        XCTAssertTrue(tunneled("fd00::1", set))
+        XCTAssertTrue(tunneled("anything.example", routes(domains: [" * "])))
+    }
+
     func testMalformedCIDRsMatchNothing() {
         let set = routes(cidrs: ["10.0.0.0/33", "not-an-ip", "10.0.0.0/8/1", "fd00::/129"])
         XCTAssertFalse(tunneled("10.0.0.1", set))
