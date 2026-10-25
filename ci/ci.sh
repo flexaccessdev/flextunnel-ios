@@ -29,7 +29,9 @@
 # `ffi` is not in the default set: it compiles the Rust core for iOS, which is
 # minutes rather than seconds, and it is only meaningful when you are changing
 # ../flextunnel. Ask for it by name. Neither is `e2e`: it needs a Rust toolchain
-# and internet access (iroh discovery), and takes a few minutes.
+# and internet access (iroh discovery), and takes a few minutes. Nor is
+# `device`: it signs, so it only works on a host holding the team's signing
+# key, and the default set has to run anywhere.
 #
 # When a job and the workflow it mirrors disagree, the workflow is right and
 # this script is stale. Keep them in step by hand; nothing enforces it.
@@ -38,7 +40,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 ALL_JOBS=(simulator smoke unit unsigned device ffi e2e)
-DEFAULT_JOBS=(simulator smoke unit unsigned device)
+DEFAULT_JOBS=(simulator smoke unit unsigned)
 
 # A named simulator rather than a UDID: whichever iOS runtime is installed gets
 # used, the same way the README's destination leaves OS= off on purpose.
