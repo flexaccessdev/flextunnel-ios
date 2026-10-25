@@ -16,7 +16,8 @@ final class ProxyController: ObservableObject {
         case idle
         /// Initial connect attempt (no browser presented yet).
         case connecting
-        /// Handshake landed at least once; browser is presented.
+        /// Handshake landed at least once; browser is presented. Relaunches of
+        /// the native session (`isRelaunching`) stay in this phase.
         case connected
         /// Initial connect failed (terminal; shown on the setup screen).
         case failed
@@ -44,6 +45,11 @@ final class ProxyController: ObservableObject {
     /// native session stayed alive: the core's own reconnect is presumed stuck, so
     /// the UI shows a disconnected state and offers a manual Retry.
     @Published private(set) var tunnelStuck: Bool = false
+    /// An established session's native handle is being replaced (manual Retry,
+    /// suspension recovery, stuck-link relaunch) and the new one hasn't landed
+    /// its first handshake yet. The session's screen stays up throughout, and
+    /// Retry is held off unless the relaunch itself goes stuck (`canRetry`).
+    @Published private(set) var isRelaunching: Bool = false
     /// Non-secret settings for the currently running proxy, safe to show in UI.
     @Published private(set) var connectionSummary: ConnectionSummary?
     /// The tunnel set the server pushed: domains/CIDRs routed through the tunnel.
@@ -86,16 +92,21 @@ final class ProxyController: ObservableObject {
         let socksAlive: Bool
         let tunnelConnected: Bool
         let tunnelStuck: Bool
+        let relaunching: Bool
     }
     private var liveActivityState: LiveActivityState {
         LiveActivityState(
             phase: phase,
             socksAlive: sessionAlive,
             tunnelConnected: tunnelConnected,
-            tunnelStuck: tunnelStuck)
+            tunnelStuck: tunnelStuck,
+            relaunching: isRelaunching)
     }
 
+    /// Borrowed from `native` for the status calls; nil whenever a start or stop
+    /// that could end it has been issued.
     private var handle: OpaquePointer?
+    private let native = NativeSession()
     private var healthTimer: Timer?
     /// Health-poll cadence while the app is frontmost. Low Power Mode halves
     /// the discretionary polling — the poll is pure status/UI work, so slower
@@ -122,13 +133,30 @@ final class ProxyController: ObservableObject {
     private var connectDeadline: Date?
     /// When the tunnel link dropped while connected; nil while the link is up.
     private var linkDownSince: Date?
+    /// When the core's current reconnect series began: the drop, or the last
+    /// time it started over with a fresh backoff (the network path returning,
+    /// the app coming to the foreground). The stuck-link relaunch measures
+    /// from here, so time offline or backgrounded never counts as the core
+    /// failing to reconnect. Nil while the link is up.
+    private var recoverySince: Date?
     /// A link down longer than this stops reading as a transient reconnect.
     private static let reconnectGrace: TimeInterval = 30
+    /// How long the link stays down before the app relaunches the session on
+    /// its own. Past the core's own recovery: its 45s hold on tunneled
+    /// requests, and the reconnect attempt that follows its first full backoff
+    /// steps (1s doubling to 32s, then a 60s cap) — a relaunch any earlier
+    /// would cut off a reconnect that was about to land, failing the held
+    /// requests with it.
+    private static let autoRelaunchAfter: TimeInterval = 90
     /// Last settings that drove a launch, replayed by the manual Reconnect.
     private var lastSettings: Settings?
     /// Bumped on every start and teardown so an in-flight async start whose FFI
     /// finishes after a newer start/stop is discarded instead of clobbering state.
     private var startEpoch = 0
+    /// The stuck-link relaunch already fired for the current outage, so a link
+    /// that stays down after it is left for a manual Retry rather than
+    /// relaunched every grace window. Cleared when the link comes back.
+    private var autoRelaunchedThisOutage = false
 
     /// Connection parameters entered in the UI.
     struct Settings {
@@ -138,8 +166,9 @@ final class ProxyController: ObservableObject {
         var authKey: String
         /// Loopback SOCKS5 port for browser mode. `nil` means a forwarding-only
         /// session with no SOCKS5 listener; `0` requests an OS-assigned
-        /// ephemeral port. Nonzero is a preference the core falls back from if
-        /// the port is taken; the bound port is published as `socksPort`.
+        /// ephemeral port; the bound port is published as `socksPort`. Nonzero
+        /// is the session's pinned port, replayed by relaunches, and is
+        /// required: a relaunch that can't bind it fails.
         var socksPort: UInt16?
         var relayURLs: [String]
         /// Shared bearer token sent to every custom relay's WebSocket upgrade.
@@ -345,6 +374,9 @@ final class ProxyController: ObservableObject {
         guard backgrounded != isBackgrounded else { return }
         isBackgrounded = backgrounded
         if let handle { _ = flextunnel_set_background(handle, backgrounded ? 1 : 0) }
+        // Foregrounded, the core ends any backoff wait and retries at once.
+        // Before the immediate poll below, which could otherwise relaunch.
+        if !backgrounded { restartRecoveryClock() }
         reschedulePolling()
     }
 
@@ -352,6 +384,14 @@ final class ProxyController: ObservableObject {
         guard available != pathAvailable else { return }
         pathAvailable = available
         if let handle { _ = flextunnel_set_network_available(handle, available ? 1 : 0) }
+        // The path's return reconnects immediately with a fresh backoff series.
+        if available { restartRecoveryClock() }
+    }
+
+    /// The core just started its reconnect over: give it a full window before
+    /// the stuck-link relaunch can cut in.
+    private func restartRecoveryClock() {
+        if recoverySince != nil { recoverySince = Date() }
     }
 
     /// Re-arm the poll timer at the cadence for the current scene phase and
@@ -363,42 +403,40 @@ final class ProxyController: ObservableObject {
     }
 
     /// Raw result of the blocking start FFI, handed back to the main actor.
-    /// `@unchecked Sendable`: the `OpaquePointer` is produced on the background
-    /// executor and only ever read on the main actor after the hop, never shared.
-    private struct StartResult: @unchecked Sendable {
+    /// `@unchecked Sendable`: the `OpaquePointer` is produced on the lifecycle
+    /// queue and only ever read on the main actor after the hop, never shared.
+    fileprivate struct StartResult: @unchecked Sendable {
         let handle: OpaquePointer?
         let message: String
     }
 
-    /// Runs the blocking FFI off the main actor: tears down any previous handle,
-    /// then creates the iroh endpoint and binds the SOCKS listener. This is the
-    /// slow work (endpoint create + socket bind) that must not run on the UI thread.
-    nonisolated private static func runStartFFI(config: String, previous: OpaquePointer?) -> StartResult {
-        if let previous { flextunnel_stop(previous) }
-        var buf = [CChar](repeating: 0, count: 1024)
-        let handle = config.withCString { cstr in
-            flextunnel_start(cstr, &buf, buf.count)
-        }
-        return StartResult(handle: handle, message: String(cString: buf))
+    /// User-initiated start from the setup screen: always a fresh session that
+    /// goes through the initial connect, whatever state a previous one was
+    /// left in.
+    func start(_ s: Settings) {
+        launch(s, relaunch: false)
     }
 
-    /// User-initiated start (also the manual Reconnect target). Builds the FFI
-    /// config, starts the proxy, and publishes the bound port.
+    /// Builds the FFI config, starts the proxy, and publishes the bound port.
     ///
     /// The connecting state is published immediately, then the blocking
-    /// `flextunnel_start` (and any previous handle's teardown) runs off the main
-    /// thread so the UI shows the spinner instead of freezing on the tap.
-    func start(_ s: Settings) {
+    /// `flextunnel_start` (and any previous handle's teardown) runs on the
+    /// lifecycle queue so the UI shows the spinner instead of freezing on the tap.
+    ///
+    /// A relaunch replaces an established session's handle in place and the
+    /// phase stays `.connected`: going back through the initial connect would
+    /// let its timeout end the session behind its own screen, where nothing
+    /// recovers it.
+    private func launch(_ s: Settings, relaunch: Bool) {
         lastSettings = s
         lastError = nil
 
-        // Reflect the connecting state and drop the previous session's published
-        // state now, synchronously, so the UI updates before the blocking FFI.
-        // The previous handle is stopped on the background executor alongside the
-        // new start; a bumped epoch discards any in-flight start we're superseding.
+        // Drop the previous session's published state now, synchronously, so the
+        // UI updates before the blocking FFI. The lifecycle queue stops the
+        // previous handle before starting the new one; a bumped epoch discards
+        // any in-flight start we're superseding.
         startEpoch &+= 1
         let epoch = startEpoch
-        let previousHandle = handle
         handle = nil
         stopPolling()
         forwardingSessionID = nil
@@ -406,12 +444,21 @@ final class ProxyController: ObservableObject {
         sessionAlive = false
         tunnelConnected = false
         linkDownSince = nil
+        recoverySince = nil
         tunnelStuck = false
         connectionSummary = nil
         forwardedRoutes = nil
-        phase = .connecting
-        connectDeadline = Date().addingTimeInterval(Self.connectTimeout)
-        status = "connecting to server…"
+        if relaunch {
+            isRelaunching = true
+            connectDeadline = nil
+            status = "relaunching tunnel session…"
+        } else {
+            isRelaunching = false
+            autoRelaunchedThisOutage = false
+            phase = .connecting
+            connectDeadline = Date().addingTimeInterval(Self.connectTimeout)
+            status = "connecting to server…"
+        }
 
         let relayAuthToken = s.relayAuthToken.trimmingCharacters(in: .whitespacesAndNewlines)
         let configDict: [String: Any] = [
@@ -425,28 +472,24 @@ final class ProxyController: ObservableObject {
             let data = try? JSONSerialization.data(withJSONObject: configDict),
             let configStr = String(data: data, encoding: .utf8)
         else {
-            if let previousHandle { Task.detached { flextunnel_stop(previousHandle) } }
-            fail("failed to encode config JSON")
+            launchFailed("failed to encode config JSON")
             return
         }
 
-        Task.detached(priority: .userInitiated) {
-            let result = Self.runStartFFI(config: configStr, previous: previousHandle)
-            await self.finishStart(result, settings: s, epoch: epoch)
+        native.launch(config: configStr) { result in
+            Task { @MainActor in self.finishStart(result, settings: s, epoch: epoch) }
         }
     }
 
-    /// Publishes the outcome of `runStartFFI` back on the main actor.
+    /// Publishes the outcome of a launch back on the main actor.
     private func finishStart(_ result: StartResult, settings s: Settings, epoch: Int) {
-        // A newer start()/teardown superseded this launch: discard it, and stop
-        // the freshly bound handle off-main so it doesn't leak a live session.
-        guard epoch == startEpoch else {
-            if let stale = result.handle { Task.detached { flextunnel_stop(stale) } }
-            return
-        }
+        // A newer start()/teardown superseded this launch. Nothing to stop here:
+        // whatever superseded it was queued behind this launch on the lifecycle
+        // queue and ends the handle it produced.
+        guard epoch == startEpoch else { return }
 
         guard let handle = result.handle else {
-            fail("start failed: \(result.message)")
+            launchFailed("start failed: \(result.message)")
             return
         }
 
@@ -454,8 +497,7 @@ final class ProxyController: ObservableObject {
             let resultData = result.message.data(using: .utf8),
             let obj = try? JSONSerialization.jsonObject(with: resultData) as? [String: Any]
         else {
-            Task.detached { flextunnel_stop(handle) }
-            fail("bad result JSON: \(result.message)")
+            launchFailed("bad result JSON: \(result.message)")
             return
         }
         let port: UInt16?
@@ -464,8 +506,15 @@ final class ProxyController: ObservableObject {
         } else if obj["socks_port"] is NSNull {
             port = nil
         } else {
-            Task.detached { flextunnel_stop(handle) }
-            fail("bad result JSON: \(result.message)")
+            launchFailed("bad result JSON: \(result.message)")
+            return
+        }
+        // The browser's proxy configuration names the session's pinned port,
+        // which stays fixed until the session quits. A core that still falls
+        // back to another port when it's taken is refused here like a failed
+        // bind, ending the relaunch rather than moving the session.
+        if let requested = s.socksPort, requested != 0, port != requested {
+            launchFailed("SOCKS port \(requested) is in use by another app — disconnect and start again")
             return
         }
 
@@ -480,9 +529,8 @@ final class ProxyController: ObservableObject {
             relayURLs: s.relayURLs)
         socksPort = port
         // Pin the OS-assigned SOCKS port so relaunches of this session (manual
-        // Reconnect, suspend recovery) prefer the same port and the browser's
-        // proxy config stays valid. If it gets stolen while suspended, the core
-        // falls back to a fresh port and the browser is rebuilt on the change.
+        // Reconnect, suspend recovery) bind the same port and the browser's
+        // proxy config stays valid; one that can't get it back fails above.
         lastSettings?.socksPort = port
         forwardingSessionID = UUID()
         // Not usable yet: the handle only means the listener bound and the connect
@@ -494,15 +542,40 @@ final class ProxyController: ObservableObject {
     func stop() {
         connectDeadline = nil
         teardownHandle()
+        autoRelaunchedThisOutage = false
         phase = .idle
         status = "idle"
     }
 
-    /// Manual reconnect. Only needed if the proxy fully died — the core
-    /// reconnects the tunnel link on its own — so this relaunches the session.
+    /// Whether the manual Retry/Reconnect does anything right now: only for an
+    /// established session, and not while a relaunch is still establishing —
+    /// unless that relaunch has itself gone stuck.
+    var canRetry: Bool {
+        phase == .connected && lastSettings != nil && (!isRelaunching || tunnelStuck)
+    }
+
+    /// The established session is between links: the core is reconnecting it,
+    /// or its handle is being relaunched.
+    var isReconnecting: Bool {
+        phase == .connected && !tunnelConnected && (sessionAlive || isRelaunching)
+    }
+
+    /// Manual Retry/Reconnect — the core reconnects the tunnel link on its own,
+    /// so this is the way out of a reconnect that's stuck or a session that
+    /// died. Ignored while `canRetry` is false: a second tap during a relaunch
+    /// would only restart it from scratch.
     func retryNow() {
-        guard let lastSettings else { return }
-        start(lastSettings)
+        guard canRetry else { return }
+        relaunch()
+    }
+
+    /// Replace the established session's native handle with a fresh one from
+    /// the last settings. Unlike `retryNow` it doesn't defer to a relaunch in
+    /// progress: the suspension recovery needs a handle whose sockets were never
+    /// frozen, and the lifecycle queue makes back-to-back launches safe.
+    func relaunch() {
+        guard phase == .connected, let lastSettings else { return }
+        launch(lastSettings, relaunch: true)
     }
 
     /// Suspension is imminent: close the core's local listeners (the SOCKS5
@@ -534,20 +607,21 @@ final class ProxyController: ObservableObject {
 
     /// Stop the FFI handle and polling and clear per-session state.
     private func teardownHandle() {
-        // Supersede any in-flight async start so its result is discarded.
+        // Supersede any in-flight async start so its result is discarded; the
+        // shutdown queued behind it stops whatever handle it produces.
         startEpoch &+= 1
         stopPolling()
         connectDeadline = nil
-        if let handle {
-            flextunnel_stop(handle)
-            self.handle = nil
-        }
+        handle = nil
+        native.shutdown()
         forwardingSessionID = nil
         socksPort = nil
         sessionAlive = false
         tunnelConnected = false
         linkDownSince = nil
+        recoverySince = nil
         tunnelStuck = false
+        isRelaunching = false
         connectionSummary = nil
         forwardedRoutes = nil
     }
@@ -558,6 +632,19 @@ final class ProxyController: ObservableObject {
         phase = .failed
         status = reason
         if lastError == nil { lastError = reason }
+    }
+
+    /// A launch couldn't produce a usable session. Before the first connect
+    /// that's the setup screen's failure; for an established session the
+    /// screen stays up, offering Reconnect.
+    private func launchFailed(_ reason: String) {
+        guard phase == .connected else {
+            fail(reason)
+            return
+        }
+        teardownHandle()
+        status = "session stopped — tap Reconnect"
+        lastError = reason
     }
 
     // MARK: - Healthcheck
@@ -607,11 +694,14 @@ final class ProxyController: ObservableObject {
                 fail("couldn't connect — check server id / auth / reachability")
             case .connected:
                 // Session died; keep the browser mounted but mark it unusable so the
-                // popover can offer a manual Reconnect.
+                // popover can offer a manual Reconnect. Not relaunched on its own:
+                // the loop only ends on a permanent error (a rejected key).
                 sessionAlive = false
                 tunnelConnected = false
                 linkDownSince = nil
+                recoverySince = nil
                 tunnelStuck = false
+                isRelaunching = false
                 status = "session stopped — tap Reconnect"
                 stopPolling()
             case .idle, .failed:
@@ -641,9 +731,26 @@ final class ProxyController: ObservableObject {
             // recovery hold) instead of failing outright; server-direct
             // forwards fail until it recovers.
             if tunnelConnected {
+                isRelaunching = false
+                autoRelaunchedThisOutage = false
                 status = connectedStatus
             } else if tunnelStuck {
+                // Once the core's own recovery has had its full window, its
+                // reconnect is presumed wedged: relaunch once on our own — a
+                // fresh handle is what a manual Retry (or quitting and starting
+                // again) would get — and only then leave it to the user. Not
+                // without a network path (the core is parked, not stuck) or in
+                // the background (the suspension recovery covers that).
+                if !autoRelaunchedThisOutage, pathAvailable, !isBackgrounded,
+                   let since = recoverySince,
+                   Date().timeIntervalSince(since) >= Self.autoRelaunchAfter {
+                    autoRelaunchedThisOutage = true
+                    relaunch()
+                    return
+                }
                 status = "tunnel disconnected — retry to relaunch"
+            } else if isRelaunching {
+                status = "relaunching tunnel session…"
             } else {
                 status = "tunnel reconnecting — off-list browsing active"
             }
@@ -661,11 +768,13 @@ final class ProxyController: ObservableObject {
     private func trackLinkOutage() {
         guard phase == .connected, !tunnelConnected else {
             linkDownSince = nil
+            recoverySince = nil
             tunnelStuck = false
             return
         }
         let downSince = linkDownSince ?? Date()
         linkDownSince = downSince
+        recoverySince = recoverySince ?? downSince
         tunnelStuck = Date().timeIntervalSince(downSince) >= Self.reconnectGrace
     }
 
@@ -829,6 +938,45 @@ final class ProxyController: ObservableObject {
         if let lowPowerObserver {
             NotificationCenter.default.removeObserver(lowPowerObserver)
         }
-        if let handle { flextunnel_stop(handle) }
+        native.shutdown()
+    }
+}
+
+/// Owns the native handle's lifetime on one serial queue. The core runs at most
+/// one instance and refuses a second `flextunnel_start` while one is live, so
+/// every start and stop runs here in the order it was issued: a launch stops
+/// its predecessor before starting, and a stop issued while a launch is still
+/// running waits for it and then stops what it produced. The main actor only
+/// borrows the current pointer for status calls, and drops it before issuing
+/// anything that ends it.
+private final class NativeSession: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "flextunnel.session-lifecycle", qos: .userInitiated)
+    /// Only touched on `queue`.
+    private var current: OpaquePointer?
+
+    /// Stop the current handle, if any, then create the iroh endpoint and bind
+    /// the SOCKS listener — the slow work that must not run on the UI thread.
+    /// Queued before returning, so it is ordered against a `shutdown` the
+    /// caller issues right after; `completion` runs on the queue.
+    func launch(config: String, completion: @escaping @Sendable (ProxyController.StartResult) -> Void) {
+        queue.async {
+            self.stopCurrent()
+            var buf = [CChar](repeating: 0, count: 1024)
+            let handle = config.withCString { cstr in
+                flextunnel_start(cstr, &buf, buf.count)
+            }
+            self.current = handle
+            completion(ProxyController.StartResult(handle: handle, message: String(cString: buf)))
+        }
+    }
+
+    func shutdown() {
+        queue.async { self.stopCurrent() }
+    }
+
+    private func stopCurrent() {
+        guard let current else { return }
+        flextunnel_stop(current)
+        self.current = nil
     }
 }

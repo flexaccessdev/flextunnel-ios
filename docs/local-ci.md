@@ -68,8 +68,10 @@ that Actions does not bother with:
   packaging that workflow does after that (version tag, IPA, archive zip,
   checksums, release) is release plumbing and is deliberately not repeated here.
 - **`device`** — the signed device slice, at Debug: a compile-and-sign check, so
-  running the job on its own tells you signing still resolves. It is not what
-  goes on the phone — `scripts/run-device-ios-host.sh` builds its own Release slice (below).
+  running the job on its own tells you signing still resolves. Not in the default
+  set — it signs, so it only works on a host holding the team's signing key; ask
+  for it by name there. It is not what goes on the phone —
+  `scripts/run-device-ios-host.sh` builds its own Release slice (below).
 - **`ffi`** — `.github/workflows/verify-flextunnel-commit.yml`, against the
   sibling `../flextunnel` **working tree** rather than a pinned commit: rebuild
   `libflextunnel.xcframework` with `build-ios.sh release`, regenerate with

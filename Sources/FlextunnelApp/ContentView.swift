@@ -200,7 +200,7 @@ struct ContentView: View {
             .fullScreenCover(isPresented: browserIsPresented) {
                 if let browserModel {
                     BrowserView(model: browserModel, proxy: proxy)
-                        .interactiveDismissDisabled(proxy.socksPort != nil)
+                        .interactiveDismissDisabled(proxy.socksPort != nil || proxy.isRelaunching)
                 }
             }
             .fullScreenCover(isPresented: proxyOnlyIsPresented) {
@@ -215,7 +215,7 @@ struct ContentView: View {
                         // leave the screen up showing a dead proxy.
                         proxyOnlyActive = false
                     })
-                    .interactiveDismissDisabled(proxy.sessionAlive)
+                    .interactiveDismissDisabled(proxy.sessionAlive || proxy.isRelaunching)
             }
             .onChange(of: proxy.phase) { _, newPhase in
                 // Persist the relay token only once it has actually authenticated,
@@ -249,7 +249,24 @@ struct ContentView: View {
                 syncKeepAlive()
                 syncLiveActivity()
             }
-            .onChange(of: proxy.tunnelConnected) { syncLiveActivity() }
+            .onChange(of: proxy.tunnelConnected) { _, connected in
+                syncLiveActivity()
+                // Pages that failed on a tunneled host while the link was down
+                // reload once it's back, instead of leaving the error up. The
+                // handshake may have pushed a changed tunnel set: install its
+                // scoping first (the `browserMatchDomains` handler may run after
+                // this one), or a host that just became tunneled retries direct.
+                if connected {
+                    if let matchDomains = proxy.browserMatchDomains {
+                        browserModel?.updateProxyMatchDomains(matchDomains)
+                    }
+                    browserModel?.retryFailedLoads { proxy.pageRoute(for: $0) == .tunnel }
+                }
+            }
+            .onChange(of: proxy.isRelaunching) {
+                syncKeepAlive()
+                syncLiveActivity()
+            }
             // A reconnect can land a changed tunnel set; keep the browser's
             // WebKit-level split-tunneling (matchDomains) in step with it.
             // Double optional on purpose: the outer nil (no tunnel set known —
@@ -478,7 +495,10 @@ struct ContentView: View {
         Binding {
             browserModel != nil
         } set: { isPresented in
-            if !isPresented, !proxy.sessionAlive {
+            if !isPresented, !proxy.sessionAlive, !proxy.isRelaunching {
+                // End the dead session with its screen, so it isn't left
+                // `.connected` behind the setup screen.
+                proxy.stop()
                 browserModel = nil
             }
         }
@@ -490,7 +510,8 @@ struct ContentView: View {
         Binding {
             proxyOnlyActive
         } set: { isPresented in
-            if !isPresented, !proxy.sessionAlive {
+            if !isPresented, !proxy.sessionAlive, !proxy.isRelaunching {
+                proxy.stop()
                 proxyOnlyActive = false
             }
         }
@@ -561,15 +582,13 @@ struct ContentView: View {
             guard let socksPort = proxy.socksPort else { return }
             // Routes are known here: the poll learns them before flipping the
             // phase to connected. Nil (defensively) proxies every host.
-            let matchDomains = proxy.forwardedRoutes?.proxyMatchDomains
-            if browserModel == nil {
-                browserModel = BrowserModel(
-                    socksPort: socksPort, proxyMatchDomains: matchDomains, library: library)
-            } else if browserModel?.socksPort != socksPort {
-                browserModel?.stopAll()
-                browserModel = BrowserModel(
-                    socksPort: socksPort, proxyMatchDomains: matchDomains, library: library)
-            }
+            // The port is pinned for the session (a relaunch that can't bind
+            // it fails), so the browser is built once and never repointed.
+            guard browserModel == nil else { return }
+            browserModel = BrowserModel(
+                socksPort: socksPort,
+                proxyMatchDomains: proxy.forwardedRoutes?.proxyMatchDomains,
+                library: library)
         case .proxyOnly:
             proxyOnlyActive = true
         }
@@ -584,8 +603,10 @@ struct ContentView: View {
 
     /// The location keep-alive follows forwarding-only sessions. Browser sessions
     /// explicitly deactivate it even if the persisted forwarding preference is on.
+    /// A relaunch keeps it: stopped mid-relaunch it couldn't restart if the app
+    /// were backgrounded meanwhile.
     private func syncKeepAlive() {
-        keepAlive.setSessionActive(proxyOnlyActive && proxy.sessionAlive)
+        keepAlive.setSessionActive(proxyOnlyActive && (proxy.sessionAlive || proxy.isRelaunching))
     }
 
     /// Best-effort fallback for when the keep-alive is off (or location was
@@ -613,7 +634,9 @@ struct ContentView: View {
             // below), so it lingers the full grace and a return to the foreground
             // within it keeps it live — no premature .end()/revive flicker.
             proxy.backgroundLiveActivityRefreshEnabled = proxyOnlyActive && keepAlive.isRunning
-            guard proxy.sessionAlive, backgroundTask == .invalid else { break }
+            // A relaunch still in flight counts: its new handle is suspended
+            // like any other and needs the on-return recovery just the same.
+            guard proxy.sessionAlive || proxy.isRelaunching, backgroundTask == .invalid else { break }
             backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "flextunnel-proxy") {
                 // Grace expired → iOS suspends us now (unless keep-alive holds the
                 // process) and defuncts the forward listeners — remember that so the
@@ -701,7 +724,7 @@ struct ContentView: View {
     /// endpoint can wedge. Relaunch the session and reapply native forwards.
     private func recoverFromSuspension() {
         guard proxy.phase == .connected else { return }
-        proxy.retryNow()
+        proxy.relaunch()
         portForwards.rebindAfterSuspension()
     }
 
@@ -741,10 +764,9 @@ struct ContentView: View {
                 liveActivity.update(state)
             }
         case .connecting:
-            // A reconnect (retryNow) passes through .connecting with a live banner —
-            // reflect it as reconnecting rather than leaving the stale "Connected".
-            // update() is a no-op when there's no banner (initial connect), so it
-            // never creates one here.
+            // Initial connect: relaunches stay .connected (`isRelaunching`), so
+            // this only reconciles a banner reattached at launch. update() is a
+            // no-op when there's none, so it never creates one here.
             liveActivity.update(TunnelActivityAttributes.ContentState(
                 tunnelConnected: false,
                 socksAlive: proxy.sessionAlive,
@@ -761,7 +783,7 @@ struct ContentView: View {
         // Stuck: the core's own reconnect is presumed wedged (manual retry needed),
         // so it reads disconnected rather than optimistically "Reconnecting…".
         if proxy.tunnelStuck { return "Disconnected" }
-        if proxy.sessionAlive { return "Reconnecting…" }
+        if proxy.isReconnecting { return "Reconnecting…" }
         return "Disconnected"
     }
 }

@@ -219,12 +219,19 @@ final class BrowserE2ETests: XCTestCase {
 
     func testDisconnectFromTunnelStatusReturnsToSetup() {
         connect()
-        app.buttons["browser.tunnelStatus"].tap()
-        let disconnect = app.buttons["tunnelStatus.disconnect"]
-        XCTAssertTrue(disconnect.waitForExistence(timeout: 5))
-        disconnect.tap()
-        XCTAssertTrue(app.navigationBars["flextunnel"].waitForExistence(timeout: 10))
+        disconnect()
         XCTAssertFalse(app.buttons["browser.tunnelStatus"].exists)
+    }
+
+    func testStartingAgainRightAfterDisconnectConnects() {
+        connect()
+        disconnect()
+        // Straight back in: the old session may still be tearing down, and the
+        // core runs one instance at a time, so the new start must wait for that
+        // rather than be refused.
+        startSession()
+        open(site + "/")
+        waitForPageText("flextunnel e2e home")
     }
 
     // MARK: - Helpers
@@ -235,7 +242,11 @@ final class BrowserE2ETests: XCTestCase {
     private func connect(to server: Server = .routed) {
         app.launchEnvironment["FLEXTUNNEL_E2E_SERVER_NODE_ID"] = nodes[server]
         app.launch()
+        startSession()
+    }
 
+    /// Taps the setup screen's Start and waits for the tunnel to come up.
+    private func startSession() {
         // The CTA sits below the fold, and the setup Form is lazy: the button
         // isn't in the hierarchy until it has been scrolled into view.
         let start = app.buttons["setup.start"]
@@ -250,6 +261,15 @@ final class BrowserE2ETests: XCTestCase {
         XCTAssertTrue(status.waitForExistence(timeout: Self.connectTimeout))
         expectation(for: NSPredicate(format: "value == 'Connected'"), evaluatedWith: status)
         waitForExpectations(timeout: Self.connectTimeout)
+    }
+
+    /// Ends the session from the tunnel status sheet, back to the setup screen.
+    private func disconnect() {
+        app.buttons["browser.tunnelStatus"].tap()
+        let disconnect = app.buttons["tunnelStatus.disconnect"]
+        XCTAssertTrue(disconnect.waitForExistence(timeout: 5))
+        disconnect.tap()
+        XCTAssertTrue(app.navigationBars["flextunnel"].waitForExistence(timeout: 10))
     }
 
     /// Opens the ⋯ menu and picks `title` once the menu has finished

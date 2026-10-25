@@ -406,7 +406,8 @@ final class BrowserTab: Identifiable {
             loadFailure = BrowserLoadFailure(
                 url: attemptedURL,
                 message: message,
-                reason: nsError.localizedDescription)
+                reason: nsError.localizedDescription,
+                isIdempotent: navigationDecider.isIdempotentMainFrameRequest(for: attemptedURL))
         }
     }
 
@@ -480,6 +481,10 @@ struct BrowserLoadFailure {
     /// The underlying system error description — the specific reason the load
     /// failed, shown when it adds detail beyond `message`.
     let reason: String
+    /// The failed request was a GET or HEAD, so loading the URL again repeats
+    /// it faithfully. A retry only ever reloads the URL, so anything else (a
+    /// form POST) is retried only when the user asks.
+    let isIdempotent: Bool
 }
 
 enum BrowserSiteSecurity: Equatable {
@@ -538,6 +543,8 @@ final class BrowserNavigationDecider: WebPage.NavigationDeciding {
     /// told apart from a subresource's: only the page itself gets the
     /// interstitial. Updated for redirects too, since WebKit re-asks policy.
     private var mainFrameURL: URL?
+    /// The HTTP method of the main frame's request at `mainFrameURL`.
+    private var mainFrameMethod: String?
 
     /// Schemes WebKit renders itself. Anything else (`mailto:`, `tel:`, app
     /// links) can only fail inside the web view — with a failure screen whose
@@ -546,6 +553,14 @@ final class BrowserNavigationDecider: WebPage.NavigationDeciding {
 
     init(certificateTrustStore: BrowserCertificateTrustStore) {
         self.certificateTrustStore = certificateTrustStore
+    }
+
+    /// Whether the main frame's last request was for `url` and safe to resend
+    /// by loading the URL again; false when the decider never saw it.
+    func isIdempotentMainFrameRequest(for url: URL) -> Bool {
+        guard mainFrameURL == url else { return false }
+        let method = mainFrameMethod?.uppercased() ?? "GET"
+        return method == "GET" || method == "HEAD"
     }
 
     func decidePolicy(
@@ -568,6 +583,7 @@ final class BrowserNavigationDecider: WebPage.NavigationDeciding {
         }
         if action.target?.isMainFrame == true {
             mainFrameURL = action.request.url
+            mainFrameMethod = action.request.httpMethod
         }
         if action.shouldPerformDownload {
             downloadHandler?(action.request, nil)

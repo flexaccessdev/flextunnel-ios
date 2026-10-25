@@ -42,12 +42,6 @@ struct TunnelStatusSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showingConnPath = false
 
-    /// The SOCKS proxy is up but the tunnel link is (re)establishing. Off-list
-    /// browsing still works while this is true; the core reconnects on its own.
-    private var isReconnecting: Bool {
-        proxy.sessionAlive && !proxy.tunnelConnected
-    }
-
     var body: some View {
         NavigationStack {
             List {
@@ -97,7 +91,7 @@ struct TunnelStatusSheet: View {
             Image(systemName: healthIcon)
                 .font(.system(size: 34, weight: .regular))
                 .foregroundStyle(healthColor)
-                .symbolEffect(.pulse, isActive: isReconnecting && !proxy.tunnelStuck)
+                .symbolEffect(.pulse, isActive: proxy.isReconnecting && !proxy.tunnelStuck)
                 .frame(width: 44)
 
             VStack(alignment: .leading, spacing: 4) {
@@ -116,16 +110,17 @@ struct TunnelStatusSheet: View {
     @ViewBuilder
     private var actions: some View {
         // While the link is down the core reconnects on its own, but Retry is
-        // always offered in case that reconnect is stuck — it relaunches the
-        // session.
-        if isReconnecting {
+        // offered in case that reconnect is stuck — it relaunches the session.
+        // Held off while a relaunch is still establishing, where a tap would
+        // only restart it.
+        if !proxy.tunnelConnected {
             Button(action: onReconnect) {
-                Label("Retry Connection", systemImage: "arrow.clockwise")
+                Label(
+                    proxy.isReconnecting ? "Retry Connection" : "Reconnect",
+                    systemImage: "arrow.clockwise")
             }
-        } else if !proxy.sessionAlive {
-            Button(action: onReconnect) {
-                Label("Reconnect", systemImage: "arrow.clockwise")
-            }
+            .disabled(!proxy.canRetry)
+            .accessibilityIdentifier("tunnelStatus.retry")
         }
         // A one-shot readout of the live iroh path. Only offered while the link
         // is up (the snapshot is empty otherwise), mirroring the desktop CTA.
@@ -149,7 +144,7 @@ struct TunnelStatusSheet: View {
     private var healthTitle: String {
         if proxy.tunnelConnected { return "Connected" }
         if proxy.tunnelStuck { return "Disconnected" }
-        if proxy.sessionAlive { return "Reconnecting…" }
+        if proxy.isReconnecting { return "Reconnecting…" }
         return "Stopped"
     }
 
@@ -165,6 +160,9 @@ struct TunnelStatusSheet: View {
         if proxy.tunnelStuck {
             return "The tunnel hasn't reconnected on its own. Retry relaunches the session. " + offList
         }
+        if proxy.isRelaunching {
+            return "Restarting the tunnel session. " + offList
+        }
         if proxy.sessionAlive {
             return "The link dropped and is reconnecting on its own. " + offList
         }
@@ -179,7 +177,7 @@ struct TunnelStatusSheet: View {
     private var healthColor: Color {
         if proxy.tunnelConnected { return .green }
         if proxy.tunnelStuck { return .red }
-        if proxy.sessionAlive { return .orange }
+        if proxy.isReconnecting { return .orange }
         return .red
     }
 

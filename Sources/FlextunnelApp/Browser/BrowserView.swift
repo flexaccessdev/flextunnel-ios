@@ -53,7 +53,7 @@ struct BrowserView: View {
                     tunnelStatusIcon: tunnelStatusIcon,
                     tunnelStatusColor: tunnelStatusColor,
                     tunnelStatusValue: tunnelStatusValue,
-                    tunnelReconnecting: proxy.sessionAlive && !proxy.tunnelConnected && !proxy.tunnelStuck,
+                    tunnelReconnecting: proxy.isReconnecting && !proxy.tunnelStuck,
                     showingTunnelStatus: $showingTunnelStatus,
                     addressBarFocused: $addressBarFocused,
                     editText: $addressQuery)
@@ -295,7 +295,7 @@ struct BrowserView: View {
         if proxy.tunnelStuck || proxy.isFullTunnel {
             return .red
         }
-        if proxy.socksPort != nil {
+        if proxy.isReconnecting {
             return .orange
         }
         return .secondary
@@ -305,7 +305,7 @@ struct BrowserView: View {
     private var tunnelStatusValue: String {
         if proxy.tunnelConnected { return "Connected" }
         if proxy.tunnelStuck { return "Disconnected" }
-        if proxy.sessionAlive { return "Reconnecting" }
+        if proxy.isReconnecting { return "Reconnecting" }
         return "Stopped"
     }
 
