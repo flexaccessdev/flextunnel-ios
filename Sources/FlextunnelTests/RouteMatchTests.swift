@@ -18,6 +18,15 @@ final class RouteMatchTests: XCTestCase {
         XCTAssertFalse(tunneled("localhost", empty))
     }
 
+    func testBracketsAreStrippedOnlyFromIPLiterals() {
+        // The core unbrackets only to parse an IP; a bracketed hostname is
+        // matched as it is: not reserved, on no named rule, but still under `*`.
+        XCTAssertFalse(tunneled("[localhost.flextunnel.internal]", routes()))
+        XCTAssertFalse(tunneled("[example.com]", routes(domains: ["example.com"])))
+        XCTAssertTrue(tunneled("[example.com]", routes(domains: ["*"])))
+        XCTAssertTrue(tunneled("[10.1.2.3]", routes(cidrs: ["10.0.0.0/8"])))
+    }
+
     func testStarMatchesEveryHostnameButNoIP() {
         let star = routes(domains: ["*"])
         XCTAssertTrue(tunneled("anything.example", star))

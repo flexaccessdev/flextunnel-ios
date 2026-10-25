@@ -12,20 +12,22 @@ enum RouteMatch {
     /// does, whatever the set. Otherwise, as in the core, a hostname is matched
     /// only against the domain rules and an IP literal only against the CIDRs:
     /// `*` never covers an IP, and a default-route CIDR never covers a hostname.
+    /// As in the core, brackets are stripped only to read an IP literal; a
+    /// bracketed hostname is matched as it is, so it matches nothing.
     static func isTunneled(host: String, routes: ProxyController.ForwardedRoutes) -> Bool {
-        var normalized = host.lowercased()
-        if normalized.hasPrefix("[") && normalized.hasSuffix("]") {
-            normalized = String(normalized.dropFirst().dropLast())
+        let normalized = host.lowercased()
+        let unbracketed = normalized.hasPrefix("[") && normalized.hasSuffix("]")
+            ? String(normalized.dropFirst().dropLast())
+            : normalized
+
+        if let ip = IPv4Address(unbracketed) {
+            return routes.cidrs.contains { cidrContains($0, ip.rawValue) }
+        }
+        if let ip = IPv6Address(unbracketed) {
+            return routes.cidrs.contains { cidrContains($0, ip.rawValue) }
         }
 
         if isReserved(normalized) { return true }
-
-        if let ip = IPv4Address(normalized) {
-            return routes.cidrs.contains { cidrContains($0, ip.rawValue) }
-        }
-        if let ip = IPv6Address(normalized) {
-            return routes.cidrs.contains { cidrContains($0, ip.rawValue) }
-        }
 
         // The core trims each rule but publishes the raw arrays, so trim here too.
         return routes.domains.contains { pattern in
