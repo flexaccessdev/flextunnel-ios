@@ -27,7 +27,7 @@
 #     browser's hostname scoping (every page goes through the in-app proxy);
 #   - a control endpoint on loopback (ci/e2e/control.py) that owns the routed
 #     and CIDR servers, so a test can stop and restart one to take its tunnel
-#     down.
+#     down, and read a server's log.
 #
 # The tests (Sources/FlextunnelUITests) get the server ids, a fresh client
 # secret, the site URL and the control endpoint through
@@ -142,7 +142,9 @@ authorized_keys_file = "$PWD/$RUN/authorized_keys"
 routed_cidrs = ["203.0.113.0/24"]
 EOF
 
-# The servers a test may stop, for the control endpoint to own.
+# The servers a test may stop, for the control endpoint to own. The CIDR server
+# logs each stream's target, so a test can read off its log that an IP-address
+# URL came through the tunnel.
 uv run --no-project python -c '
 import json, sys
 flextunnel, run = sys.argv[1:]
@@ -151,10 +153,12 @@ print(json.dumps({
         "argv": [flextunnel, "server", "start", "-c", f"{run}/{config}"],
         "home": f"{run}/{home}",
         "log": f"{run}/{log}",
+        "env": env,
     }
-    for name, config, home, log in [
-        ("routed", "server.toml", "home", "server.log"),
-        ("cidr", "cidr-server.toml", "cidr-home", "cidr-server.log"),
+    for name, config, home, log, env in [
+        ("routed", "server.toml", "home", "server.log", {}),
+        ("cidr", "cidr-server.toml", "cidr-home", "cidr-server.log",
+         {"RUST_LOG": "info,flextunnel_core::proxy::server=debug"}),
     ]
 }))' "$flextunnel" "$PWD/$RUN" >"$RUN/servers.json"
 

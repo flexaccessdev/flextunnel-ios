@@ -267,10 +267,12 @@ final class BrowserE2ETests: XCTestCase {
 
     /// With a CIDR in the set the tunnel status says what IP ranges cover, and
     /// every page goes through the in-app proxy — which still dials off-list
-    /// hosts directly while the tunnel is down. (Loopback and this device's
-    /// own addresses are never proxied, so no local IP can stand in for a
-    /// tunneled one here; `ProxyConfigurationTests` covers IP-address URLs.)
-    func testCIDRSetExplainsIPRangesAndKeepsOffListHostsLoading() {
+    /// hosts directly while the tunnel is down, and holds an address in the
+    /// range for the tunnel: the server's log shows it arriving once the
+    /// tunnel is back. (The range is TEST-NET-3, which nothing answers, so the
+    /// log is the only evidence of the path: loopback and this device's own
+    /// addresses are never proxied, so no local IP can stand in.)
+    func testCIDRSetTunnelsItsIPRangeAndKeepsOffListHostsLoading() {
         connect(to: .cidr)
 
         app.buttons["browser.tunnelStatus"].tap()
@@ -289,10 +291,18 @@ final class BrowserE2ETests: XCTestCase {
         open(offList + "/")
         waitForPageText("flextunnel e2e home")
 
+        let tunneledAddress = "203.0.113.9"
+        XCTAssertFalse(serverLog(.cidr).contains(tunneledAddress))
+
         takeDown(.cidr)
         open(offList + "/page2.html")
         waitForPageText("flextunnel e2e page two")
+
+        open("http://\(tunneledAddress)/")
         bringBack(.cidr)
+        XCTAssertTrue(
+            waitForServerLog(.cidr, toContain: tunneledAddress, timeout: Self.outageFailureTimeout),
+            "\(tunneledAddress) never came through the tunnel")
     }
 
     func testDisconnectFromTunnelStatusReturnsToSetup() {
@@ -335,16 +345,40 @@ final class BrowserE2ETests: XCTestCase {
     /// Stops or starts `server` through `ci/e2e.sh`'s control endpoint, and
     /// waits until it has.
     private func controlServer(_ server: Server, _ action: String) {
+        _ = controlRequest("POST", server, action)
+    }
+
+    /// `server`'s log so far, read through the control endpoint.
+    private func serverLog(_ server: Server) -> String {
+        controlRequest("GET", server, "log")
+    }
+
+    /// Polls `server`'s log until it contains `text`.
+    private func waitForServerLog(_ server: Server, toContain text: String, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !serverLog(server).contains(text) {
+            guard Date() < deadline else { return false }
+            Thread.sleep(forTimeInterval: 1)
+        }
+        return true
+    }
+
+    /// Sends `method` to the control endpoint's `/<server>/<action>` and
+    /// returns the response body, asserting a 200.
+    private func controlRequest(_ method: String, _ server: Server, _ action: String) -> String {
         var request = URLRequest(url: URL(string: "\(control!)/\(server.controlName!)/\(action)")!)
-        request.httpMethod = "POST"
-        let done = expectation(description: "\(action) \(server)")
+        request.httpMethod = method
+        let done = expectation(description: "\(method) \(action) \(server)")
         var code = 0
-        URLSession.shared.dataTask(with: request) { _, response, _ in
+        var body = ""
+        URLSession.shared.dataTask(with: request) { data, response, _ in
             code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            body = data.map { String(decoding: $0, as: UTF8.self) } ?? ""
             done.fulfill()
         }.resume()
         wait(for: [done], timeout: 30)
-        XCTAssertEqual(code, 200, "control \(action) \(server)")
+        XCTAssertEqual(code, 200, "control \(method) \(action) \(server)")
+        return body
     }
 
     /// Launches the app pointed at `server` (the app's E2E launch hook fills

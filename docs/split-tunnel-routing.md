@@ -92,7 +92,8 @@ on it (every host, while the set has a CIDR rule).
 When the set has CIDR rules, the browser's tunnel-set footer adds a note: IP
 ranges cover IP-address URLs and port forwards, never hostnames, and while any
 are present every page goes through the in-app proxy (the WebKit layer is off,
-see above). CIDRs exist mostly for port forwards to private IPs; Safari and
+see above), except loopback and the device's own addresses, which the system
+never proxies. CIDRs exist mostly for port forwards to private IPs; Safari and
 other apps never use the browser's proxy, only the forwards.
 
 ## Verifying the split

@@ -1,13 +1,16 @@
 """Owns the e2e flextunnel servers a UI test may take down, and lets the test
 runner stop and restart them over loopback HTTP: `POST /<name>/stop` and
 `POST /<name>/start` (idempotent; each answers once the server has exited, or
-has been started). `GET /health` answers 200 while every server runs.
+has been started). `GET /<name>/log` answers with the server's log, so a test
+can see what reached that server through the tunnel. `GET /health` answers 200
+while every server runs.
 
     uv run --no-project python ci/e2e/control.py <port> <servers.json>
 
-`servers.json` maps a name to {"argv": [...], "home": dir, "log": file}. Each
-server runs with its own HOME (its lock and blocklist stay scratch files) and
-appends to its log across restarts. SIGTERM stops every server, then exits.
+`servers.json` maps a name to {"argv": [...], "home": dir, "log": file} plus
+optional "env" ({name: value}, added to the server's environment). Each server
+runs with its own HOME (its lock and blocklist stay scratch files) and appends
+to its log across restarts. SIGTERM stops every server, then exits.
 """
 
 import json
@@ -34,7 +37,7 @@ def start(name):
     log = open(spec["log"], "a")
     procs[name] = subprocess.Popen(
         spec["argv"],
-        env={**os.environ, "HOME": spec["home"]},
+        env={**os.environ, **spec.get("env", {}), "HOME": spec["home"]},
         stdin=subprocess.DEVNULL,
         stdout=log,
         stderr=subprocess.STDOUT,
@@ -58,6 +61,10 @@ def stop(name):
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        parts = self.path.strip("/").split("/")
+        if len(parts) == 2 and parts[0] in specs and parts[1] == "log":
+            with open(specs[parts[0]]["log"], errors="replace") as f:
+                return self.reply(200, f.read())
         if self.path != "/health":
             return self.reply(404, "no such path")
         with lock:
