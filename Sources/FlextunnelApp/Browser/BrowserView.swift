@@ -732,7 +732,7 @@ private struct BrowserLoadFailureView: View {
     private var routeHint: (text: String, icon: String, color: Color)? {
         switch route {
         case .tunnel where !tunnelConnected:
-            return ("This site is reached through the tunnel, which is reconnecting.",
+            return ("This site is reached through the tunnel, which isn't connected right now.",
                     "bolt.slash.circle", .orange)
         case .tunnel:
             return ("Reached through the tunnel — the server couldn't load it.",
