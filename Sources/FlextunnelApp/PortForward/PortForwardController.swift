@@ -213,7 +213,9 @@ final class PortForwardController: ObservableObject {
                 connectionCount: status.active,
                 lastConnectionError: status.lastConnectionError)
         }
-        runtime = next
+        // Polled every second: an unchanged write would still re-render every
+        // view observing this controller.
+        if runtime != next { runtime = next }
         if autoDisabled {
             persist()
             applyDesired()

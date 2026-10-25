@@ -185,7 +185,7 @@ final class ProxyController: ObservableObject {
     /// the tunnel (off-list targets connect directly). The set is optional: an
     /// empty one routes nothing but the reserved `flextunnel.internal`
     /// namespace, which is always tunneled.
-    struct ForwardedRoutes {
+    struct ForwardedRoutes: Equatable {
         var connected: Bool
         /// Whether this snapshot carries a tunnel set the handshake actually
         /// learned. An empty set is valid, so emptiness can't tell; instead the
@@ -200,11 +200,11 @@ final class ProxyController: ObservableObject {
         /// Server-side host aliases (`alias -> target`), informational only —
         /// the server resolves them; shown in the status popover like the
         /// server status page shows them.
-        var hostAliases: [(alias: String, target: String)]
+        var hostAliases: [HostAlias]
         /// Server-side conditional DNS forwards (split-DNS), informational only —
         /// names under `suffix` resolve via `servers` on the server side; shown
         /// in the status popover like the server status page shows them.
-        var dnsForwards: [(suffix: String, servers: [String])]
+        var dnsForwards: [DNSForward]
         /// Server-to-server bridge routes, informational only — targets matching
         /// a bridge's domains/CIDRs are forwarded to another flextunnel server.
         /// The rules are already part of the routed set, so nothing is enforced
@@ -302,7 +302,20 @@ final class ProxyController: ObservableObject {
     /// A server-to-server bridge route: targets matching `domains`/`cidrs` are
     /// forwarded to another flextunnel server (identified by `endpointID`).
     /// Informational only — the rules are already part of the routed set.
-    struct BridgeRoute: Identifiable {
+    /// A server-side host alias: requests for `alias` go to `target`.
+    struct HostAlias: Equatable {
+        var alias: String
+        var target: String
+    }
+
+    /// A server-side conditional DNS forward: names under `suffix` resolve via
+    /// `servers`.
+    struct DNSForward: Equatable {
+        var suffix: String
+        var servers: [String]
+    }
+
+    struct BridgeRoute: Identifiable, Equatable {
         var name: String
         var endpointID: String
         var domains: [String]
@@ -710,10 +723,10 @@ final class ProxyController: ObservableObject {
             return
         }
 
-        sessionAlive = true
+        publish(\.sessionAlive, true)
         refreshRoutes()
         onForwardStatusRefresh?()
-        tunnelConnected = forwardedRoutes?.connected == true
+        publish(\.tunnelConnected, forwardedRoutes?.connected == true)
         trackLinkOutage()
 
         switch phase {
@@ -731,9 +744,9 @@ final class ProxyController: ObservableObject {
             // recovery hold) instead of failing outright; server-direct
             // forwards fail until it recovers.
             if tunnelConnected {
-                isRelaunching = false
+                publish(\.isRelaunching, false)
                 autoRelaunchedThisOutage = false
-                status = connectedStatus
+                publish(\.status, connectedStatus)
             } else if tunnelStuck {
                 // Once the core's own recovery has had its full window, its
                 // reconnect is presumed wedged: relaunch once on our own — a
@@ -748,11 +761,11 @@ final class ProxyController: ObservableObject {
                     relaunch()
                     return
                 }
-                status = "tunnel disconnected — retry to relaunch"
+                publish(\.status, "tunnel disconnected — retry to relaunch")
             } else if isRelaunching {
-                status = "relaunching tunnel session…"
+                publish(\.status, "relaunching tunnel session…")
             } else {
-                status = "tunnel reconnecting — off-list browsing active"
+                publish(\.status, "tunnel reconnecting — off-list browsing active")
             }
         case .idle, .failed:
             break
@@ -769,13 +782,21 @@ final class ProxyController: ObservableObject {
         guard phase == .connected, !tunnelConnected else {
             linkDownSince = nil
             recoverySince = nil
-            tunnelStuck = false
+            publish(\.tunnelStuck, false)
             return
         }
         let downSince = linkDownSince ?? Date()
         linkDownSince = downSince
         recoverySince = recoverySince ?? downSince
-        tunnelStuck = Date().timeIntervalSince(downSince) >= Self.reconnectGrace
+        publish(\.tunnelStuck, Date().timeIntervalSince(downSince) >= Self.reconnectGrace)
+    }
+
+    /// Writes a published property only when the value changes. Every write
+    /// fires `objectWillChange`, so the 1 Hz poll republishing the same state
+    /// re-rendered the browser each tick, rebuilding an open ⋯ menu under the
+    /// user's finger and dropping the tap.
+    private func publish<Value: Equatable>(_ property: ReferenceWritableKeyPath<ProxyController, Value>, _ value: Value) {
+        if self[keyPath: property] != value { self[keyPath: property] = value }
     }
 
     private var connectedStatus: String {
@@ -862,14 +883,14 @@ final class ProxyController: ObservableObject {
 
         // host_aliases is a JSON array of [alias, target] pairs.
         let hostAliases = (obj["host_aliases"] as? [[String]] ?? [])
-            .compactMap { pair -> (alias: String, target: String)? in
-                pair.count == 2 ? (alias: pair[0], target: pair[1]) : nil
+            .compactMap { pair -> HostAlias? in
+                pair.count == 2 ? HostAlias(alias: pair[0], target: pair[1]) : nil
             }
         // dns_forwards is a JSON array of {"suffix","servers"} objects.
         let dnsForwards = (obj["dns_forwards"] as? [[String: Any]] ?? [])
-            .compactMap { entry -> (suffix: String, servers: [String])? in
+            .compactMap { entry -> DNSForward? in
                 guard let suffix = entry["suffix"] as? String else { return nil }
-                return (suffix: suffix, servers: entry["servers"] as? [String] ?? [])
+                return DNSForward(suffix: suffix, servers: entry["servers"] as? [String] ?? [])
             }
         // bridges is a JSON array of {"name","endpoint_id","domains","cidrs"}.
         let bridges = (obj["bridges"] as? [[String: Any]] ?? [])
@@ -884,14 +905,14 @@ final class ProxyController: ObservableObject {
         // `forwardedRoutes` is reset to nil whenever the handle changes, so the
         // previous snapshot is this session's.
         let connected = obj["connected"] as? Bool ?? false
-        forwardedRoutes = ForwardedRoutes(
+        publish(\.forwardedRoutes, ForwardedRoutes(
             connected: connected,
             isKnown: connected || forwardedRoutes?.isKnown == true,
             domains: obj["domains"] as? [String] ?? [],
             cidrs: obj["cidrs"] as? [String] ?? [],
             hostAliases: hostAliases,
             dnsForwards: dnsForwards,
-            bridges: bridges)
+            bridges: bridges))
     }
 
     /// One-shot snapshot of the live connection's iroh path(s) — a point-in-time
