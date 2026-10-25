@@ -16,9 +16,12 @@
 #     so the server is built from the sibling working tree instead;
 #   - a fixture site (ci/e2e/fixtures) behind the server's host alias
 #     `e2e.flextunnel.test`. Only the server resolves that name, so a page that
-#     loads came through the tunnel.
+#     loads came through the tunnel;
+#   - a second server with no routed set, which tunnels only the reserved
+#     `flextunnel.internal` namespace. Its built-in loopback name
+#     `localhost.flextunnel.internal` reaches the same fixture site.
 #
-# The tests (Sources/FlextunnelUITests) get the server id, a fresh client
+# The tests (Sources/FlextunnelUITests) get both server ids, a fresh client
 # secret and the site URL through TEST_RUNNER_FLEXTUNNEL_E2E_*; the app's
 # Debug-only launch hook (E2ELaunchConfig.swift) fills the setup screen from
 # them. Needs a Rust toolchain (the first run builds the CLIs into build/e2e),
@@ -82,7 +85,7 @@ fi
 # --- server and site ---------------------------------------------------------
 
 rm -rf "$RUN"
-mkdir -p "$RUN/www" "$RUN/home"
+mkdir -p "$RUN/www" "$RUN/home" "$RUN/empty-home"
 cp ci/e2e/fixtures/* "$RUN/www/"
 uv run --no-project python -c '
 import sys, zipfile
@@ -94,6 +97,8 @@ json_field() { uv run --no-project python -c 'import json, sys; print(json.load(
 
 "$flextunnel" generate-iroh-key -o "$RUN/server.key" >/dev/null
 node_id=$("$flextunnel" show-iroh-id -s "$RUN/server.key" --json | json_field endpoint_id)
+"$flextunnel" generate-iroh-key -o "$RUN/empty-server.key" >/dev/null
+empty_node_id=$("$flextunnel" show-iroh-id -s "$RUN/empty-server.key" --json | json_field endpoint_id)
 client=$("$keys" generate-auth-key --json e2e)
 secret=$(json_field private_key <<<"$client")
 json_field authorized_key <<<"$client" >"$RUN/authorized_keys"
@@ -115,6 +120,11 @@ routed_domains = ["e2e.flextunnel.test", "*.e2e.flextunnel.test"]
 "e2e.flextunnel.test" = "127.0.0.1"
 EOF
 
+cat >"$RUN/empty-server.toml" <<EOF
+secret_file = "$PWD/$RUN/empty-server.key"
+authorized_keys_file = "$PWD/$RUN/authorized_keys"
+EOF
+
 pids=()
 cleanup() {
     for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
@@ -129,12 +139,15 @@ pids+=($!)
 # ~/.config/flextunnel are scratch files, not the ones a real server here uses.
 HOME=$PWD/$RUN/home "$flextunnel" server start -c "$RUN/server.toml" >"$RUN/server.log" 2>&1 &
 pids+=($!)
+HOME=$PWD/$RUN/empty-home "$flextunnel" server start -c "$RUN/empty-server.toml" >"$RUN/empty-server.log" 2>&1 &
+pids+=($!)
 
 sleep 3
 for pid in "${pids[@]}"; do
-    kill -0 "$pid" 2>/dev/null || { tail -20 "$RUN/server.log" "$RUN/site.log" >&2; die 'server or site exited at startup'; }
+    kill -0 "$pid" 2>/dev/null || { tail -20 "$RUN/server.log" "$RUN/empty-server.log" "$RUN/site.log" >&2; die 'a server or the site exited at startup'; }
 done
 info "server $node_id ($server_src), site http://e2e.flextunnel.test:$port"
+info "empty-set server $empty_node_id"
 
 # --- tests -------------------------------------------------------------------
 
@@ -152,6 +165,7 @@ xcrun simctl uninstall "$SIM_NAME" "$BUNDLE_ID" 2>/dev/null || true
 rm -rf "$RUN/results.xcresult"
 [ $# -gt 0 ] || set -- -only-testing:FlextunnelUITests
 TEST_RUNNER_FLEXTUNNEL_E2E_SERVER_NODE_ID=$node_id \
+TEST_RUNNER_FLEXTUNNEL_E2E_EMPTY_SERVER_NODE_ID=$empty_node_id \
 TEST_RUNNER_FLEXTUNNEL_E2E_AUTH_SECRET=$secret \
 TEST_RUNNER_FLEXTUNNEL_E2E_SITE=http://e2e.flextunnel.test:$port \
 TEST_RUNNER_FLEXTUNNEL_E2E_CLOSED_PORT=$closed_port \

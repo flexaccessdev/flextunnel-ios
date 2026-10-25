@@ -4,8 +4,20 @@ import XCTest
 /// `RouteMatch` must agree with flextunnel-core's `RoutedSet` (the cases mirror
 /// its tests in `crates/flextunnel-core/src/proxy/routed_set.rs`), so the
 /// browser's route labels and the port-forward badges never report the
-/// opposite of the route the core takes.
+/// opposite of the route the core takes. The reserved-namespace cases mirror
+/// `crates/flextunnel-core/src/proxy/reserved.rs`.
 final class RouteMatchTests: XCTestCase {
+    func testReservedNamespaceIsTunneledEvenWithAnEmptySet() {
+        let empty = routes()
+        XCTAssertTrue(tunneled("flextunnel.internal", empty))
+        XCTAssertTrue(tunneled("localhost.flextunnel.internal", empty))
+        XCTAssertTrue(tunneled("LocalHost.FlexTunnel.Internal", empty))
+        XCTAssertTrue(tunneled("a.b.flextunnel.internal", empty))
+        XCTAssertFalse(tunneled(".flextunnel.internal", empty))
+        XCTAssertFalse(tunneled("flextunnel.internal.evil.com", empty))
+        XCTAssertFalse(tunneled("localhost", empty))
+    }
+
     func testStarMatchesEveryHostnameButNoIP() {
         let star = routes(domains: ["*"])
         XCTAssertTrue(tunneled("anything.example", star))

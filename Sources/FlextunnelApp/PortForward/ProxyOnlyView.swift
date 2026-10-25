@@ -295,7 +295,7 @@ private struct ForwardRow: View {
 
     @ViewBuilder
     private var routeBadge: some View {
-        if forward.enabled, let routes {
+        if forward.enabled, let routes, routes.isKnown {
             let allowed = RouteMatch.isTunneled(host: forward.remoteHost, routes: routes)
             Text(allowed ? "server-direct" : "not routed")
                 .font(.caption2.weight(.semibold))

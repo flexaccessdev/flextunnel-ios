@@ -1,20 +1,24 @@
 import Foundation
 import Network
 
-/// Advisory-only mirror of the core's split-tunnel decision (`RoutedSet` in
-/// flextunnel-core), used to badge a forward target and label a browser page as
-/// tunneled or direct. The core (and the server) remain the authority, but the
-/// rules here follow it exactly so a label never reports the opposite route.
+/// Advisory-only mirror of the core's split-tunnel decision (the reserved
+/// namespace, then `RoutedSet` in flextunnel-core), used to badge a forward
+/// target and label a browser page as tunneled or direct. The core (and the
+/// server) remain the authority, but the rules here follow it exactly so a
+/// label never reports the opposite route.
 enum RouteMatch {
-    /// Whether `host` (hostname or IP literal, optionally bracketed) falls in
-    /// the routed tunnel set. As in the core, a hostname is matched only against
-    /// the domain rules and an IP literal only against the CIDRs: `*` never
-    /// covers an IP, and a default-route CIDR never covers a hostname.
+    /// Whether `host` (hostname or IP literal, optionally bracketed) goes
+    /// through the tunnel. The reserved `flextunnel.internal` namespace always
+    /// does, whatever the set. Otherwise, as in the core, a hostname is matched
+    /// only against the domain rules and an IP literal only against the CIDRs:
+    /// `*` never covers an IP, and a default-route CIDR never covers a hostname.
     static func isTunneled(host: String, routes: ProxyController.ForwardedRoutes) -> Bool {
         var normalized = host.lowercased()
         if normalized.hasPrefix("[") && normalized.hasSuffix("]") {
             normalized = String(normalized.dropFirst().dropLast())
         }
+
+        if isReserved(normalized) { return true }
 
         if let ip = IPv4Address(normalized) {
             return routes.cidrs.contains { cidrContains($0, ip.rawValue) }
@@ -33,6 +37,14 @@ enum RouteMatch {
             }
             return normalized == pattern
         }
+    }
+
+    /// `flextunnel.internal` or any subdomain of it, like the core's
+    /// `reserved::is_reserved_host` (`host` already lowercased): an empty label
+    /// (`.flextunnel.internal`) is not reserved.
+    private static func isReserved(_ host: String) -> Bool {
+        let suffix = ".flextunnel.internal"
+        return host == "flextunnel.internal" || (host.hasSuffix(suffix) && host.count > suffix.count)
     }
 
     /// CIDR containment for either family (`10.0.0.0/8`, `fd00::/8`); a bare IP
