@@ -10,37 +10,27 @@ QUIC (NAT traversal, relay fallback, TLS 1.3), the app dials the server by its
 endpoint id — the server needs no public inbound port, and neither end needs
 root or a TUN device.
 
-> **Alpha.** The iOS client is the least stable flextunnel client and every
-> release of it is published as a GitHub prerelease. The desktop and CLI
-> clients run the tunnel as a long-lived process; iOS does not allow that.
-> There is no VPN / Network Extension, so the tunnel lives inside the app
-> process and follows its lifecycle: iOS suspends the app ~30 s after it leaves
-> the foreground and every forward dies with it, unless the opt-in Core Location
-> keep-alive holds the process up (and that only covers **Forward ports**
-> mode — WebKit's own page and network processes are suspended regardless).
-> The browser is also limited to what `WKWebsiteDataStore.proxyConfigurations`
-> can express (host-name scoping only, no CIDR split), and nothing outside the
-> app can use the proxy except through the `localhost` port forwards. Expect
-> rough edges around backgrounding, reconnects and WebKit behavior that the
-> other platforms do not have.
+> **Alpha.** Every iOS release is a GitHub prerelease. The tunnel runs inside
+> the app, without a Network Extension, so background suspension interrupts
+> connections. **Forward ports** offers opt-in location keep-alive; browser
+> mode uses normal iOS/WebKit suspension. Expect rough edges around
+> backgrounding, reconnects and WebKit routing. See
+> [background behavior](docs/background-keep-alive.md) and
+> [routing limits](docs/split-tunnel-routing.md).
 
 There are two ways to use the tunnel, chosen on the setup screen:
 
-- **Browse the web** — a built-in browser routed through the tunnel. This is a
-  **private-network access browser**, not a privacy/anonymity browser: it
-  behaves like a mainstream browser and split-tunnels by default. The flextunnel
-  Rust core is embedded on-device (via `libflextunnel.xcframework`) and runs a
-  local SOCKS5 listener on loopback. When the tunnel set is hostname-only, the
-  SwiftUI `WebView` scopes that listener to it with
-  `ProxyConfiguration.matchDomains` (`WKWebsiteDataStore.proxyConfigurations`),
-  so only on-list hosts go through the proxy and everything else connects
-  directly. When the set is full-tunnel (`*` / default-route CIDR) or routes any
-  CIDR — patterns `matchDomains` can't express — host scoping is off and WebKit
-  routes every host through the proxy, so the direct-connection and
-  proxy-health-independence behavior doesn't apply.
-- **Forward ports** — run the proxy without the browser and forward local
-  `localhost` ports to private hosts, so other apps on the device (SSH, RDP,
-  databases…) can reach them.
+- **Browse the web** — an in-app browser for private-network access, with
+  split routing through an embedded Rust SOCKS5 proxy. With specific domain
+  rules, WebKit sends matching hostname suffixes to the proxy and bypasses it
+  for other hosts; the core applies the precise tunnel set. With `*` or CIDR
+  rules, hostname scoping is disabled and the core classifies proxied requests.
+  Loopback IPs and the device's own addresses bypass WebKit proxying; use
+  `localhost.flextunnel.internal` for the server's loopback. Other apps, Safari
+  included, cannot use this proxy.
+- **Forward ports** — run the tunnel without a browser or SOCKS5 listener.
+  Forward local `localhost` ports to private hosts so other apps on the device
+  (SSH, RDP, databases…) can reach them.
 
 ## Documentation
 
@@ -48,23 +38,21 @@ There are two ways to use the tunnel, chosen on the setup screen:
   decide tunnel-vs-direct (the Rust core and WebKit `matchDomains`), the
   server-pushed tunnel set, browser independence from proxy health, and
   verifying the split.
-- [Proxy-only mode & port forwarding](docs/port-forwarding.md) — the SOCKS5
-  endpoint and localhost port forwards for other apps, background behavior,
-  what forwards are good for, and troubleshooting.
+- [Proxy-only mode & port forwarding](docs/port-forwarding.md) — localhost
+  forwards for other apps, background behavior and troubleshooting.
 - [Background keep-alive](docs/background-keep-alive.md) — the opt-in location
   session that keeps port forwards alive while backgrounded, where the decision
-  is made, its inactivity limit, and the ~30 s fallback without it. Browser mode
+  is made, its inactivity limit, and background grace without it. Browser mode
   deliberately uses normal iOS/WebKit background suspension.
 - [Local FFI development](docs/local-ffi-development.md) — building against a
   local `../flextunnel` Rust checkout instead of the pinned release.
 - [Running CI locally](docs/local-ci.md) — `ci/ci.sh` runs the workflows' checks
   against the working tree here (Simulator build, a launch smoke test, the
-  unsigned-archive assertions, the signed device slice); `scripts/run-device-ios-host.sh` ships
-  that signed build to the Mac the iPhone is attached to, then installs and
-  launches it on the phone from there.
-- [Building in a macOS VM](docs/deploy-from-a-vm.md) — why a UTM/Tart guest can
-  never install onto a physical device, and the build-in-the-VM /
-  install-from-the-host split that works instead.
+  unsigned-archive assertions, plus opt-in device and FFI builds).
+  `scripts/run-device-ios-host.sh` builds its own signed Release app, then
+  installs and launches it through the Mac paired with the phone.
+- [Building in a macOS VM](docs/deploy-from-a-vm.md) — build and sign in the VM,
+  then install from a paired Mac.
 - [Sign an unsigned IPA](docs/signing-unsigned-ipa.md) — verify a release,
   apply team-owned bundle IDs, sign the widget and app with separate profiles,
   and preserve the background location configuration.
@@ -73,7 +61,11 @@ There are two ways to use the tunnel, chosen on the setup screen:
 
 - Xcode (tested with 26.x) on Apple Silicon.
 - [`xcodegen`](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen`.
-- Rust with the iOS target: `rustup target add aarch64-apple-ios`.
+- For local Rust/FFI development only: Rust and the sibling `../flextunnel`
+  checkout. `build-ios.sh` installs the device and Simulator Rust targets.
+
+The helper scripts that wrap shared tooling also need `../devtools`, or
+`DEVTOOLS_DIR` pointing to that checkout.
 
 The Rust static library (`libflextunnel.xcframework`) is delivered via a local
 Swift package, `Packages/Flextunnel`. Its binary target downloads the **pinned
@@ -172,9 +164,13 @@ still contains the app's background location mode and usage description.
 - Targets **iOS 26**: the browser uses the SwiftUI `WebView` / `WebPage` API.
   (`WKWebsiteDataStore.proxyConfigurations`, the runtime proxy hook, requires
   iOS 17+.)
-- `libflextunnel.xcframework` is arm64-only; build/verify against a pinned arm64
-  iOS 26 Simulator, e.g. `-destination 'platform=iOS Simulator,name=iPhone
-  17,OS=26.2'`.
+- `libflextunnel.xcframework` is arm64-only. For a Simulator build, force the
+  architecture without pinning an installed runtime:
+
+  ```sh
+  xcodebuild -project Flextunnel.xcodeproj -scheme FlextunnelApp \
+    -destination 'generic/platform=iOS Simulator' ARCHS=arm64 build
+  ```
 - The `.xcodeproj` is git-ignored on purpose — regenerate it with `xcodegen`. The
   xcframework is fetched by Swift Package Manager (pinned release, or a local
   build in FFI-dev mode), not vendored into this repo.
