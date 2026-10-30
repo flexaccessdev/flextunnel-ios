@@ -1,123 +1,89 @@
 # Split-tunnel routing (the tunnel set)
 
-The server defines a **tunnel set** — the domains/CIDRs it will route — and
-pushes it to the client during the handshake. **On-list** destinations are
-tunneled through the QUIC connection (resolved and connected server-side);
-everything **off-list** is direct-connected from the device. This split-tunnel
-behavior is the default; a server whose set matches everything
-(`*` / `0.0.0.0/0`) routes all traffic.
+The server pushes domain and CIDR rules during the handshake. For browser
+proxy requests, matching targets go through the server and off-list targets
+connect from the device. Server-direct port forwards always use the tunnel;
+the server rejects their off-list targets.
 
-## Two layers make the same decision
+Domain rules match hostnames; CIDRs match IP literals, including numeric IPs
+sent in hostname form. A hostname is not reclassified by its resolved IP.
+To route all target types, configure `*` for domains and both `0.0.0.0/0` and
+`::/0` for IPs. An empty set still tunnels the reserved `flextunnel.internal`
+namespace, including the server's loopback at `localhost.flextunnel.internal`.
 
-The split is enforced in two places, and understanding why takes both:
+## Rust routing and WebKit proxy scoping
 
-1. **The Rust core (authority).** The on-device SOCKS5 proxy decides
-   per-connection from the pushed tunnel set: on-list targets go through the
-   tunnel, off-list targets it dials directly itself. This is the ground truth —
-   the server also enforces the same set as a **whitelist** (defense in depth),
-   rejecting any tunnel request for an off-list target. Anything that reaches
-   the proxy gets this decision regardless of what any client did upstream.
+The Rust SOCKS5 listener makes the tunnel-or-direct decision for every browser
+request that reaches it. The server independently checks tunneled requests
+against its routed set, except reserved names.
 
-2. **WebKit `matchDomains` (browser optimization).** The browser additionally
-   scopes its proxy at the connection layer via
-   `WKWebsiteDataStore.proxyConfigurations` — `ProxyConfiguration.matchDomains`
-   (iOS 17+). WebKit suffix-matches each new connection's hostname against the
-   list *before connecting*: matching (tunnel-set) hosts go to the loopback
-   SOCKS5 proxy, and **off-list hosts never touch the proxy at all** — the
-   network process dials them directly with its own DNS, connection reuse, and
-   HTTP/3. This keeps public browsing off the loopback hop and independent of
-   proxy/tunnel health.
+For hostname-only sets without `*`, the browser also sets
+`ProxyConfiguration.matchDomains` through
+`WKWebsiteDataStore.proxyConfigurations`. Hostnames outside those suffixes
+bypass the SOCKS5 listener entirely. This keeps those requests independent of
+proxy health.
 
-The match list is derived from the pushed set in
-`ProxyController.ForwardedRoutes.proxyMatchDomains`: both exact (`example.com`)
-and wildcard (`*.example.com`) rules map to the bare domain, since WebKit's
-suffix match already covers the apex and all subdomains — a superset of the
-core's rules. The always-tunneled `flextunnel.internal` namespace is always
-included. `allowFailover` is explicitly pinned off (`ProxyConfiguration.loopbackSocks5`,
-covered by `ProxyConfigurationTests`), so a tunnel-set host **fails rather than
-silently leaking direct** when the proxy is down — even when the host also
-answers off-tunnel, it never flaps between the tunnel and a direct path across
-link blips or relaunch gaps. The core does the same on its side: an on-list
-request during an outage holds for the reconnect or is refused, never dialed
-directly.
+`ProxyController.ForwardedRoutes.proxyMatchDomains` converts exact and wildcard
+domain rules to bare suffixes and always includes `flextunnel.internal`.
+The list must cover everything the core would tunnel; under-matching breaks
+private hosts.
+WebKit's suffix match can include more hosts than the Rust rule: for example,
+an exact `example.com` rule also sends `www.example.com` to the proxy. The
+core then applies its precise rule and connects an off-list host directly.
+Such overmatched hosts still depend on the local proxy being available.
 
-Over-matching is safe: WebKit only decides *whether to send a host to the
-proxy*, and the core makes the real tunnel-vs-direct call for whatever arrives.
-Under-matching would break private hosts, so the list must cover everything the
-core would tunnel.
+With `*` or any CIDR rule, hostname scoping is disabled and requests go through
+the Rust proxy for classification. A CIDR cannot be expressed as hostname
+suffixes. Sending everything to the proxy does not itself make every target
+tunneled: domain and IP rules remain independent in the core. WebKit bypasses
+proxying for loopback IPs and the device's own addresses, so use
+`localhost.flextunnel.internal` to reach the server's loopback. Safari and other
+apps never use the browser's proxy; they reach the tunnel only through
+[port forwards](port-forwarding.md).
 
-### When the WebKit layer disables itself
+`ProxyConfiguration.loopbackSocks5` sets `allowFailover = false`. A request
+assigned to an unavailable proxy fails rather than falling back directly.
+Once inside the core, an on-list request waits for tunnel recovery or fails;
+it never switches to a direct connection.
 
-`proxyMatchDomains` returns nil — meaning "send every host to the proxy", the
-pre-optimization behavior — when hostname suffixes can't faithfully express the
-set:
+## Reconnects and status
 
-- **Full tunnel** (`*` / `0.0.0.0/0`): everything is tunneled anyway.
-- **Any CIDR rule**: `matchDomains` suffix-matches hostnames and matches an IP
-  literal only as an exact string, so a CIDR range can't be expressed and an
-  IP-literal URL must still reach the proxy's CIDR check.
+The browser retains the last known match list across a session relaunch while
+the core relearns its routes. A new unscoped policy is applied when reported.
+Hosts outside the retained suffix list can keep browsing directly during that
+gap. With scoping disabled, all proxied requests depend on the listener, even
+when the core would ultimately connect them directly.
 
-In these cases the core alone routes, exactly as before. Unscoped, the system
-does send IP-literal URLs to the proxy (private, public and IPv6 alike), with
-one exception: **loopback and the device's own addresses are never proxied**,
-so a CIDR covering them is reached directly by the browser. Port forwards are
-unaffected (they dial through the core). `ProxyConfigurationTests` pins this
-behavior, and the e2e CIDR fixture uses TEST-NET-3 rather than a local address
-because of it.
+The SOCKS5 listener stays bound across ordinary QUIC reconnects. Suspension
+recovery performs a full session relaunch, which briefly closes and rebinds
+it. Existing tunneled TCP connections do not survive a dropped tunnel.
 
-## Browser independence
+**Tunnel status** shows the pushed routes, aliases, DNS forwards and bridges.
+**SOCKS listener** reports the local browser listener, separately from tunnel
+connectivity. The UI's full-tunnel label recognizes `*` or a default-route
+CIDR; consult the individual rules for which target types actually match.
 
-Because off-list hosts bypass the proxy entirely, the browser has **no
-"is browsing usable" gate** — there is no `canBrowse` concept. Proxy/tunnel
-health only affects tunnel-set hosts, which surface a normal per-tab page error
-when the link is down. Across a relaunch gap (when `forwardedRoutes` clears
-while the core re-handshakes) the browser **retains its last known match list**
-rather than reverting to proxy-everything, so direct browsing continues
-seamlessly. A real full-tunnel push (an inner nil) is still applied.
-
-Port forwards, by contrast, have no `matchDomains` equivalent — every accepted
-connection is relayed through the SOCKS5 listener and the core makes the call.
-See [port-forwarding.md](port-forwarding.md).
-
-## Surfacing in the app
-
-The tunnel set is shown under **Tunnel status** in the browser and on the
-port-forwarding screen (tunneled domains/CIDRs, or "Full tunnel (all traffic)"
-when the set routes everything). The status popover's **Bound SOCKS** row shows
-the loopback address while the listener is serving, or `none — … not listening`
-in red whenever the listener is unavailable — startup, a reconnect gap, a bind
-failure, or the core stopped — a reminder that only tunnel-set hosts depend
-on it (every host, while the set has a CIDR rule).
-
-When the set has CIDR rules, the browser's tunnel-set footer adds a note: IP
-ranges cover IP-address URLs and port forwards, never hostnames, and while any
-are present every page goes through the in-app proxy (the WebKit layer is off,
-see above), except loopback and the device's own addresses, which the system
-never proxies. CIDRs exist mostly for port forwards to private IPs; Safari and
-other apps never use the browser's proxy, only the forwards.
+Forwards use core-owned server-direct streams, with no SOCKS5 hop or WebKit
+scoping. See [port forwarding](port-forwarding.md).
 
 ## Verifying the split
 
-**Off-list bypass.** Stop the core while a session is up (or observe a genuine
-tunnel drop). Off-list sites keep loading — proof they connect directly — while
-tunnel-set hosts and `http://flextunnel.internal` fail. If instead *everything*
-dies, the WebKit layer isn't active: check the Tunnel status set for a
-full-tunnel or CIDR rule (both intentionally disable it). Note WebKit pools
-connections, so a host already open may reuse its socket briefly — use a fresh
-host or force-reload.
+- With a hostname-only scoped set, stop the proxy or observe an outage. A
+  fresh request to a host outside every proxy suffix should still load;
+  `http://flextunnel.internal` should fail without a working tunnel. If
+  everything fails, WebKit scoping is not active: check **Tunnel status** for a
+  `*` or CIDR rule. Existing pooled connections and cached pages can obscure
+  this check.
+- SOCKS5 carries only TCP CONNECT, so QUIC/HTTP-3 cannot use the proxy. An
+  off-list HTTP/3 site (for example `https://cloudflare-quic.com`) reporting
+  HTTP/3 bypassed it.
+- In the iOS Run scheme, set `RUST_LOG=warn,flextunnel_core=debug`. Requests
+  reaching the Rust proxy log `Tunneling: …` or
+  `Direct (off tunnel set): …`. Hosts bypassing it produce neither line.
+- For server-side DNS, add a routed hostname that only resolves on the server
+  and load it from the app. Server debug logs (`RUST_LOG=flextunnel=debug`)
+  show `Stream target: Domain(…)` after aliasing and before dialing.
 
-**HTTP/3 tell.** SOCKS5 is a TCP CONNECT tunnel, so QUIC/HTTP-3 can't traverse
-it. An off-list H3 site (e.g. `https://cloudflare-quic.com`) reporting HTTP/3
-provably bypassed the proxy.
-
-**Per-connection log.** The core logs one line per connection that reaches it —
-`Tunneling: …` or `Direct (off tunnel set): …` — at `debug`. Set `RUST_LOG` to
-`warn,flextunnel_core=debug` in the Run scheme's environment. With the WebKit
-layer active, off-list hosts produce **no line** (they never reach the proxy);
-`http://flextunnel.internal` is a reliable positive control for a tunneled line.
-
-**Server-side DNS.** Run the flextunnel **server** with `RUST_LOG=info`.
-Browsing a tunneled host should log `ATYP_DOMAIN (remote DNS, resolved on
-server)` per CONNECT — **not** `ATYP_IP`. For a definitive check, add a hostname
-that only resolves on the server's network (e.g. in its `/etc/hosts`) and load
-it from the app; if it loads, DNS happened on the server.
+`ProxyConfigurationTests` covers scoping and disabled failover.
+`ci/e2e.sh` exercises browser routing with hostname, empty and CIDR sets against
+real servers; see [local CI](local-ci.md#end-to-end-ui-tests).

@@ -1,94 +1,70 @@
-# Building in a macOS VM, installing from the host
+# Building in a macOS VM, installing from a paired Mac
 
-A macOS VM (UTM, [Tart](https://tart.run), Orka…) is a fine build box for this
-project, but it can **never install onto a physical iPhone or iPad directly** —
-no matter how the network is configured. The fix is not a networking change; it
-is to split the work: the **VM builds**, the **host installs**. This is the same
-split Tart-based CI and device farms use, and it is why those farms keep the
-phones attached to bare metal.
+The development VM can build, sign and run the Simulator. In this setup the
+physical iPhone is paired with `machost`, so device installation and launch run
+there over SSH.
 
-## The one-command version
-
-Everything below is automated by `scripts/run-device-ios-host.sh`, which builds and signs here,
-ships the `.app` to the `machost` ssh alias, and installs and launches it on the
-paired iPhone:
+## Automated build and install
 
 ```sh
-scripts/run-device-ios-host.sh            # build, ship, install, launch
-scripts/run-device-ios-host.sh doctor     # what that host has paired, and whether it can see the phone
+scripts/run-device-ios-host.sh
+scripts/run-device-ios-host.sh doctor
+scripts/run-device-ios-host.sh status
 ```
 
-Read on for what it is doing and why the split exists at all; see
-[Running CI locally](local-ci.md) for the rest of the local checks. The manual
-route below is still the one to follow when the far end is not that host — a
-colleague's Mac, a different network — or when a step misbehaves and you want to
-run it by hand.
+The script builds a signed Release app in the VM, transfers it to `machost`,
+verifies the signature and installs and launches it on the phone. It defaults
+to the pinned core; `--local` selects an existing local xcframework and
+`-c Debug` selects a debug build. See [local CI](local-ci.md#running-on-the-phone)
+for device selection, overrides and output paths.
 
-## Why the device is unreachable from the VM
+The build Mac needs Xcode, `xcodegen`, a signing certificate with its private
+key, and provisioning profiles that cover the phone and both app bundles. The
+installing Mac needs Xcode's device tools and an existing pairing with the
+phone. A signed build can be produced without the phone attached to the build
+Mac; development profiles must already include its hardware UDID.
 
-Three independent walls, in the order you hit them:
+## Why the VM cannot pair
 
-1. **No USB passthrough.** macOS guests run on Apple's Virtualization.framework
-   (this is true of UTM's Apple-virtualization backend and of Tart, which is
-   built on it). It has no USB device passthrough at all, so the phone cannot
-   appear on the guest's USB bus.
-2. **Initial trust requires USB.** iOS 17+ devices advertise `_remotepairing`
-   over Bonjour, and a bridged VM *can* see and ping them. That service only
-   transports a trust relationship that already exists — it cannot bootstrap
-   one. A device will not show a *Trust This Computer?* prompt to a host it has
-   never met over USB, which is what stops anyone on your LAN from silently
-   pairing with your phone. `xcrun devicectl manage pair --device iPhone.local`
-   fails with `CoreDeviceError 1000 (device not found)` because CoreDevice never
-   enumerates the device, so no packet reaches the phone and no prompt appears.
-3. **Pairing records can't be copied.** The usual workaround — lifting
-   `/var/db/lockdown/<UDID>.plist` and `SystemConfiguration.plist` from a Mac
-   that *is* paired — does not work on current macOS. That directory is an APFS
-   **data vault**: files there `stat` as world-readable `-rw-r--r--`, yet
-   `open()` returns `EPERM` even for root with Full Disk Access, because access
-   is gated on a private Apple entitlement. It is sealed on the host too, so
-   there is nothing to copy *out* either. Only disabling SIP on both machines
-   would open it, which is not worth it.
+The VM can never pair with the phone, so do not try:
 
-Bridged networking is still worth configuring — not to reach the device, but
-because it is the most convenient way to move the built app to the host.
+- Virtualization.framework, which UTM's Apple backend and Tart use, has no USB
+  passthrough.
+- Initial trust can only be established over USB. The VM can see the phone's
+  `_remotepairing` Bonjour service, but `xcrun devicectl manage pair` fails with
+  `CoreDeviceError 1000`.
+- Pairing records in `/var/db/lockdown` sit in an APFS data vault: `open()`
+  returns `EPERM` even for root with Full Disk Access, on the host as well, so
+  they cannot be copied in.
 
-## What this means for `scripts/run-device-ios.sh`
+## Manual build
 
-That script normally builds, installs, and launches in one pass, and it
-validates the device id against the paired-device list up front — which in a
-guest always comes back empty. Pass **`--build-only`** to stop after the build:
-it requires no device id, skips the pairing check and the install/launch steps,
-and prints the product path.
+Use this when installing from another paired Mac or diagnosing a failed step.
+The local-device script uses the sibling `../devtools` checkout (or
+`DEVTOOLS_DIR`), as configured by `.devtools.conf`.
 
-Use the script unchanged **on the host**; use `--build-only` in the VM.
-
-## 1. In the VM: build the device slice
-
-Prerequisites (see the README for the full list):
+Set the signing team:
 
 ```sh
-brew install xcodegen jq
 cp Developer.local.xcconfig.sample Developer.local.xcconfig
-# then edit it and set DEVELOPMENT_TEAM
+# Edit Developer.local.xcconfig and set DEVELOPMENT_TEAM.
 ```
 
-Then generate the project and build:
+Build without selecting or contacting a device:
 
 ```sh
 scripts/run-device-ios.sh --build-only --pinned
 ```
 
-`--pinned` matters here. The script defaults to linking a *locally* built
-xcframework from the sibling `../flextunnel` Rust repo, which a VM checkout
-usually doesn't have — without `--pinned` it stops with `local xcframework not
-found`. Passing it lets Swift Package Manager download the pinned release zip
-instead, so the build needs network access but no sibling repo.
+This script defaults to **Debug** and a **local** Rust artifact; `--pinned`
+selects the released xcframework and avoids needing the sibling Rust build.
+The product is `build/DerivedData/Build/Products/Debug-iphoneos/Flextunnel.app`,
+including its embedded widget. Use `-c Release` for a Release build.
 
-The equivalent by hand, if you'd rather not use the script:
+The equivalent Debug build by hand is:
 
 ```sh
 xcodegen generate
-
 xcodebuild build \
   -project Flextunnel.xcodeproj \
   -scheme FlextunnelApp \
@@ -99,102 +75,39 @@ xcodebuild build \
   -allowProvisioningUpdates
 ```
 
-`generic/platform=iOS` builds the device arm64 slice **without needing the
-hardware UDID**, which is exactly what makes a device-less build machine work.
-The product lands at:
+If the provisioning profiles do not include the phone, register its UDID with
+the developer team and refresh the profiles. Xcode on the paired Mac can do
+this. `-allowProvisioningUpdates` on a device-less build does not itself select
+or register the phone.
 
-```
-build/DerivedData/Build/Products/Debug-iphoneos/Flextunnel.app
-```
+## Transfer, install and launch
 
-Note the name: `PRODUCT_NAME` is `Flextunnel` while the scheme is
-`FlextunnelApp` (see `project.yml`), and the WidgetKit extension is embedded in
-`Flextunnel.app/PlugIns/`. Installing the `.app` carries the widget with it.
-
-### Signing caveat — register the device from the host first
-
-Automatic signing can only produce a build that installs on devices already
-listed in the provisioning profile. The VM cannot see your phone, so it cannot
-register it, and `-allowProvisioningUpdates` has no UDID to add. If the target
-device has never been registered, **connect it to the host once** and let Xcode
-register it; the VM then picks up the updated profile from the same Apple ID.
-
-Check which devices the profile you are signing with covers:
+Archive the signed app on the build Mac:
 
 ```sh
-for p in "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/"*.mobileprovision; do
-  echo "== $(basename "$p")"
-  security cms -D -i "$p" | plutil -extract ProvisionedDevices json -o - - 2>/dev/null \
-    | jq -r '.[] | "   " + .' || echo "   (no ProvisionedDevices — enterprise profile)"
-done
+ditto -c -k --keepParent \
+  build/DerivedData/Build/Products/Debug-iphoneos/Flextunnel.app \
+  build/Flextunnel-device.zip
+scp build/Flextunnel-device.zip machost:~/Flextunnel-device.zip
 ```
 
-Those are hardware UDIDs, which is what the profile records — not the CoreDevice
-identifiers `scripts/list-devices-ios.sh` shows in its `IDENTIFIER` column. Match
-them against that script's `UDID` column on the host.
-
-## 2. Move the app to the host over the bridge
-
-Set the VM's network adapter to **Bridged** (not Shared/NAT) so it gets an
-address on the same LAN as the host, then serve the build product. In the VM:
+On the paired Mac, extract it and select the phone's CoreDevice identifier:
 
 ```sh
-cd build/DerivedData/Build/Products/Debug-iphoneos
-mkdir -p Payload && cp -R Flextunnel.app Payload/ && zip -qry Flextunnel.ipa Payload
-python3 -m http.server 8080
-```
-
-On the host (substitute the VM's LAN address — `ipconfig getifaddr en0` in the
-guest):
-
-```sh
-curl -O http://<VM_IP>:8080/Flextunnel.ipa
-unzip -oq Flextunnel.ipa
-```
-
-Any file transport works — a shared folder, `scp`, AirDrop. The bridge is just
-the one that needs no extra setup once the adapter is in bridged mode. Stop the
-server when you're done; it serves that directory to your whole LAN.
-
-## 3. On the host: install and launch
-
-```sh
-scripts/list-devices-ios.sh          # IDENTIFIER column = CoreDevice UUID
-xcrun devicectl device install app --device <IDENTIFIER> Payload/Flextunnel.app
+ditto -x -k ~/Flextunnel-device.zip ~/flextunnel-device
+codesign --verify --deep --strict ~/flextunnel-device/Flextunnel.app
+xcrun devicectl list devices
+xcrun devicectl device install app --device <IDENTIFIER> ~/flextunnel-device/Flextunnel.app
 xcrun devicectl device process launch --device <IDENTIFIER> dev.flexaccess.flextunnel
 ```
 
-A locked device refuses the launch with `CoreDeviceError 10002` — the install
-still succeeded, so unlock and tap the icon, or re-run the launch.
+A locked phone can accept installation but refuse launch. Unlock it and retry.
+The CoreDevice identifier used by `devicectl` differs from the hardware UDID
+recorded in provisioning profiles.
 
-## Debugging a VM-built app
+For debugging, build with Debug and attach from Xcode on the paired Mac. To
+pause before startup, launch with `--start-stopped` before attaching.
 
-Installing from the CLI doesn't cost you the debugger. In Xcode on the host,
-**Debug → Attach to Process → Flextunnel** under your device gives you
-breakpoints and LLDB against the VM-built binary.
-
-If the bug is in startup — `FlextunnelApp.init`, tunnel bring-up, the SOCKS
-listener binding — attaching afterwards is too late. Launch suspended and attach
-before resuming:
-
-```sh
-xcrun devicectl device process launch --device <IDENTIFIER> --start-stopped dev.flexaccess.flextunnel
-```
-
-## Checking the tunnel itself from a VM-built install
-
-Nothing about this split changes runtime behavior — the app runs on the device,
-so the tunnel, the split-tunnel set, and port forwards behave exactly as in
-[Split-tunnel routing](split-tunnel-routing.md) and
-[Proxy-only mode & port forwarding](port-forwarding.md). The VM is only a
-compiler.
-
-## When to skip all of this
-
-If the host is your own Mac with the phone attached, the lowest-friction setup
-is to share the checkout and run `scripts/run-device-ios.sh <DEVICE_ID>` **on
-the host**: one command, live debugger, no transfer step. The build-in-VM split
-earns its keep when the VM has something the host lacks — a pinned Xcode
-version, a clean toolchain, disposable state — which is the reason Tart exists.
-Simulator builds have none of these constraints and run fine inside the VM;
-see the README for the pinned arm64 iOS 26 Simulator destination.
+If building directly on the paired Mac, use
+`scripts/run-device-ios.sh <DEVICE_ID> --pinned` to build, install and launch
+without a transfer step.

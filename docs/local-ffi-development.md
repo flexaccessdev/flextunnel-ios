@@ -11,11 +11,23 @@ cd ../flextunnel-ios
 FLEXTUNNEL_LOCAL_XCFRAMEWORK=1 xcodegen generate
 FLEXTUNNEL_LOCAL_XCFRAMEWORK=1 xcodebuild -project Flextunnel.xcodeproj \
   -scheme FlextunnelApp \
-  -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' build
+  -destination 'generic/platform=iOS Simulator' ARCHS=arm64 clean build
 ```
 
 The var is read when Swift Package Manager evaluates `Package.swift`, so it must
 be set for both `xcodegen`/resolution and the build. In the Xcode GUI, export it
 before launching (`launchctl setenv FLEXTUNNEL_LOCAL_XCFRAMEWORK 1`, then restart
-Xcode) since scheme env vars don't reach package resolution. Rebuild the sibling
-and the next app build picks it up. Unset it to return to the pinned release.
+Xcode) since scheme env vars don't reach package resolution. After rebuilding
+the sibling artifact, clean-build the app to avoid reusing cached binary products.
+
+To return to the pinned release:
+
+```sh
+unset FLEXTUNNEL_LOCAL_XCFRAMEWORK
+xcodegen generate
+xcodebuild -project Flextunnel.xcodeproj -scheme FlextunnelApp \
+  -destination 'generic/platform=iOS Simulator' ARCHS=arm64 clean build
+```
+
+If you set the variable with `launchctl`, also run
+`launchctl unsetenv FLEXTUNNEL_LOCAL_XCFRAMEWORK` and restart Xcode.

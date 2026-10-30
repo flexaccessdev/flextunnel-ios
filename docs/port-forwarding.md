@@ -35,17 +35,16 @@ Each row shows a **server-direct** (green) or **not routed** (orange) badge
 predicting that decision from the pushed tunnel set. The badge is advisory —
 the server's own whitelist remains the authority per connection.
 
-To keep a runaway client from exhausting the process's file descriptors, each
-forward caps concurrent connections at 128; at the cap it pauses accepting
-until a connection closes.
+Each forward caps concurrent relays at 128 across IPv4 and IPv6. At the cap,
+new connections wait until a relay closes.
 
 ### Managing forwards
 
 Tap **+** to add; tap a row to edit. Fields: optional label, local port, remote
 host (hostname or IP — hostnames are passed through unresolved, so DNS happens
 on the server), remote port. The sheet rejects a local port that is out of
-range or already used by another forward. (iOS apps can't bind ports below
-1024 — such a forward fails with a permission error and switches itself off.)
+range or already used by another forward. Ports the OS refuses to bind fail
+with an error and switch the forward off.
 
 Each row has a **start/stop toggle**, and the toggle is **per-session**: a
 fresh session start (either CTA on the setup screen) begins with every forward
@@ -72,32 +71,30 @@ with the same at-rest protections as bookmarks/history) and belong to the
 **connection profile** they were added under — a forward names a host behind
 one particular server, so switching profiles swaps the list and deleting a
 profile takes its forwards with it. The toggle state is
-deliberately **not** part of that — it is runtime-only, so forwards never
-auto-start with a session. Once switched on they work in browser-mode sessions
-too; the management UI just lives in proxy-only mode.
+runtime-only. Every fresh session starts with forwards off; use **Forward
+ports** mode to enable and manage them. Mid-session reconnects retain the
+enabled set.
 
 ## Background behavior
 
 The listeners live inside the app process and follow its lifecycle, so whether
-forwards survive backgrounding is entirely down to the **keep-alive** — opted
-into on the start screen while **Forward ports** is selected, before connecting.
-See [background-keep-alive.md](background-keep-alive.md) for the mechanism, the
-permission, and the App Store caveat. The proxy screen's Background section
-reports its live status read-only.
+background service depends on iOS execution time and the optional
+**keep-alive**, selected before connecting in **Forward ports** mode. See
+[background-keep-alive.md](background-keep-alive.md) for permissions and
+inactivity handling. The proxy screen reports its live status read-only.
 
 What matters specifically for forwards:
 
-- **With it on**, every forward stays reachable while you use other apps — until
-  the keep-alive's **inactivity limit** (5 minutes by default). A forward
+- **With it on**, the location session supports forwarding while you use other
+  apps, until the **inactivity limit** (5 minutes by default). A forward
   carrying an open connection counts as activity and keeps
   postponing it, so a session in active use isn't dropped for sitting still;
   reaching the limit falls back to the suspension case below, and returning to
   the app rebinds everything.
-- **With it off or location denied**, extended execution keeps serving for
-  roughly **30 seconds** after backgrounding, then iOS suspends the process.
-  Just before that the app **closes every forward listener**: a suspended
-  process's listeners would keep accepting into the kernel backlog and serve
-  nothing, so closing turns a client's hang into an immediate
+- **With it off or location denied**, a short background task provides a grace
+  period controlled by iOS. When it expires, the app **closes every forward
+  listener**: a suspended process's listeners could accept into the kernel
+  backlog without serving, so closing turns a client's hang into an immediate
   connection-refused. On return the session is
   **relaunched automatically** — fresh tunnel connect, every enabled forward
   rebound — so expect a brief "connecting", and clients that were connected
@@ -113,8 +110,8 @@ cannot — rewrite what flows through it:
 - **poor for**: public HTTP(S) sites behind CDNs or name-based virtual hosting.
   A browser pointed at `http://127.0.0.1:9090` sends `Host: 127.0.0.1:9090`,
   and the far end may reject it (e.g. Cloudflare's *error 1003: Direct IP
-  access not allowed*). Use the in-app browser — or the SOCKS proxy directly —
-  for web browsing; that path preserves hostnames end to end.
+  access not allowed*). Use the in-app browser for web browsing; it preserves
+  hostnames end to end.
 - **TCP only.** A forward stream carries one TCP connection; UDP is not relayed.
 
 ## Troubleshooting
@@ -125,4 +122,4 @@ cannot — rewrite what flows through it:
 | client connects, then immediately drops | Target rejected by the server (not in its routed set) or unreachable from it. Check the badge and the server's `routed_domains`/`routed_cidrs`. |
 | every forward stalls | Tunnel link is reconnecting — see the status header. Server-direct forwards always need the link. |
 | web page shows a CDN error (e.g. 1003) | Host-header mismatch by design — see "What forwards are good for" above. |
-| forward dead after returning to the app | iOS suspended the process — because keep-alive is off or location permission is denied (only the ~30 s grace applied), or the keep-alive hit its inactivity limit while nothing was connected (the Background section reads `timed out`). Either way the session relaunches automatically on return; give the handshake a moment and reconnect the client. To hold sessions across backgrounding, stop and restart with "Keep alive in background" on, and raise its time limit (start screen). |
+| forward dead after returning to the app | After suspension, wait for the session to relaunch, then reconnect the other app. Enable keep-alive before starting to extend background service; check its status and inactivity limit. |
