@@ -325,11 +325,12 @@ final class ProxyController: ObservableObject {
     }
 
     /// Scene-phase mirror from `ContentView`. Backgrounded, the health poll
-    /// drops to minute cadence and the core slows its heartbeat (a connected
-    /// destination's only periodic traffic) from 10s to 60s, so a held-alive
-    /// session wakes the cellular radio once a minute instead of continuously;
-    /// foregrounded, both snap back, the core ends any retry backoff in
-    /// progress, and an immediate poll refreshes the UI.
+    /// drops to minute cadence and the core slows each connected destination's
+    /// heartbeat — that connection's only periodic traffic — from every 10s to
+    /// every 60s (each destination beats on its own clock, so several
+    /// connected ones don't line up); foregrounded, both snap back, the core
+    /// ends any retry backoff in progress, and an immediate poll refreshes the
+    /// UI.
     func setBackgrounded(_ backgrounded: Bool) {
         guard backgrounded != isBackgrounded else { return }
         isBackgrounded = backgrounded

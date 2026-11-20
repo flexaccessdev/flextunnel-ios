@@ -166,6 +166,22 @@ final class RouteTableTests: XCTestCase {
         XCTAssertFalse(tunneled("fd00::1", cidrs: cidrs))
     }
 
+    func testEquivalentNetworkRulesShareAKey() {
+        // The core compares two destinations' networks as `network/prefix`.
+        XCTAssertEqual(RouteTable.networkKey("10.1.2.3/8"), RouteTable.networkKey(" 10.0.0.0/8 "))
+        XCTAssertEqual(RouteTable.networkKey("192.168.1.5"), RouteTable.networkKey("192.168.1.5/32"))
+        XCTAssertEqual(RouteTable.networkKey("fd00::/8"), RouteTable.networkKey("FD00:0:0::1/8"))
+        XCTAssertEqual(RouteTable.networkKey("fd00::1"), RouteTable.networkKey("fd00:0:0:0:0:0:0:1/128"))
+        XCTAssertEqual(RouteTable.networkKey("10.9.9.9/0"), RouteTable.networkKey("0.0.0.0/0"))
+        // A different prefix, address or family is a different rule.
+        XCTAssertNotEqual(RouteTable.networkKey("10.0.0.0/8"), RouteTable.networkKey("10.0.0.0/16"))
+        XCTAssertNotEqual(RouteTable.networkKey("10.0.0.0/8"), RouteTable.networkKey("11.0.0.0/8"))
+        XCTAssertNotEqual(RouteTable.networkKey("0.0.0.0/0"), RouteTable.networkKey("::/0"))
+        for malformed in ["10.0.0.0/33", "not-an-ip", "10.0.0.0/8/1", "fd00::/129", ""] {
+            XCTAssertNil(RouteTable.networkKey(malformed), malformed)
+        }
+    }
+
     // MARK: - Browser proxy scoping
 
     func testScopingCoversEveryNameTheProxyMustSee() {

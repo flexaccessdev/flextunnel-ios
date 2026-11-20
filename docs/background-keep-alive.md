@@ -60,8 +60,12 @@ after five minutes unused — changes from 10s to 60s, with no separate QUIC
 keep-alive and a 180s QUIC idle timeout.
 On cellular each transmission holds the radio at high power for roughly 10s, so
 anything periodic under about 15-20s keeps it there continuously. Returning to
-the foreground restores the 10s cadence, sends an overdue heartbeat at once and
-ends any retry backoff early. Reported network loss stops every destination
+the foreground restores the 10s cadence and sends an overdue heartbeat at once.
+A destination that is waiting out a retry backoff at that moment — one with
+requests still held for it — tries again at once; an idle destination keeps
+the retry time of its last failure until it is next used, and one whose server
+refused this client keeps refusing until its retry time. Reported network loss
+stops every destination
 from dialing until a path returns; one with requests waiting then tries again
 immediately with a fresh backoff series.
 

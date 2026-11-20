@@ -582,9 +582,8 @@ struct ContentView: View {
         switch phase {
         case .background:
             // Pace for the background: the health poll drops to minute cadence
-            // and the core's heartbeat slows to 60s, so a held-alive session
-            // with a server connected wakes the cellular radio once a minute
-            // instead of continuously.
+            // and each connected destination's heartbeat slows from every 10s
+            // to every 60s.
             proxy.setBackgrounded(true)
             // Time spent in the app doesn't eat the keep-alive's inactivity
             // window: start it when the app actually goes away, so what the Live

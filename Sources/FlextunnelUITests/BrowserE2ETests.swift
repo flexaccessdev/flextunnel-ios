@@ -201,6 +201,22 @@ final class BrowserE2ETests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Through \(Self.plainHost)"].exists, "this page's route")
         XCTAssertEqual(destinationState(Self.plainHost), "Connected")
         XCTAssertEqual(destinationState(Self.siteHost), "Idle", "a destination nothing used was connected")
+        app.navigationBars["Tunnel"].buttons["Done"].tap()
+
+        // Using the other destination connects it alongside the first: one
+        // session holds both servers at once.
+        open(site + "/page2.html")
+        waitForPageText("flextunnel e2e page two")
+        app.buttons["browser.tunnelStatus"].tap()
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        waitForDestinationState(Self.siteHost, "Connected")
+        waitForDestinationState(Self.plainHost, "Connected")
+        snapshot("tunnel-status-both-connected")
+        app.navigationBars["Tunnel"].buttons["Done"].tap()
+
+        // And the first is still usable, on the connection it already has.
+        open("http://\(Self.plainHost):\(sitePort)/")
+        waitForPageText("flextunnel e2e home")
     }
 
     /// `flextunnel.internal` is the client's own status page, answered by the
@@ -506,6 +522,21 @@ final class BrowserE2ETests: XCTestCase {
         let state = app.staticTexts["tunnelStatus.state.\(host)"]
         reveal(state)
         return state.label
+    }
+
+    /// Waits for the open tunnel status sheet to show `state` for the
+    /// destination `host`: the sheet follows the app's status poll, which can
+    /// trail the page that connected the destination by a moment.
+    private func waitForDestinationState(
+        _ host: String, _ state: String, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let element = app.staticTexts["tunnelStatus.state.\(host)"]
+        reveal(element, file: file, line: line)
+        let shows = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@", state), object: element)
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [shows], timeout: Self.loadTimeout), .completed,
+            "\(host) never read \(state)", file: file, line: line)
     }
 
     /// Scrolls the open tunnel status sheet until `element` is laid out: the

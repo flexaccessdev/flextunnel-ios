@@ -206,9 +206,21 @@ struct RouteTable: Equatable {
         return (base, bits)
     }
 
-    /// Whether `rule` is a network rule the table can match.
-    static func isNetwork(_ rule: String) -> Bool {
-        parseCIDR(rule) != nil
+    /// The network `rule` names, in a spelling every equivalent rule shares —
+    /// its family, masked address and prefix length, as the core normalizes a
+    /// rule to compare two destinations' (`10.1.2.3/8` is `10.0.0.0/8`, a bare
+    /// address is its own host network, and an IPv6 address has one form
+    /// however it was written). Nil when `rule` is not a network rule.
+    static func networkKey(_ rule: String) -> String? {
+        guard let network = parseCIDR(rule) else { return nil }
+        var remaining = network.bits
+        let masked = network.base.map { byte -> UInt8 in
+            defer { remaining -= 8 }
+            if remaining >= 8 { return byte }
+            return remaining > 0 ? byte & ~(0xFF >> UInt8(remaining)) : 0
+        }
+        // The byte count tells the families apart.
+        return masked.map { String(format: "%02x", $0) }.joined() + "/\(network.bits)"
     }
 
     /// Network containment; never true across families.

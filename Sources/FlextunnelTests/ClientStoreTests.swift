@@ -111,6 +111,47 @@ final class ClientStoreTests: XCTestCase {
         XCTAssertEqual(store.routeTable.route(host: "x.corp.example"), .destination("a.internal"))
     }
 
+    func testADestinationsNameAndAnExactRuleNeverCoincide() {
+        // The rule first, then a destination by that name.
+        XCTAssertNil(store.save(destination(host: "a.internal", node: "node-a", domains: ["DB.Example."])))
+        XCTAssertEqual(
+            store.save(destination(host: "db.example", node: "node-b"))?.message,
+            "a.internal routes db.example as a domain, but a destination's own name always means that server itself.")
+
+        // The destination first, then a rule naming it.
+        XCTAssertNil(store.save(destination(host: "b.internal", node: "node-b")))
+        XCTAssertNotNil(store.save(destination(host: "c.internal", node: "node-c", domains: ["b.internal"])))
+
+        // Renaming an existing destination onto another's rule.
+        var renamed = store.destinations[1]
+        renamed.host = "Db.Example"
+        XCTAssertNotNil(store.save(renamed))
+        XCTAssertEqual(store.destinations.map(\.host), ["a.internal", "b.internal"])
+
+        // A wildcard that covers a destination's name is fine: the name wins.
+        XCTAssertNil(store.save(destination(host: "c.internal", node: "node-c", domains: ["*.lab.example"])))
+        XCTAssertNil(store.save(destination(host: "nas.lab.example", node: "node-d")))
+        XCTAssertEqual(store.routeTable.route(host: "nas.lab.example"), .destination("nas.lab.example"))
+        XCTAssertEqual(store.routeTable.route(host: "pi.lab.example"), .destination("c.internal"))
+    }
+
+    func testOneNetworkBelongsToOneDestinationHoweverItIsSpelled() {
+        XCTAssertNil(store.save(destination(
+            host: "a.internal", node: "node-a",
+            cidrs: ["10.0.0.0/8", "192.168.1.5", "fd00::/8", "2001:db8::1"])))
+        for same in ["10.1.2.3/8", "192.168.1.5/32", "FD00:0:0::/8", "fd00:0000::1/8", "2001:DB8:0:0:0:0:0:1/128"] {
+            XCTAssertEqual(
+                store.save(destination(host: "b.internal", node: "node-b", cidrs: [same]))?.message,
+                "\(same) is already routed through a.internal.")
+        }
+        // Distinct nested prefixes are different rules: the longer one wins.
+        XCTAssertNil(store.save(destination(
+            host: "b.internal", node: "node-b", cidrs: ["10.1.0.0/16", "192.168.1.0/24", "fd00:1::/32"])))
+        XCTAssertEqual(store.routeTable.route(host: "10.1.2.3"), .destination("b.internal"))
+        XCTAssertEqual(store.routeTable.route(host: "10.2.2.3"), .destination("a.internal"))
+        XCTAssertEqual(store.routeTable.route(host: "192.168.1.5"), .destination("a.internal"))
+    }
+
     func testRulesFieldSplitsOnLinesCommasAndSpaces() {
         XCTAssertEqual(
             ClientStore.splitRules("*.corp.example\n db.example, wiki.example  10.0.0.0/8\n\n"),

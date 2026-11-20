@@ -129,6 +129,14 @@ final class ClientStore: ObservableObject {
         if others.contains(where: { $0.host == result.host }) {
             return .failure(.init(message: "Another destination is already named \(result.host)."))
         }
+        // The same clash as a rule naming a destination, met from the other
+        // side: this name is already an exact domain rule somewhere else.
+        // (A wildcard that covers it is fine — the destination's own name wins.)
+        if let other = others.first(where: { $0.routedDomains.contains { Self.ruleKey($0) == result.host } }) {
+            return .failure(.init(
+                message: "\(other.host) routes \(result.host) as a domain, but a destination's "
+                    + "own name always means that server itself."))
+        }
         if let other = others.first(where: { $0.serverNodeID.lowercased() == result.serverNodeID.lowercased() }) {
             return .failure(.init(message: "\(other.host) already reaches that server."))
         }
@@ -154,11 +162,13 @@ final class ClientStore: ObservableObject {
             }
         }
         for cidr in result.routedCIDRs {
-            if !RouteTable.isNetwork(cidr) {
+            guard let network = RouteTable.networkKey(cidr) else {
                 return .failure(.init(
                     message: "\(cidr) is not an IP range. Use a network like 10.0.0.0/8, or one address."))
             }
-            if let other = others.first(where: { $0.routedCIDRs.contains { $0.lowercased() == cidr.lowercased() } }) {
+            // By the network itself, not its spelling: `10.1.2.3/8` and
+            // `10.0.0.0/8` are one rule, as are a bare address and its /32.
+            if let other = others.first(where: { $0.routedCIDRs.contains { RouteTable.networkKey($0) == network } }) {
                 return .failure(.init(message: "\(cidr) is already routed through \(other.host)."))
             }
         }
