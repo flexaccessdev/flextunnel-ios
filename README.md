@@ -23,21 +23,29 @@ There are two ways to use the tunnel, chosen on the setup screen:
 - **Browse the web** — an in-app browser for private-network access, with
   split routing through an embedded Rust SOCKS5 proxy. With specific domain
   rules, WebKit sends matching hostname suffixes to the proxy and bypasses it
-  for other hosts; the core applies the precise tunnel set. With `*` or CIDR
-  rules, hostname scoping is disabled and the core classifies proxied requests.
-  Loopback IPs and the device's own addresses bypass WebKit proxying; use
-  `localhost.flextunnel.internal` for the server's loopback. Other apps, Safari
-  included, cannot use this proxy.
-- **Forward ports** — run the tunnel without a browser or SOCKS5 listener.
+  for other hosts; the core applies the precise routes. With `*` or an IP
+  range among them, hostname scoping is disabled and the core classifies
+  proxied requests. Loopback IPs and the device's own addresses bypass WebKit
+  proxying; a server's own loopback is reached by its destination's host name.
+  Other apps, Safari included, cannot use this proxy.
+- **Forward ports** — run the client without a browser or SOCKS5 listener.
   Forward local `localhost` ports to private hosts so other apps on the device
   (SSH, RDP, databases…) can reach them.
 
+Either way one session reaches any number of servers — its **destinations**.
+Each is a host name you pick for one server: `<host>:<port>` is that port on
+the server itself, and the destination's routes are the other domains and IP
+ranges sent through it. A server is connected when something is first sent to
+it and disconnected after five minutes unused, so starting a session connects
+nothing. The routes are this app's configuration — nothing is learned from a
+server, which still enforces its own routed set.
+
 ## Documentation
 
-- [Split-tunnel routing](docs/split-tunnel-routing.md) — the two layers that
-  decide tunnel-vs-direct (the Rust core and WebKit `matchDomains`), the
-  server-pushed tunnel set, browser independence from proxy health, and
-  verifying the split.
+- [Split-tunnel routing](docs/split-tunnel-routing.md) — destinations and
+  their routes, the two layers that decide tunnel-vs-direct (the Rust core and
+  WebKit `matchDomains`), browser independence from proxy health, the status
+  pages, and verifying the split.
 - [Proxy-only mode & port forwarding](docs/port-forwarding.md) — localhost
   forwards for other apps, background behavior and troubleshooting.
 - [Background keep-alive](docs/background-keep-alive.md) — the opt-in location
@@ -96,22 +104,23 @@ no vendored copy to stage. To move to a new release, run
    just pick a Team on the `FlextunnelApp` target in Xcode instead.
 
 3. **Run** on a device or the Simulator. Enter:
-   - *Profile* — which saved connection the fields below belong to. Manage… to
-     add, rename or delete one. Each profile keeps its own server, auth key,
-     relays and port forwards, so pointing the app at another server is a pick
-     rather than a retype — but only the selected profile connects, one session
-     at a time (unlike the desktop, where every profile can be up at once).
-   - *Server node id* — the flextunnel server's iroh endpoint id.
+   - *Destinations* — the servers this device reaches. **Add Destination**
+     takes a host name of your choosing (not an IP address or `localhost`),
+     the flextunnel server's iroh endpoint id as *Server node id*, and
+     optionally the domains (`name`, `*.suffix` or `*`) and IP ranges to send
+     through it. The same rule can't be on two destinations; otherwise the
+     most specific rule wins.
    - *Auth key* — pick from a named key list (Manage… to generate one on the
      device, paste an existing secret key, or export one); the secrets stay in
-     the Keychain, and the shown public key goes on the server's
-     `authorized_keys_file`. The list is shared across profiles — the same
-     keypair can authenticate several of them.
-   - *Relay URLs* — optional hints; leave blank for iroh defaults.
+     the Keychain, and the shown public key goes on each server's
+     `authorized_keys_file`. One key identifies this device to every
+     destination.
+   - *Relay URLs* — optional, for every destination; leave blank for iroh
+     defaults.
 
    Pick **Browse the web** or **Forward ports**, then tap the start button.
-   Tunnel health, the bound port, and the active split-tunnel set are shown
-   under **Tunnel status** in the browser, or on the port-forwarding screen.
+   Each destination's state and routes, and the bound port, are shown under
+   **Tunnel status** in the browser, or on the port-forwarding screen.
 
 ## Archive & deploy (signed .ipa)
 

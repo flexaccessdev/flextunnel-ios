@@ -5,11 +5,9 @@ import Combine
 /// server-direct listener manager. Forward definitions persist; enablement is
 /// per-session and is never encoded by `PortForward`.
 ///
-/// Definitions are kept **per connection profile** (see `ProfileStore`): a
-/// forward names a host behind one particular server, so it would mean nothing
-/// under another profile. `forwards` is the selected profile's set; the rest
-/// sit in the same file, keyed by profile id, waiting for that profile to be
-/// picked again.
+/// There is one list for the client. A forward names a host, and the session's
+/// routing table picks the destination that reaches it — so a forward to a
+/// host no destination routes can't be switched on.
 @MainActor
 final class PortForwardController: ObservableObject {
     struct RuntimeStatus: Equatable {
@@ -30,10 +28,6 @@ final class PortForwardController: ObservableObject {
 
     private weak var proxy: ProxyController?
     private var sessionID: UUID?
-    /// Every profile's definitions, keyed by profile id. `forwards` is the
-    /// live copy of `byProfile[profileID]`; `persist()` folds it back in.
-    private var byProfile: [String: [PortForward]]
-    private var profileID = ""
     /// A setup failure auto-disables only if the native listener never reached
     /// `.listening` during this start attempt.
     private var everListened: Set<UUID> = []
@@ -44,37 +38,8 @@ final class PortForwardController: ObservableObject {
     init(directory: URL? = nil) {
         fileURL = (directory ?? JSONStore.directory(named: "PortForwards"))
             .appendingPathComponent("forwards.json")
-        byProfile = JSONStore.load([String: [PortForward]].self, from: fileURL) ?? [:]
-        // Empty until a profile is selected — `setProfile` fills it.
-        forwards = []
-    }
-
-    // MARK: - Profiles
-
-    /// Show `id`'s forwards. Profiles are only switched from the setup screen,
-    /// with no session up, so there is normally nothing to reconcile — the
-    /// per-session bookkeeping is reset and the set reapplied anyway, so that a
-    /// session that somehow is alive gets this profile's forwards rather than
-    /// keeping the previous profile's listeners.
-    func setProfile(_ id: String) {
-        guard id != profileID else { return }
-        profileID = id
-        forwards = byProfile[id] ?? []
-        everListened.removeAll()
-        retainedSetupErrors.removeAll()
+        forwards = JSONStore.load([PortForward].self, from: fileURL) ?? []
         runtime = forwards.reduce(into: [:]) { $0[$1.id] = RuntimeStatus() }
-        applyDesired()
-    }
-
-    /// Drop the forwards of profiles that no longer exist, so a deleted
-    /// profile doesn't leave its definitions behind in the file forever.
-    func pruneProfiles(keeping ids: Set<String>) {
-        let stale = byProfile.keys.filter { !ids.contains($0) }
-        guard !stale.isEmpty else { return }
-        for id in stale {
-            byProfile[id] = nil
-        }
-        persist()
     }
 
     // MARK: - Tunnel lifecycle
@@ -170,6 +135,17 @@ final class PortForwardController: ObservableObject {
 
     private func applyDesired() {
         guard let proxy, proxy.sessionAlive, sessionID != nil else { return }
+        // The core takes the set as a whole and refuses all of it if one
+        // enabled forward names a host no destination routes. Switch those off
+        // here, each with its own reason, so the rest still apply.
+        if let table = proxy.routeTable {
+            for index in forwards.indices where forwards[index].enabled {
+                let forward = forwards[index]
+                guard table.destination(for: forward.remoteHost) == nil else { continue }
+                forwards[index].enabled = false
+                retainedSetupErrors[forward.id] = "no destination routes \(forward.remoteHost)"
+            }
+        }
         if let error = proxy.setPortForwards(forwards) {
             for forward in forwards where forward.enabled {
                 runtime[forward.id] = RuntimeStatus(state: .failed(error))
@@ -224,14 +200,7 @@ final class PortForwardController: ObservableObject {
 
     // MARK: - Persistence
 
-    /// Fold the live set back into the per-profile map and write the lot. The
-    /// selected profile is the only one that can have changed — except in
-    /// `pruneProfiles`, which can run before a profile is selected and must
-    /// not invent a bucket for the empty id.
     private func persist() {
-        if !profileID.isEmpty {
-            byProfile[profileID] = forwards
-        }
-        JSONStore.save(byProfile, to: fileURL)
+        JSONStore.save(forwards, to: fileURL)
     }
 }

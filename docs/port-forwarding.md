@@ -2,16 +2,18 @@
 
 Besides the browser, the app can run as a plain tunnel endpoint: choose
 **Forward ports** on the setup screen and tap **Start Port Forwarding** to
-bring up the flextunnel core (the QUIC link to your server — no browser, and no
-SOCKS5 listener either; that exists only in browser sessions) with a
-status-and-forwards screen. The point is to serve **other apps on the
+bring up the flextunnel core (the client for your destinations — no browser,
+and no SOCKS5 listener either; that exists only in browser sessions) with a
+status-and-forwards screen. Starting connects nothing: a destination's server
+is connected when a forward first uses it. The point is to serve **other apps on the
 device**: iOS loopback is shared across processes, so anything you run — an
 SSH client, RDP viewer, database GUI, another browser — can reach
 `localhost:<port>` endpoints this app provides while it is alive.
 
 On offer in that mode are **port forwards** — plain TCP listeners on
 `localhost:<local port>`, owned by the Rust core, that relay every accepted
-connection to a fixed `remote host:port` directly over the server connection.
+connection to a fixed `remote host:port` directly over the connection to the
+destination that routes that host.
 
 Each forward listens on **both loopback stacks** — `127.0.0.1` and `::1` —
 because client apps connecting to `localhost` may try IPv6 first. Each stack
@@ -21,19 +23,26 @@ exposed on the LAN.
 
 ## Port forwards
 
-A forward is `localhost:<local port> → <remote host>:<remote port>`. Each
-accepted connection opens its own data stream on the authenticated server
-connection ("server-direct"): the target is sent through unresolved, so DNS
-and the dial happen **server-side** — hostnames that only resolve on the
-server's network, `[host_aliases]` names, and internal IPs all work. The
-server enforces its routed set per connection and **rejects off-list
-targets**; unlike the browser (which routes off-list traffic around the proxy
-at the WebKit level — see [split-tunnel-routing.md](split-tunnel-routing.md)),
-forwards never dial from the device.
+A forward is `localhost:<local port> → <remote host>:<remote port>`. The
+remote host picks the destination, by the same routes as the browser (see
+[split-tunnel-routing.md](split-tunnel-routing.md)): a destination's own host
+name is that server's loopback — `office.internal:22` is SSH on the server
+itself, whatever that server routes — and any other host goes through the
+destination whose domains or IP ranges cover it.
 
-Each row shows a **server-direct** (green) or **not routed** (orange) badge
-predicting that decision from the pushed tunnel set. The badge is advisory —
-the server's own whitelist remains the authority per connection.
+Each accepted connection opens its own data stream on the authenticated
+connection to that server ("server-direct"), connecting the server first if it
+isn't: the target is sent through unresolved, so DNS and the dial happen
+**server-side** — hostnames that only resolve on the server's network,
+`[host_aliases]` names, and internal IPs all work. The server enforces its own
+routed set per connection and **rejects targets off its list**. Unlike the
+browser (which sends unrouted traffic out directly), forwards never dial from
+the device: a forward whose host no destination routes can't be switched on.
+
+Each row shows which destination it goes through — **via office.internal**
+(green) — or **no route** (orange). The badge comes from this app's own routes,
+so it is known before any server is connected; the server's own list remains
+the authority per connection.
 
 Each forward caps concurrent relays at 128 across IPv4 and IPv6. At the cap,
 new connections wait until a relay closes.
@@ -56,9 +65,9 @@ off — nothing tunnels until you switch it on:
 - **off** — the listeners close immediately (open connections drop, the local
   port is released).
 
-If starting fails during initial setup (e.g. the local port is in use), the
-forward stops and the toggle flips back off, with the reason left on the row
-until the next start attempt. A failure *after* the forward was listening
+If starting fails during initial setup (e.g. the local port is in use, or no
+destination routes the host), the forward stops and the toggle flips back off,
+with the reason left on the row until the next start attempt. A failure *after* the forward was listening
 (e.g. iOS reclaiming the listeners around suspension) does not flip it off —
 the forward stays enabled and resumes with the session.
 
@@ -67,13 +76,11 @@ The status line under each enabled forward is live: `listening`,
 `port 8080 is in use`.
 
 Forward definitions persist across launches (as JSON in the app container,
-with the same at-rest protections as bookmarks/history) and belong to the
-**connection profile** they were added under — a forward names a host behind
-one particular server, so switching profiles swaps the list and deleting a
-profile takes its forwards with it. The toggle state is
-runtime-only. Every fresh session starts with forwards off; use **Forward
-ports** mode to enable and manage them. Mid-session reconnects retain the
-enabled set.
+with the same at-rest protections as bookmarks/history), in one list for the
+client: a forward names a host, and the destinations decide which server
+reaches it. The toggle state is runtime-only. Every fresh session starts with
+forwards off; use **Forward ports** mode to enable and manage them. A session
+relaunched mid-way retains the enabled set.
 
 ## Background behavior
 
@@ -96,8 +103,8 @@ What matters specifically for forwards:
   listener**: a suspended process's listeners could accept into the kernel
   backlog without serving, so closing turns a client's hang into an immediate
   connection-refused. On return the session is
-  **relaunched automatically** — fresh tunnel connect, every enabled forward
-  rebound — so expect a brief "connecting", and clients that were connected
+  **relaunched automatically** — every enabled forward rebound, each server
+  reconnected when a forward next uses it — so clients that were connected
   must reconnect.
 
 ## What forwards are (and aren't) good for
@@ -119,7 +126,8 @@ cannot — rewrite what flows through it:
 | Symptom | Cause / fix |
 | --- | --- |
 | red `port N is in use` | Another process owns the local port (in the Simulator this includes Mac processes — loopback is shared with the host). Pick another port. |
-| client connects, then immediately drops | Target rejected by the server (not in its routed set) or unreachable from it. Check the badge and the server's `routed_domains`/`routed_cidrs`. |
-| every forward stalls | Tunnel link is reconnecting — see the status header. Server-direct forwards always need the link. |
+| toggle flips back off with `no destination routes <host>` | Add the host to a destination's routes on the setup screen, or use a destination's own host name for the server itself. |
+| client connects, then immediately drops | Target rejected by the server (not in its routed set) or unreachable from it. Check the server's `routed_domains`/`routed_cidrs` — its status page lists them (**Tunnel status → Server Status Page** in a browser session). |
+| a forward stalls, then drops | Its destination can't be reached — see its state under **Destinations**. A connection waits up to 45 seconds for the server, and each new connection tries again. |
 | web page shows a CDN error (e.g. 1003) | Host-header mismatch by design — see "What forwards are good for" above. |
 | forward dead after returning to the app | After suspension, wait for the session to relaunch, then reconnect the other app. Enable keep-alive before starting to extend background service; check its status and inactivity limit. |

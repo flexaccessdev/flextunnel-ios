@@ -1,14 +1,17 @@
 import Foundation
 
 /// A local TCP port forward: connections accepted on loopback are relayed to
-/// `remoteHost:remotePort` over a server-direct QUIC stream. The server rejects
-/// targets outside its routed-set whitelist.
+/// `remoteHost:remotePort` over a QUIC stream to the destination that routes
+/// `remoteHost` — a destination's own host name being that server's loopback.
+/// A forward never connects directly, and the server rejects targets outside
+/// its own routed set.
 struct PortForward: Identifiable, Codable, Equatable {
     let id: UUID
     /// Optional display name; empty shows the target instead.
     var label: String
     var localPort: UInt16
-    /// Hostname or IP literal. Kept a string end-to-end for server-side DNS.
+    /// Hostname or IP literal. Kept a string end-to-end: it picks the
+    /// destination, and a hostname resolves on that server.
     var remoteHost: String
     var remotePort: UInt16
     /// Runtime-only by design: the start/stop toggle is per-session, so it is

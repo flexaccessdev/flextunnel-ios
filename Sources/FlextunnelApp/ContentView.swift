@@ -19,11 +19,11 @@ struct ContentView: View {
         var description: String {
             switch self {
             case .browser:
-                return "Open the built-in browser through the tunnel. "
-                    + "Private hostnames resolve on the server."
+                return "Open the built-in browser. Sites on a destination's "
+                    + "routes go through its server, where private hostnames resolve."
             case .proxyOnly:
-                return "Run the proxy without the browser and forward local ports "
-                    + "to private hosts, so other apps on this device "
+                return "Forward local ports to hosts behind your destinations, "
+                    + "with no browser, so other apps on this device "
                     + "(SSH, RDP, databases…) can reach them at localhost."
             }
         }
@@ -42,7 +42,7 @@ struct ContentView: View {
             }
         }
 
-        var connectingLabel: String {
+        var startingLabel: String {
             switch self {
             case .browser: return "Starting browser session…"
             case .proxyOnly: return "Starting port forwarding…"
@@ -58,30 +58,25 @@ struct ContentView: View {
     // and docs/background-keep-alive.md).
     @StateObject private var keepAlive = BackgroundKeepAlive()
 
-    // The saved connection profiles. Every field in Setup below edits the
-    // selected one, so pointing the app at another server is a pick rather
-    // than a retype. Only the selected profile connects — one session at a
-    // time, unlike the desktop.
-    @StateObject private var profiles = ProfileStore()
-    // The named client auth keys (Keychain-backed; see AuthKeyStore), one
-    // shared list across profiles; each profile references a key by id. Keys
-    // persist the moment they're generated or imported — unlike the relay
-    // token there is no "known-good" moment to wait for: the public key must
-    // be on the server's authorized-keys file before the first connect can
-    // succeed.
+    // The client's saved setup: its destinations (the servers it reaches, each
+    // by a host name) and the auth key and relays they share. One session
+    // serves every destination, connecting each server only when it is used.
+    @StateObject private var client = ClientStore()
+    // The named client auth keys (Keychain-backed; see AuthKeyStore); the
+    // client references one by id. Keys persist the moment they're generated
+    // or imported — unlike the relay token there is no "known-good" moment to
+    // wait for: the public key must be on a server's authorized-keys file
+    // before the first connection to it can succeed.
     @StateObject private var authKeys = AuthKeyStore()
     @State private var relayAuthToken = ""
     @State private var browserModel: BrowserModel?
     @State private var didLoadSecrets = false
-    // The immutable settings snapshot handed to `proxy.start`, so the Keychain
-    // save on `.connected` persists the exact relay token that authenticated —
-    // not whatever the (still-editable) field holds by the time the handshake
-    // lands. (The auth key is saved at generation/import instead.)
-    @State private var connectingSettings: ProxyController.Settings?
-    // Which profile that snapshot belongs to, so the token lands in the
-    // Keychain account of the profile that authenticated with it even if the
-    // selection moved on meanwhile.
-    @State private var connectingProfileID = ""
+    // The relay token the running session was started with, held until a
+    // destination connects with it (see the `connectedHosts` handler) — not
+    // whatever the field holds by then. Nil once saved, and between sessions.
+    @State private var unsavedRelayToken: String?
+    // The destination being added or edited, in its sheet.
+    @State private var destinationDraft: DestinationDraft?
     // Remembered across launches: both modes share the config above, so the
     // choice is sticky and only the single CTA's label follows it.
     @AppStorage("lastSessionMode") private var sessionModeRaw = SessionMode.browser.rawValue
@@ -93,7 +88,7 @@ struct ContentView: View {
     }
 
     // Best-effort background grace: buys ~30s of runtime after backgrounding so
-    // the tunnel and port forwards outlive a brief app switch. This is separate
+    // the session and its port forwards outlive a brief app switch. This is separate
     // from the forwarding-only location keep-alive.
     @Environment(\.scenePhase) private var scenePhase
     @State private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
@@ -102,7 +97,7 @@ struct ContentView: View {
     // forward listeners, so the next foreground must rebind them.
     @State private var wasSuspended = false
 
-    // Tunnel status Live Activity (lock screen / Dynamic Island) for forwarding
+    // Session status Live Activity (lock screen / Dynamic Island) for forwarding
     // sessions only: a backgrounded forwarding session is what earns a glanceable
     // banner, while a browser session is either in front or suspended. UX only —
     // it reflects the last-known state; it neither grants nor needs background time.
@@ -115,44 +110,38 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    profileRow
-                } header: {
-                    Text("Profile")
-                } footer: {
-                    Text("Each profile remembers its own server, auth key, relays and "
-                        + "port forwards. Switching profiles here is only about not "
-                        + "retyping them — one profile connects at a time.")
-                }
+                destinationsSection
 
-                Section("Setup") {
-                    LabeledField("Server node id") {
-                        TextField("", text: $profiles.selected.serverNodeID)
-                            .autocorrectionDisabled().textInputAutocapitalization(.never)
-                    }
+                Section {
                     authKeyRow
                     LabeledField("Relay URLs", hint: "comma-separated, optional") {
-                        TextField("", text: $profiles.selected.relayURLs)
+                        TextField("", text: $client.relayURLs)
                             .autocorrectionDisabled().textInputAutocapitalization(.never)
                     }
                     LabeledField("Relay auth token", hint: "optional, custom relays only") {
                         SecureField("", text: $relayAuthToken)
                             .autocorrectionDisabled().textInputAutocapitalization(.never)
                     }
+                } header: {
+                    Text("This device")
+                } footer: {
+                    Text("One key and one relay list for every destination. Put the "
+                        + "public key on each server's authorized-keys file.")
                 }
 
                 // Both modes share the config above; pick one, and the single
                 // CTA below takes its label from the choice.
-                Section("Use the tunnel to") {
+                Section("Use it to") {
                     ForEach([SessionMode.browser, .proxyOnly], id: \.rawValue) { mode in
                         ModeChoiceRow(
                             icon: mode.icon,
                             title: mode.title,
                             description: mode.description,
                             isSelected: sessionMode == mode,
-                            disabled: proxy.phase == .connecting) {
+                            disabled: proxy.phase == .starting) {
                             sessionMode = mode
                         }
+                        .accessibilityIdentifier("setup.mode.\(mode.rawValue)")
                     }
                 }
 
@@ -161,10 +150,10 @@ struct ContentView: View {
                 }
 
                 Section {
-                    if proxy.phase == .connecting {
+                    if proxy.phase == .starting {
                         HStack(spacing: 12) {
                             ProgressView()
-                            Text(sessionMode.connectingLabel)
+                            Text(sessionMode.startingLabel)
                                 .foregroundStyle(.secondary)
                             Spacer()
                             Button("Cancel") { proxy.stop() }
@@ -190,6 +179,7 @@ struct ContentView: View {
                         Text(proxy.lastError ?? proxy.status)
                             .foregroundStyle(.red)
                             .font(.footnote)
+                            .accessibilityIdentifier("setup.error")
                     }
                 }
 
@@ -197,6 +187,13 @@ struct ContentView: View {
             }
             .navigationTitle("flextunnel")
             .scrollDismissesKeyboard(.interactively)
+            .sheet(item: $destinationDraft) { draft in
+                DestinationEditSheet(
+                    draft: draft,
+                    validate: { client.validated($0) },
+                    onSave: { _ = client.save($0) },
+                    onDelete: { client.delete(id: draft.id) })
+            }
             .fullScreenCover(isPresented: browserIsPresented) {
                 if let browserModel {
                     BrowserView(model: browserModel, proxy: proxy)
@@ -217,19 +214,7 @@ struct ContentView: View {
                     })
                     .interactiveDismissDisabled(proxy.sessionAlive || proxy.isRelaunching)
             }
-            .onChange(of: proxy.phase) { _, newPhase in
-                // Persist the relay token only once it has actually authenticated,
-                // so a typo'd credential (which starts fine but fails the handshake)
-                // never overwrites a good one. Save it from the snapshot the
-                // connection used, not the live (still-editable) field. Empty
-                // clears it (save treats "" as a clear). The auth key was already
-                // saved at generation/import.
-                if newPhase == .connected, let settings = connectingSettings {
-                    SecretStore.save(
-                        settings.relayAuthToken,
-                        service: SecretStore.relayTokenService,
-                        account: connectingProfileID)
-                }
+            .onChange(of: proxy.phase) {
                 syncSessionPresentation()
                 syncLiveActivity()
             }
@@ -249,67 +234,47 @@ struct ContentView: View {
                 syncKeepAlive()
                 syncLiveActivity()
             }
-            .onChange(of: proxy.tunnelConnected) { _, connected in
-                syncLiveActivity()
-                // Pages that failed on a tunneled host while the link was down
-                // reload once it's back, instead of leaving the error up. The
-                // handshake may have pushed a changed tunnel set: install its
-                // scoping first (the `browserMatchDomains` handler may run after
-                // this one), or a host that just became tunneled retries direct.
-                if connected {
-                    if let matchDomains = proxy.browserMatchDomains {
-                        browserModel?.updateProxyMatchDomains(matchDomains)
+            .onChange(of: proxy.connectedHosts) { before, connected in
+                // Persist the relay token only once a connection has been made
+                // with it, so a typo'd credential (which starts fine but never
+                // connects) doesn't overwrite a good one. Saved from what the
+                // session was started with, not the live (still-editable)
+                // field. Empty clears it (save treats "" as a clear). The auth
+                // key was already saved at generation/import.
+                if !connected.isEmpty, let token = unsavedRelayToken {
+                    SecretStore.save(token, service: SecretStore.relayTokenService)
+                    unsavedRelayToken = nil
+                }
+                // Pages that failed on a destination that wasn't reachable
+                // reload once it connects — brought up by another tab, or a
+                // forward — instead of leaving the error up.
+                let reconnected = connected.subtracting(before)
+                if !reconnected.isEmpty {
+                    browserModel?.retryFailedLoads { url in
+                        guard case .destination(let host) = proxy.pageRoute(for: url) else { return false }
+                        return reconnected.contains(host)
                     }
-                    browserModel?.retryFailedLoads { proxy.pageRoute(for: $0) == .tunnel }
                 }
             }
-            .onChange(of: proxy.isRelaunching) {
-                syncKeepAlive()
-                syncLiveActivity()
-            }
-            // A reconnect can land a changed tunnel set; keep the browser's
-            // WebKit-level split-tunneling (matchDomains) in step with it.
-            // Double optional on purpose: the outer nil (no tunnel set known —
-            // routes cleared while a relaunch re-handshakes, or its first
-            // pre-handshake poll) keeps the last known scoping — browsing stays
-            // independent of the proxy through the gap — while an inner nil
-            // (full-tunnel set) must be applied.
-            .onChange(of: proxy.browserMatchDomains) { _, known in
-                if let matchDomains = known {
-                    browserModel?.updateProxyMatchDomains(matchDomains)
-                }
-            }
-            // `tunnelStuck` flips without `tunnelConnected`/`sessionAlive` changing,
-            // so it needs its own trigger to refresh the banner (→ "Disconnected").
-            .onChange(of: proxy.tunnelStuck) { syncLiveActivity() }
+            // `health` covers what the banner shows: a destination connecting,
+            // connected or unreachable, and a relaunch in flight.
+            .onChange(of: proxy.health) { syncLiveActivity() }
+            .onChange(of: proxy.isRelaunching) { syncKeepAlive() }
             .onChange(of: scenePhase) { _, phase in
                 handleScenePhase(phase)
             }
-            // Switching profiles swaps everything the setup screen shows: the
-            // fields follow `selected` on their own, these don't.
-            .onChange(of: profiles.selectedID) { _, id in
-                // Anything typed into the token field and not yet connected
-                // with is dropped here on purpose — it is only persisted once
-                // it has authenticated, so it would be lost at relaunch too.
-                relayAuthToken = storedRelayToken(for: id)
-                clearDanglingAuthKey()
-                portForwards.setProfile(id)
-            }
-            // A profile deleted on the manage screen leaves its forwards behind.
-            .onChange(of: profiles.profiles.map(\.id)) { _, ids in
-                portForwards.pruneProfiles(keeping: Set(ids))
-            }
+            // A key deleted on the Keys screen leaves the client's reference
+            // to it dangling.
+            .onChange(of: authKeys.keys.map(\.id)) { clearDanglingAuthKey() }
             .onAppear {
                 #if DEBUG
                 if let e2e = E2ELaunchConfig.current {
-                    E2ELaunchConfig.apply(e2e, profiles: profiles, authKeys: authKeys, library: library)
+                    E2ELaunchConfig.apply(e2e, client: client, authKeys: authKeys, library: library)
                     sessionMode = .browser
                 }
                 #endif
                 loadStoredSecrets()
                 clearDanglingAuthKey()
-                portForwards.setProfile(profiles.selectedID)
-                portForwards.pruneProfiles(keeping: Set(profiles.profiles.map(\.id)))
                 syncSessionPresentation()
                 syncForwards()
                 syncKeepAlive()
@@ -335,52 +300,52 @@ struct ContentView: View {
         }
     }
 
-    /// The key the selected profile authenticates with; nil until one is picked
-    /// (or after the picked key was deleted).
+    /// The key the client authenticates with; nil until one is picked (or
+    /// after the picked key was deleted).
     private var selectedKey: AuthKeyStore.Key? {
-        authKeys.key(id: profiles.selected.authKeyID)
+        authKeys.key(id: client.authKeyID)
     }
 
     /// Drop a reference to a key that is gone — deleted on the Keys screen, or
     /// dropped as corrupt on load — so the Picker has a tag it can match ("")
-    /// and shows "Pick a key…" rather than a blank selection. Only the selected
-    /// profile is swept, and that is enough: nothing reads another profile's
-    /// reference until it is selected, which runs this again.
+    /// and shows "Pick a key…" rather than a blank selection.
     private func clearDanglingAuthKey() {
-        if !profiles.selected.authKeyID.isEmpty, selectedKey == nil {
-            profiles.selected.authKeyID = ""
+        if !client.authKeyID.isEmpty, selectedKey == nil {
+            client.authKeyID = ""
         }
     }
 
-    /// The profile's own relay token, from its own Keychain account.
-    private func storedRelayToken(for profileID: String) -> String {
-        SecretStore.load(
-            service: SecretStore.relayTokenService, account: profileID) ?? ""
-    }
-
-    /// The profile picker and the way to the manage screen. Everything else
-    /// about a profile is edited in Setup below, for the picked one.
-    private var profileRow: some View {
-        HStack(spacing: 8) {
-            Picker("Profile", selection: $profiles.selectedID) {
-                ForEach(profiles.profiles) { profile in
-                    Text(profile.name).tag(profile.id)
+    /// The servers this client reaches. A row opens its editor; the last row
+    /// adds one.
+    private var destinationsSection: some View {
+        Section {
+            ForEach(client.destinations) { destination in
+                Button {
+                    destinationDraft = DestinationDraft(destination: destination)
+                } label: {
+                    DestinationRow(destination: destination)
                 }
+                .buttonStyle(.plain)
+                .disabled(proxy.phase == .starting)
+                .accessibilityIdentifier("setup.destination.\(destination.host)")
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .disabled(proxy.phase == .connecting)
-            Spacer(minLength: 4)
-            NavigationLink {
-                ProfilesView(store: profiles)
+            .onDelete { offsets in
+                offsets.map { client.destinations[$0].id }.forEach(client.delete)
+            }
+            Button {
+                destinationDraft = DestinationDraft()
             } label: {
-                Text("Manage…")
-                    .font(.footnote)
+                Label("Add Destination", systemImage: "plus")
             }
-            .buttonStyle(.borderless)
-            // Two rows on this screen show "Manage…"; spell out which is which
-            // for VoiceOver, where the surrounding label isn't read with it.
-            .accessibilityLabel("Manage profiles")
+            .disabled(proxy.phase == .starting)
+            .accessibilityIdentifier("setup.addDestination")
+        } header: {
+            Text("Destinations")
+        } footer: {
+            Text("Each destination is a server, reached by the host name you give it: "
+                + "that name with a port is the port on the server itself, and its routes "
+                + "are the other hosts sent through it. A server is only connected when "
+                + "something is first sent to it.")
         }
     }
 
@@ -391,7 +356,7 @@ struct ContentView: View {
     private var authKeyRow: some View {
         LabeledField(
             "Auth key",
-            hint: selectedKey != nil ? "public key — give it to the server operator" : nil
+            hint: selectedKey != nil ? "public key — give it to each server's operator" : nil
         ) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
@@ -400,7 +365,7 @@ struct ContentView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     } else {
-                        Picker("Auth key", selection: $profiles.selected.authKeyID) {
+                        Picker("Auth key", selection: $client.authKeyID) {
                             if selectedKey == nil {
                                 Text("Pick a key…").tag("")
                             }
@@ -410,17 +375,16 @@ struct ContentView: View {
                         }
                         .pickerStyle(.menu)
                         .labelsHidden()
-                        .disabled(proxy.phase == .connecting)
+                        .disabled(proxy.phase == .starting)
                     }
                     Spacer(minLength: 4)
                     NavigationLink {
-                        KeysView(store: authKeys, selectedKeyID: $profiles.selected.authKeyID)
+                        KeysView(store: authKeys, selectedKeyID: $client.authKeyID)
                     } label: {
                         Text("Manage…")
                             .font(.footnote)
                     }
                     .buttonStyle(.borderless)
-                    .accessibilityLabel("Manage auth keys")
                 }
                 if let key = selectedKey {
                     HStack(spacing: 8) {
@@ -438,7 +402,7 @@ struct ContentView: View {
                         .accessibilityLabel("Copy public key")
                     }
                 } else if authKeys.keys.isEmpty {
-                    Text("Add one under Manage, then put its public key on the "
+                    Text("Add one under Manage, then put its public key on each "
                         + "server's authorized-keys file.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -449,11 +413,11 @@ struct ContentView: View {
 
     /// The forwarding keep-alive opt-in, shown only while Forward ports is
     /// selected. It is decided here rather than mid-session so the location
-    /// prompt is resolved (and a denial visible) before the tunnel comes up.
+    /// prompt is resolved (and a denial visible) before the session comes up.
     private var backgroundSection: some View {
         Section {
             Toggle("Keep alive in background", isOn: $keepAlive.enabled)
-                .disabled(proxy.phase == .connecting)
+                .disabled(proxy.phase == .starting)
             if keepAlive.enabled {
                 Picker("Time limit", selection: $keepAlive.timeoutMinutes) {
                     ForEach(BackgroundKeepAlive.timeoutChoices, id: \.self) { minutes in
@@ -461,7 +425,7 @@ struct ContentView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .disabled(proxy.phase == .connecting)
+                .disabled(proxy.phase == .starting)
             }
             if keepAlive.enabled, keepAlive.denied {
                 Text("Location access is denied, so iOS suspends the app about 30 seconds after backgrounding and the port forwards stop until you return.")
@@ -497,15 +461,15 @@ struct ContentView: View {
         } set: { isPresented in
             if !isPresented, !proxy.sessionAlive, !proxy.isRelaunching {
                 // End the dead session with its screen, so it isn't left
-                // `.connected` behind the setup screen.
+                // `.running` behind the setup screen.
                 proxy.stop()
                 browserModel = nil
             }
         }
     }
 
-    /// Mirror of `browserIsPresented`: a tunnel drop never dismisses the screen;
-    /// only an explicit Stop lets the cover go.
+    /// Mirror of `browserIsPresented`: no destination's trouble dismisses the
+    /// screen; only an explicit Stop lets the cover go.
     private var proxyOnlyIsPresented: Binding<Bool> {
         Binding {
             proxyOnlyActive
@@ -520,74 +484,73 @@ struct ContentView: View {
     private func startProxy(mode: SessionMode) {
         sessionMode = mode
         // A fresh session starts with every forward off: the CTA never
-        // auto-starts tunnels, the user enables what this session needs.
-        // (Mid-session reconnects don't come through here, so they keep the
+        // auto-starts forwards, the user enables what this session needs.
+        // (Mid-session relaunches don't come through here, so they keep the
         // toggles as set.)
         portForwards.disableAll()
         let settings = currentSettings()
-        connectingSettings = settings
-        connectingProfileID = profiles.selectedID
+        unsavedRelayToken = settings.relayAuthToken
         proxy.start(settings)
-    }
-
-    private var trimmedServerNodeID: String {
-        profiles.selected.serverNodeID.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var canStartProxy: Bool {
         // A listed key always has a parsing secret (the store drops corrupt
         // records on load), so picked means usable.
-        !trimmedServerNodeID.isEmpty && selectedKey != nil
+        !client.destinations.isEmpty && selectedKey != nil
     }
 
     private func currentSettings() -> ProxyController.Settings {
         ProxyController.Settings(
-            serverNodeID: trimmedServerNodeID,
+            destinations: client.destinations.map { destination in
+                .init(
+                    host: destination.host,
+                    serverNodeID: destination.serverNodeID,
+                    routedDomains: destination.routedDomains,
+                    routedCIDRs: destination.routedCIDRs)
+            },
             authKey: selectedKey?.secret ?? "",
             // Forwarding-only sessions have no SOCKS listener. Browser mode
             // asks for an OS-assigned port; ProxyController pins the assigned
-            // port into its replayed settings so reconnects keep it.
+            // port into its replayed settings so relaunches keep it.
             socksPort: sessionMode == .browser ? 0 : nil,
-            relayURLs: splitCSV(profiles.selected.relayURLs),
+            relayURLs: client.relayURLs
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty },
             relayAuthToken: relayAuthToken
         )
     }
 
-    private func splitCSV(_ s: String) -> [String] {
-        s.split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-    }
-
-    /// Prefill the selected profile's Keychain-backed relay token on first
-    /// appearance (the auth keys load themselves in `AuthKeyStore.init`).
-    /// Everything else the profile holds is non-secret and loads with it.
-    /// Guarded, so coming back from a pushed screen can't clobber a token that
-    /// has been typed but not connected with yet.
+    /// Prefill the Keychain-backed relay token on first appearance (the auth
+    /// keys load themselves in `AuthKeyStore.init`). Everything else the client
+    /// holds is non-secret and loads with it. Guarded, so coming back from a
+    /// pushed screen can't clobber a token that has been typed but not
+    /// connected with yet.
     private func loadStoredSecrets() {
         guard !didLoadSecrets else { return }
         didLoadSecrets = true
-        relayAuthToken = storedRelayToken(for: profiles.selectedID)
+        relayAuthToken = SecretStore.load(service: SecretStore.relayTokenService) ?? ""
     }
 
-    /// Present-only: reveal the mode's screen once the handshake lands and never
-    /// tear it down here. A drop after connecting keeps it up (the tunnel
-    /// auto-reconnects); teardown happens solely through the explicit-quit path —
+    /// Present-only: reveal the mode's screen once the session is running and
+    /// never tear it down here. Nothing a destination does takes it down;
+    /// teardown happens solely through the explicit-quit path —
     /// Stop → `proxy.stop()` → the presentation binding clears the state.
     private func syncSessionPresentation() {
-        guard proxy.phase == .connected else { return }
+        guard proxy.phase == .running else { return }
 
         switch sessionMode {
         case .browser:
             guard let socksPort = proxy.socksPort else { return }
-            // Routes are known here: the poll learns them before flipping the
-            // phase to connected. Nil (defensively) proxies every host.
-            // The port is pinned for the session (a relaunch that can't bind
-            // it fails), so the browser is built once and never repointed.
+            // The routing table is the session's own configuration, so the
+            // browser's scoping is known before any server is contacted and
+            // never changes; nil (no table, defensively) proxies every host.
+            // The port is pinned for the session too (a relaunch that can't
+            // bind it fails), so the browser is built once and never repointed.
             guard browserModel == nil else { return }
             browserModel = BrowserModel(
                 socksPort: socksPort,
-                proxyMatchDomains: proxy.forwardedRoutes?.proxyMatchDomains,
+                proxyMatchDomains: proxy.routeTable?.proxyMatchDomains,
                 library: library)
         case .proxyOnly:
             proxyOnlyActive = true
@@ -619,9 +582,9 @@ struct ContentView: View {
         switch phase {
         case .background:
             // Pace for the background: the health poll drops to minute cadence
-            // and the core's heartbeat slows to 60s, so a held-alive idle
-            // session wakes the cellular radio once a minute instead of
-            // continuously.
+            // and the core's heartbeat slows to 60s, so a held-alive session
+            // with a server connected wakes the cellular radio once a minute
+            // instead of continuously.
             proxy.setBackgrounded(true)
             // Time spent in the app doesn't eat the keep-alive's inactivity
             // window: start it when the app actually goes away, so what the Live
@@ -669,11 +632,9 @@ struct ContentView: View {
             // (an overdue beat goes out immediately, and the poll refreshes now).
             proxy.setBackgrounded(false)
             proxy.backgroundLiveActivityRefreshEnabled = false
-            proxy.noteForegrounded()
             // SwiftUI's .onChange handlers were paused while away, and a change
-            // that netted out (a background reconnect passing .connecting →
-            // .connected, a relaunched forwarding session) may never fire them
-            // on return — reconcile everything they drive explicitly.
+            // that netted out (a relaunched forwarding session) may never fire
+            // them on return — reconcile everything they drive explicitly.
             syncSessionPresentation()
             syncForwards()
             syncKeepAlive()
@@ -681,7 +642,7 @@ struct ContentView: View {
             // window (and revive it if the limit was reached while away), so the
             // limit caps one stretch of backgrounded time.
             if proxyOnlyActive { keepAlive.noteActivity() }
-            // Revive an expired banner (via start()) so a still-connected session
+            // Revive an expired banner (via start()) so a still-running session
             // is glanceable again on return.
             syncLiveActivity()
             if wasSuspended {
@@ -698,7 +659,7 @@ struct ContentView: View {
     /// keep-alive off — while we're still alive here, arm the same on-return
     /// recovery and dismiss the banner we can no longer keep fresh. Without the
     /// `wasSuspended` flag the app would come back with defunct sockets that
-    /// still read "connected".
+    /// still read as running.
     private func handleKeepAliveTimeout() {
         // The limit can only be reached while away (the keep-alive's idle check
         // refills the window whenever the app is in front); if we are in front
@@ -721,9 +682,9 @@ struct ContentView: View {
 
     /// iOS marks the process's sockets defunct while it is suspended, and the
     /// core can't recover from that on its own: its local listeners and QUIC
-    /// endpoint can wedge. Relaunch the session and reapply native forwards.
+    /// endpoints can wedge. Relaunch the session and reapply native forwards.
     private func recoverFromSuspension() {
-        guard proxy.phase == .connected else { return }
+        guard proxy.phase == .running else { return }
         proxy.relaunch()
         portForwards.rebindAfterSuspension()
     }
@@ -737,58 +698,81 @@ struct ContentView: View {
     // MARK: - Live Activity
 
     /// Mirror a forwarding session into the Live Activity: start/refresh it while
-    /// connected, reflect a reconnect while connecting, and end it once the
-    /// session is gone. Browser sessions never get one: the banner exists for a
-    /// session running behind other apps, which only forwarding does (a browser
-    /// session is either on screen or suspended within the grace).
+    /// the session runs and end it once it is gone. Browser sessions never get
+    /// one: the banner exists for a session running behind other apps, which
+    /// only forwarding does (a browser session is either on screen or suspended
+    /// within the grace).
     /// `allowCreate` is false for background refreshes, which must never call
     /// `Activity.request` (foreground-only) — they only update/end an existing one.
     private func syncLiveActivity(allowCreate: Bool = true) {
-        guard proxyOnlyActive else {
+        guard proxyOnlyActive, proxy.phase == .running else {
             liveActivity.end()
             return
         }
-        switch proxy.phase {
-        case .connected:
-            let state = TunnelActivityAttributes.ContentState(
-                tunnelConnected: proxy.tunnelConnected,
-                socksAlive: proxy.sessionAlive,
-                statusText: liveActivityStatusText,
-                // Counted down by the widget itself, so it stays right between
-                // refreshes (about once a minute while backgrounded).
-                keepAliveDeadline: keepAlive.deadline
-            )
-            if allowCreate {
-                liveActivity.start(state: state)
-            } else {
-                liveActivity.update(state)
-            }
-        case .connecting:
-            // Initial connect: relaunches stay .connected (`isRelaunching`), so
-            // this only reconciles a banner reattached at launch. update() is a
-            // no-op when there's none, so it never creates one here.
-            liveActivity.update(TunnelActivityAttributes.ContentState(
-                tunnelConnected: false,
-                socksAlive: proxy.sessionAlive,
-                statusText: "Reconnecting…",
-                keepAliveDeadline: keepAlive.deadline
-            ))
-        case .idle, .failed:
-            liveActivity.end()
+        let state = TunnelActivityAttributes.ContentState(
+            level: liveActivityLevel,
+            statusText: proxy.health.title,
+            // Counted down by the widget itself, so it stays right between
+            // refreshes (about once a minute while backgrounded).
+            keepAliveDeadline: keepAlive.deadline
+        )
+        if allowCreate {
+            liveActivity.start(state: state)
+        } else {
+            liveActivity.update(state)
         }
     }
 
-    private var liveActivityStatusText: String {
-        if proxy.tunnelConnected { return "Connected" }
-        // Stuck: the core's own reconnect is presumed wedged (manual retry needed),
-        // so it reads disconnected rather than optimistically "Reconnecting…".
-        if proxy.tunnelStuck { return "Disconnected" }
-        if proxy.isReconnecting { return "Reconnecting…" }
-        return "Disconnected"
+    private var liveActivityLevel: TunnelActivityAttributes.ContentState.Level {
+        switch proxy.health {
+        case .connected, .ready: return .ok
+        case .connecting, .restarting, .trouble: return .attention
+        case .stopped: return .down
+        }
     }
 }
 
-/// A radio-style choice row for one tunnel mode: icon, title, short
+/// One destination on the setup screen: its host name, and its server and
+/// routes in brief.
+private struct DestinationRow: View {
+    let destination: ClientStore.Destination
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(destination.host)
+                    .font(.body.monospaced())
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(destination.serverNodeID)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(routesSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 4)
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .contentShape(Rectangle())
+    }
+
+    private var routesSummary: String {
+        let count = destination.routedDomains.count + destination.routedCIDRs.count
+        switch count {
+        case 0: return "The server itself only"
+        case 1: return "The server itself and 1 route"
+        default: return "The server itself and \(count) routes"
+        }
+    }
+}
+
+/// A radio-style choice row for one session mode: icon, title, short
 /// description, and a trailing selection mark. The CTA lives below the list
 /// and takes its label from the selected mode.
 private struct ModeChoiceRow: View {

@@ -96,12 +96,9 @@ final class BrowserDownloadManager: NSObject, URLSessionDownloadDelegate {
     private let socksPort: UInt16
     private let websiteDataStore: WKWebsiteDataStore
     private let log = Logger(subsystem: "com.example.flextunnel", category: "download")
-    /// The tunnel set's host patterns, mirroring the tabs' split-tunneling;
-    /// nil proxies every host.
-    @ObservationIgnored private var proxyMatchDomains: [String]?
-    /// Set when the match list changed while downloads were in flight; the next
-    /// terminal download event rebuilds the session with the current list.
-    @ObservationIgnored private var needsSessionRebuild = false
+    /// The routed hosts' patterns, mirroring the tabs' split-tunneling; nil
+    /// proxies every host. Fixed for the session, like the routing table.
+    @ObservationIgnored private let proxyMatchDomains: [String]?
 
     init(socksPort: UInt16, proxyMatchDomains: [String]?, websiteDataStore: WKWebsiteDataStore) {
         self.socksPort = socksPort
@@ -123,28 +120,6 @@ final class BrowserDownloadManager: NSObject, URLSessionDownloadDelegate {
         let created = URLSession(configuration: config, delegate: self, delegateQueue: .main)
         _session = created
         return created
-    }
-
-    /// Applies an updated tunnel set. The proxy scoping is baked into the
-    /// session's configuration, so an idle session is dropped now (the next
-    /// download builds a fresh one); one with downloads in flight keeps its
-    /// scoping until they settle, then the terminal delegate event rebuilds.
-    func updateProxyMatchDomains(_ matchDomains: [String]?) {
-        guard matchDomains != proxyMatchDomains else { return }
-        proxyMatchDomains = matchDomains
-        needsSessionRebuild = true
-        rebuildSessionIfIdle()
-    }
-
-    private func rebuildSessionIfIdle() {
-        guard needsSessionRebuild else { return }
-        let busy = items.contains {
-            if case .downloading = $0.state { return true } else { return false }
-        }
-        guard !busy else { return }
-        needsSessionRebuild = false
-        _session?.invalidateAndCancel()
-        _session = nil
     }
 
     /// Cancels in-flight transfers, invalidates the session (so it stops
@@ -240,9 +215,6 @@ final class BrowserDownloadManager: NSObject, URLSessionDownloadDelegate {
             try? FileManager.default.removeItem(at: url)
         }
         items.removeAll { $0.id == item.id }
-        // A cancel's delegate event is swallowed as a non-failure, so a scoping
-        // change deferred for this download must be applied from here.
-        rebuildSessionIfIdle()
     }
 
     func clearAll() {
@@ -277,7 +249,6 @@ final class BrowserDownloadManager: NSObject, URLSessionDownloadDelegate {
         let dest = Self.moveToDownloads(location, suggested: suggested, sourceURL: sourceURL)
 
         MainActor.assumeIsolated {
-            defer { rebuildSessionIfIdle() }
             guard let item = item(for: downloadTask.taskIdentifier) else { return }
             guard let dest else {
                 item.state = .failed("Could not save the file.")
@@ -301,7 +272,6 @@ final class BrowserDownloadManager: NSObject, URLSessionDownloadDelegate {
         if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled { return }
 
         MainActor.assumeIsolated {
-            defer { rebuildSessionIfIdle() }
             guard let item = item(for: task.taskIdentifier) else { return }
             if case .finished = item.state { return }
             log.error("download failed: \(error.localizedDescription, privacy: .private)")

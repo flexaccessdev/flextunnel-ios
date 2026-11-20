@@ -5,17 +5,25 @@ import Foundation
 /// activity) and the widget extension (which renders it). Only a port-forwarding
 /// session has one — it is the mode that runs behind other apps. Purely a status
 /// surface — it does not extend background runtime; it just shows the last-known
-/// tunnel state on the lock screen / Dynamic Island so the session is glanceable.
+/// session state on the lock screen / Dynamic Island so the session is glanceable.
 struct TunnelActivityAttributes: ActivityAttributes {
     /// Dynamic part: refreshed while the app runs (foreground or its brief
     /// background window). When the app is suspended it shows the last value.
     struct ContentState: Codable, Hashable {
-        /// Tunnel link to the server is up (on-list targets reachable).
-        var tunnelConnected: Bool
-        /// SOCKS5 listener is serving (off-list browsing works even if the link
-        /// is down).
-        var socksAlive: Bool
-        /// Short human status, e.g. "Connected" / "Reconnecting…".
+        /// How the session is doing, which picks the banner's color.
+        enum Level: String, Codable, Hashable {
+            /// Serving: a server is connected, or each is idle and connects
+            /// when a forward is used.
+            case ok
+            /// A server is connecting or can't be reached, or the session is
+            /// being restarted.
+            case attention
+            /// The session ended; nothing is forwarded.
+            case down
+        }
+
+        var level: Level
+        /// Short human status, e.g. "Connected" / "Ready" / "Unreachable".
         var statusText: String
         /// Estimated moment the background keep-alive lets go of the forwarding
         /// session if nothing resets its inactivity window first (movement, an

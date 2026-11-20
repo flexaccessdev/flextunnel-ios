@@ -37,7 +37,7 @@ Expiry is checked against the last activity time every 60s, with timer
 coalescing allowed. It can therefore be noticed after the displayed deadline.
 At expiry, the app closes local listeners, dismisses the Live Activity and
 stops location updates, allowing iOS to suspend it. On return it relaunches
-the tunnel and rebinds enabled forwards; other apps must reconnect.
+the session and rebinds enabled forwards; other apps must reconnect.
 
 ## Location implementation
 
@@ -54,13 +54,16 @@ The app needs `UIBackgroundModes` containing `location` and a
 ## Polling and traffic
 
 While backgrounded, the app reduces health polling from every 1s to every 60s.
-Foreground Low Power Mode uses 2s polling. The Rust core's heartbeat changes
-from 10s to 60s, with no separate QUIC keep-alive and a 180s QUIC idle timeout.
+Foreground Low Power Mode uses 2s polling. The Rust core's heartbeat — sent
+only on a destination's connection while it is up, and a connection closes
+after five minutes unused — changes from 10s to 60s, with no separate QUIC
+keep-alive and a 180s QUIC idle timeout.
 On cellular each transmission holds the radio at high power for roughly 10s, so
 anything periodic under about 15-20s keeps it there continuously. Returning to
 the foreground restores the 10s cadence, sends an overdue heartbeat at once and
-ends any reconnect backoff early. Reported network loss parks reconnect retries
-until a path returns, then reconnects immediately with a fresh backoff series.
+ends any retry backoff early. Reported network loss stops every destination
+from dialing until a path returns; one with requests waiting then tries again
+immediately with a fresh backoff series.
 
 These settings reduce periodic work; they do not guarantee a particular
 battery cost or packet count. Connection-path UDP counters include traffic

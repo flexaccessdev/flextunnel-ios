@@ -5,8 +5,9 @@ import WebKit
 
 /// Owns the browser's tab list, the shared SOCKS5 port, and the shared data
 /// store's proxy configuration. Every tab shares the same in-app listener
-/// (flextunnel allows one instance at a time), scoped to the tunnel set's
-/// hosts via `matchDomains` so off-list traffic skips the proxy entirely.
+/// (flextunnel allows one instance at a time), scoped to the routed hosts via
+/// `matchDomains` so traffic on no destination's route skips the proxy
+/// entirely.
 @MainActor
 @Observable
 final class BrowserModel {
@@ -15,9 +16,6 @@ final class BrowserModel {
     let downloads: BrowserDownloadManager
     private(set) var tabs: [BrowserTab]
     var selectedID: BrowserTab.ID?
-    /// The tunnel set's host patterns (`ForwardedRoutes.proxyMatchDomains`);
-    /// nil proxies every host.
-    private(set) var proxyMatchDomains: [String]?
     // Persistent (default) store so cookies, logins, and cache survive across
     // launches like a mainstream browser. (Downloads stay session-only by design.)
     private let websiteDataStore = WKWebsiteDataStore.default()
@@ -25,7 +23,6 @@ final class BrowserModel {
 
     init(socksPort: UInt16, proxyMatchDomains: [String]?, library: BrowserLibrary) {
         self.socksPort = socksPort
-        self.proxyMatchDomains = proxyMatchDomains
         self.library = library
         websiteDataStore.proxyConfigurations = [
             .loopbackSocks5(port: socksPort, matchDomains: proxyMatchDomains)
@@ -44,21 +41,9 @@ final class BrowserModel {
         self.selectedID = first.id
     }
 
-    /// Applies an updated tunnel set (the server can push new routes across a
-    /// reconnect). Connections opened after this pick up the new scoping; the
-    /// proxy's own routed set keeps already-open ones correct either way.
-    func updateProxyMatchDomains(_ matchDomains: [String]?) {
-        guard matchDomains != proxyMatchDomains else { return }
-        proxyMatchDomains = matchDomains
-        websiteDataStore.proxyConfigurations = [
-            .loopbackSocks5(port: socksPort, matchDomains: matchDomains)
-        ]
-        downloads.updateProxyMatchDomains(matchDomains)
-    }
-
     /// Reloads the tabs whose last load failed on a URL `shouldRetry` accepts —
-    /// the tunneled ones, once the link is back — the way a mainstream browser
-    /// reloads its offline pages when the network returns. Only idempotent
+    /// the ones routed through a destination that has just connected — the way
+    /// a mainstream browser reloads its offline pages when the network returns. Only idempotent
     /// requests: a retry reloads the URL, which would turn a failed form POST
     /// into a GET.
     func retryFailedLoads(where shouldRetry: (URL) -> Bool) {
@@ -205,11 +190,11 @@ extension ProxyConfiguration {
     /// only proxies matching hosts (suffix match: apex + subdomains) and
     /// connects to everything else directly; nil/empty proxies every host.
     /// SOCKS5 passes matched hostnames to the proxy (ATYP_DOMAIN), so DNS for
-    /// tunnel-set names still resolves on the flextunnel server.
+    /// routed names still resolves on the destination's server.
     ///
-    /// Failover is pinned off: a proxied (tunnel-set) host whose proxy
-    /// connection fails — listener closed across a relaunch, tunnel down —
-    /// fails the load instead of being retried directly. A private host that
+    /// Failover is pinned off: a proxied (routed) host whose proxy connection
+    /// fails — listener closed across a relaunch, server unreachable — fails
+    /// the load instead of being retried directly. A private host that
     /// also happens to resolve and answer off-tunnel would otherwise flap
     /// between the tunnel and a direct path with every link blip, and a
     /// direct retry leaks the request past the server's routing.

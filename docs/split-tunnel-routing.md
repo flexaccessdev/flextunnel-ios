@@ -1,89 +1,131 @@
-# Split-tunnel routing (the tunnel set)
+# Split-tunnel routing (destinations and their routes)
 
-The server pushes domain and CIDR rules during the handshake. For browser
-proxy requests, matching targets go through the server and off-list targets
-connect from the device. Server-direct port forwards always use the tunnel;
-the server rejects their off-list targets.
+The client holds **destinations**, each a host name for one flextunnel server.
+A destination's own name means that server's loopback (`office.internal:8080`
+is port 8080 on the server itself), and each destination may list further
+domains and IP ranges to send through its server. Those routes are this app's
+configuration, entered on the setup screen: nothing about routing is learned
+from a server.
 
-Domain rules match hostnames; CIDRs match IP literals, including numeric IPs
-sent in hostname form. A hostname is not reclassified by its resolved IP.
-To route all target types, configure `*` for domains and both `0.0.0.0/0` and
-`::/0` for IPs. An empty set still tunnels the reserved `flextunnel.internal`
-namespace, including the server's loopback at `localhost.flextunnel.internal`.
+For browser proxy requests, a target a destination routes goes through that
+destination's server and everything else connects from the device.
+Server-direct port forwards always go through a destination; one whose host no
+destination routes can't be switched on.
+
+Precedence, most specific first: the reserved `flextunnel.internal` namespace
+(answered by the client itself); a destination's own host name; then the rule
+that matches most specifically across all destinations — an exact domain, the
+longest `*.suffix`, `*`, and for IP targets the longest network prefix. The
+same rule on two destinations is rejected; nested rules are fine.
+
+Domain rules match hostnames; IP ranges match IP literals, including numeric
+IPs sent in hostname form. A hostname is not reclassified by its resolved IP.
+To route every target type through one destination, give it `*` for domains
+and both `0.0.0.0/0` and `::/0` for IPs.
+
+Each server still enforces **its own** routed set, host aliases, DNS forwards
+and bridges on what arrives: a route here only chooses the server, and the
+server refuses a target off its list. A destination's own host name is the
+exception — the server's loopback is reachable whatever that server routes.
+
+## Connecting on demand
+
+Starting a session connects nothing. A destination's server is connected when
+something is first sent to it — a page, a forwarded connection, its status
+page — and disconnected after five minutes with no open stream. A request that
+arrives while its destination is connecting is held for up to 45 seconds, then
+fails; it never switches to a direct connection. After a failed attempt the
+destination rests until it is next used, which tries again with a fresh
+endpoint.
 
 ## Rust routing and WebKit proxy scoping
 
 The Rust SOCKS5 listener makes the tunnel-or-direct decision for every browser
-request that reaches it. The server independently checks tunneled requests
-against its routed set, except reserved names.
+request that reaches it, and picks the destination.
 
-For hostname-only sets without `*`, the browser also sets
+When the routes are hostnames only, without `*`, the browser also sets
 `ProxyConfiguration.matchDomains` through
 `WKWebsiteDataStore.proxyConfigurations`. Hostnames outside those suffixes
 bypass the SOCKS5 listener entirely. This keeps those requests independent of
 proxy health.
 
-`ProxyController.ForwardedRoutes.proxyMatchDomains` converts exact and wildcard
-domain rules to bare suffixes and always includes `flextunnel.internal`.
-The list must cover everything the core would tunnel; under-matching breaks
-private hosts.
+`RouteTable.proxyMatchDomains` converts exact and wildcard domain rules to bare
+suffixes and always includes every destination's own host and
+`flextunnel.internal`. The list must cover everything the core would not send
+directly; under-matching breaks private hosts.
 WebKit's suffix match can include more hosts than the Rust rule: for example,
 an exact `example.com` rule also sends `www.example.com` to the proxy. The
-core then applies its precise rule and connects an off-list host directly.
+core then applies its precise rule and connects an unrouted host directly.
 Such overmatched hosts still depend on the local proxy being available.
 
-With `*` or any CIDR rule, hostname scoping is disabled and requests go through
-the Rust proxy for classification. A CIDR cannot be expressed as hostname
-suffixes. Sending everything to the proxy does not itself make every target
-tunneled: domain and IP rules remain independent in the core. WebKit bypasses
-proxying for loopback IPs and the device's own addresses, so use
-`localhost.flextunnel.internal` to reach the server's loopback. Safari and other
-apps never use the browser's proxy; they reach the tunnel only through
+With `*` or any IP range among the routes, hostname scoping is disabled and
+requests go through the Rust proxy for classification. An IP range cannot be
+expressed as hostname suffixes. Sending everything to the proxy does not itself
+make every target tunneled: domain and IP rules remain independent in the core.
+WebKit bypasses proxying for loopback IPs and the device's own addresses, so
+use a destination's host name to reach its server's loopback. Safari and other
+apps never use the browser's proxy; they reach a server only through
 [port forwards](port-forwarding.md).
 
 `ProxyConfiguration.loopbackSocks5` sets `allowFailover = false`. A request
 assigned to an unavailable proxy fails rather than falling back directly.
-Once inside the core, an on-list request waits for tunnel recovery or fails;
-it never switches to a direct connection.
 
-## Reconnects and status
+The routes are fixed for a session — they are edited on the setup screen, which
+a running session covers — so the browser's scoping is set once, when the
+session starts, and is known before any server has been contacted.
 
-The browser retains the last known match list across a session relaunch while
-the core relearns its routes. A new unscoped policy is applied when reported.
-Hosts outside the retained suffix list can keep browsing directly during that
-gap. With scoping disabled, all proxied requests depend on the listener, even
-when the core would ultimately connect them directly.
+## Status
 
-The SOCKS5 listener stays bound across ordinary QUIC reconnects. Suspension
+**Tunnel status** in the browser, and the port-forwarding screen, list every
+destination with its state (idle, connecting, connected, retrying, refused, or
+idle after a failed attempt), its routes, and — while it is connected — a
+**Connection Path** readout. The header and the browser's tunnel button
+summarize them: *Ready* (running, nothing connected yet), *Connected*,
+*Connecting*, *Unreachable* (a destination can't be reached) or *Stopped*.
+**Restart Session** replaces the session when a destination stays unreachable
+or the session ended.
+
+**SOCKS listener** reports the local browser listener, separately from any
+server's connection. It stays bound while destinations come and go; suspension
 recovery performs a full session relaunch, which briefly closes and rebinds
-it. Existing tunneled TCP connections do not survive a dropped tunnel.
+it. Existing tunneled TCP connections do not survive a dropped server
+connection.
 
-**Tunnel status** shows the pushed routes, aliases, DNS forwards and bridges.
-**SOCKS listener** reports the local browser listener, separately from tunnel
-connectivity. The UI's full-tunnel label recognizes `*` or a default-route
-CIDR; consult the individual rules for which target types actually match.
+Two status pages are served through the in-app proxy:
+
+- `http://flextunnel.internal/` — the client's own: its destinations and their
+  state. Reading it connects nothing.
+- `http://flextunnel.internal/servers/<host>/` — that destination server's
+  page: its routed set, host aliases, DNS forwards and bridges. Fetching it
+  connects the destination.
+
+Both are a tap away under **Tunnel status** (**Client Status Page**, and
+**Server Status Page** on each destination). Other `*.flextunnel.internal`
+names are reserved and answer 404.
 
 Forwards use core-owned server-direct streams, with no SOCKS5 hop or WebKit
 scoping. See [port forwarding](port-forwarding.md).
 
 ## Verifying the split
 
-- With a hostname-only scoped set, stop the proxy or observe an outage. A
-  fresh request to a host outside every proxy suffix should still load;
-  `http://flextunnel.internal` should fail without a working tunnel. If
+- With hostname-only routes, stop the proxy or observe an outage. A fresh
+  request to a host outside every proxy suffix should still load;
+  `http://flextunnel.internal` should fail without a running session. If
   everything fails, WebKit scoping is not active: check **Tunnel status** for a
-  `*` or CIDR rule. Existing pooled connections and cached pages can obscure
-  this check.
+  `*` or IP-range route. Existing pooled connections and cached pages can
+  obscure this check.
 - SOCKS5 carries only TCP CONNECT, so QUIC/HTTP-3 cannot use the proxy. An
-  off-list HTTP/3 site (for example `https://cloudflare-quic.com`) reporting
+  unrouted HTTP/3 site (for example `https://cloudflare-quic.com`) reporting
   HTTP/3 bypassed it.
 - In the iOS Run scheme, set `RUST_LOG=warn,flextunnel_core=debug`. Requests
-  reaching the Rust proxy log `Tunneling: …` or
-  `Direct (off tunnel set): …`. Hosts bypassing it produce neither line.
-- For server-side DNS, add a routed hostname that only resolves on the server
-  and load it from the app. Server debug logs (`RUST_LOG=flextunnel=debug`)
-  show `Stream target: Domain(…)` after aliasing and before dialing.
+  reaching the Rust proxy log `Tunneling via <destination>: …` or
+  `Direct (no destination routes it): …`. Hosts bypassing it produce neither
+  line.
+- For server-side DNS, route a hostname that only resolves on the server and
+  load it from the app. Server debug logs (`RUST_LOG=flextunnel=debug`) show
+  `Stream target: Domain(…)` after aliasing and before dialing.
 
+`RouteTableTests` covers the routing mirror and the scoping list;
 `ProxyConfigurationTests` covers scoping and disabled failover.
-`ci/e2e.sh` exercises browser routing with hostname, empty and CIDR sets against
-real servers; see [local CI](local-ci.md#end-to-end-ui-tests).
+`ci/e2e.sh` exercises browser routing with hostname and IP-range destinations
+against real servers; see [local CI](local-ci.md#end-to-end-ui-tests).

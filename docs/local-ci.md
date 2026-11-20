@@ -28,8 +28,9 @@ also need Rust; e2e needs `uv` and internet access.
 | `e2e` | Browser UI tests; also available directly as `ci/e2e.sh` | No |
 
 Run `simulator` before a standalone `smoke` job: smoke uses its existing build.
-The unit suite covers route matching, address resolution and library logic;
-keep `RouteMatchTests` aligned with core's `routed_set.rs` tests.
+The unit suite covers route matching, destination validation, address
+resolution and library logic; keep `RouteTableTests` aligned with core's
+`route_table.rs`, `routed_set.rs` and `reserved.rs` tests.
 
 `device` needs a signing identity and profiles for the target phone, with the
 team set in `Developer.local.xcconfig` or `FLEXTUNNEL_CI_TEAM`. It does not
@@ -117,12 +118,15 @@ from the sibling working tree and links the app to the existing local
 xcframework; rebuild that artifact first. `flexaccess-keys` uses the dependency
 tag from the selected server source. Tool builds are cached in `build/e2e/tools`.
 
-The script starts a fixture HTTP site, routed/empty-set/CIDR servers and a
-control endpoint. Each server has a scratch home for its lock and blocklist.
+The script starts a fixture HTTP site, three servers (one routing the site's
+names, a plain one that routes nothing, one routing a CIDR) and a control
+endpoint. Each test picks the destinations the app starts with, since routing
+is the client's configuration. Each server has a scratch home for its lock and
+blocklist.
 The simulator reaches the servers through iroh discovery and relays, so the
 run needs internet access even though the fixtures run locally.
 
-The app is uninstalled before testing. Its Debug-only launch hook seeds an
-`E2E` profile and key and clears the browser library. Results and screenshots
+The app is uninstalled before testing. Its Debug-only launch hook seeds the
+test's destinations and an `E2E` key and clears the browser library. Results and screenshots
 are in `build/e2e/run/results.xcresult`, with fixture and server logs alongside.
 The script stops its local services on exit.

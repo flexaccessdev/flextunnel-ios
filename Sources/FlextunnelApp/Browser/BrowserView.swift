@@ -53,7 +53,7 @@ struct BrowserView: View {
                     tunnelStatusIcon: tunnelStatusIcon,
                     tunnelStatusColor: tunnelStatusColor,
                     tunnelStatusValue: tunnelStatusValue,
-                    tunnelReconnecting: proxy.isReconnecting && !proxy.tunnelStuck,
+                    tunnelBusy: proxy.health.isTransient,
                     showingTunnelStatus: $showingTunnelStatus,
                     addressBarFocused: $addressBarFocused,
                     editText: $addressQuery)
@@ -83,7 +83,7 @@ struct BrowserView: View {
                                     BrowserLoadFailureView(
                                         failure: failure,
                                         route: proxy.pageRoute(for: failure.url),
-                                        tunnelConnected: proxy.tunnelConnected,
+                                        destinationConnected: destinationConnected(for: failure.url),
                                         onRetry: { tab.retryFailedLoad() },
                                         onGoBack: { tab.returnToDisplayedPage() },
                                         onShowTunnelStatus: { showingTunnelStatus = true })
@@ -176,8 +176,12 @@ struct BrowserView: View {
                 proxy: proxy,
                 boundPort: model.socksPort,
                 pageURL: model.selectedTab?.visibleURL,
-                onReconnect: { proxy.retryNow() },
-                onDisconnect: stopAndDismiss)
+                onRestart: { proxy.restartNow() },
+                onDisconnect: stopAndDismiss,
+                onOpenStatusPage: { url in
+                    showingTunnelStatus = false
+                    model.addTab().load(url, displayAddress: url.absoluteString)
+                })
         }
         .animation(.easeInOut(duration: 0.25), value: model.downloads.toast)
         .animation(.easeInOut(duration: 0.18), value: addressBarFocused)
@@ -280,33 +284,29 @@ struct BrowserView: View {
 
     private static let suggestionLimit = 6
 
+    /// Filled while a server is connected; slashed when one can't be reached
+    /// or the session ended; an outline while every destination rests idle.
     private var tunnelStatusIcon: String {
-        if proxy.socksPort == nil { return "bolt.horizontal.circle" }
-        return proxy.tunnelStuck ? "bolt.slash.circle.fill" : "bolt.horizontal.circle.fill"
+        switch proxy.health {
+        case .connected: return "bolt.horizontal.circle.fill"
+        case .trouble, .stopped: return "bolt.slash.circle.fill"
+        case .ready, .connecting, .restarting: return "bolt.horizontal.circle"
+        }
     }
 
-    /// Green when the tunnel link is up; red when it's stuck disconnected or the
-    /// set is full-tunnel (nothing browses without it); orange for a transient
-    /// gap — off-list browsing keeps working directly either way.
-    private var tunnelStatusColor: Color {
-        if proxy.tunnelConnected {
-            return .green
-        }
-        if proxy.tunnelStuck || proxy.isFullTunnel {
-            return .red
-        }
-        if proxy.isReconnecting {
-            return .orange
-        }
-        return .secondary
-    }
+    /// Green while a server is connected; orange while one is connecting or
+    /// can't be reached; red once the session ended. Sites on no destination's
+    /// route keep loading directly either way.
+    private var tunnelStatusColor: Color { proxy.health.color }
 
     /// The tunnel button's spoken state, matching the sheet's title.
-    private var tunnelStatusValue: String {
-        if proxy.tunnelConnected { return "Connected" }
-        if proxy.tunnelStuck { return "Disconnected" }
-        if proxy.isReconnecting { return "Reconnecting" }
-        return "Stopped"
+    private var tunnelStatusValue: String { proxy.health.title }
+
+    /// Whether the destination `url` is routed through is connected right now;
+    /// false for a page that isn't routed through one.
+    private func destinationConnected(for url: URL) -> Bool {
+        guard case .destination(let host) = proxy.pageRoute(for: url) else { return false }
+        return proxy.destination(host: host)?.state == .connected
     }
 
     /// Builds the share-popout bookmark action. Removal happens immediately;
@@ -656,12 +656,13 @@ private struct EmptyBrowserView: View {
 /// Besides retrying, it offers the way out mainstream browsers give for free —
 /// back to the page you were on — since the overlay otherwise hides it. It also
 /// says how the host is routed, the first thing to know when a private host
-/// fails: a tunneled host while the tunnel is down, or a host that isn't in the
-/// tunnel set at all and so went out directly.
+/// fails: a host routed through a destination that isn't connected, or a host
+/// on no destination's route at all, which went out directly.
 private struct BrowserLoadFailureView: View {
     let failure: BrowserLoadFailure
-    let route: PageRoute?
-    let tunnelConnected: Bool
+    let route: Route?
+    /// Whether the destination this page is routed through is connected.
+    let destinationConnected: Bool
     let onRetry: () -> Void
     let onGoBack: () -> Void
     let onShowTunnelStatus: () -> Void
@@ -716,7 +717,7 @@ private struct BrowserLoadFailureView: View {
                 }
                 .buttonStyle(.borderedProminent)
 
-                if route == .tunnel && !tunnelConnected {
+                if route?.isTunneled == true && !destinationConnected {
                     Button(action: onShowTunnelStatus) {
                         Label("Tunnel Status", systemImage: "bolt.horizontal.circle").frame(maxWidth: 280)
                     }
@@ -737,16 +738,16 @@ private struct BrowserLoadFailureView: View {
 
     private var routeHint: (text: String, icon: String, color: Color)? {
         switch route {
-        case .tunnel where !tunnelConnected:
-            return ("This site is reached through the tunnel, which isn't connected right now.",
+        case .destination(let host) where !destinationConnected:
+            return ("This site is reached through \(host), which isn't connected right now.",
                     "bolt.slash.circle", .orange)
-        case .tunnel:
-            return ("Reached through the tunnel — the server couldn't load it.",
+        case .destination(let host):
+            return ("Reached through \(host) — its server couldn't load it.",
                     "bolt.horizontal.circle", .secondary)
         case .direct:
-            return ("Connected directly — this host isn't in the tunnel set.",
+            return ("Connected directly — no destination routes this host.",
                     "arrow.up.right.circle", .secondary)
-        case nil:
+        case .status, .reserved, nil:
             return nil
         }
     }
@@ -811,7 +812,7 @@ private struct AddressBarView: View {
     let tunnelStatusIcon: String
     let tunnelStatusColor: Color
     let tunnelStatusValue: String
-    let tunnelReconnecting: Bool
+    let tunnelBusy: Bool
     @Binding var showingTunnelStatus: Bool
     @Binding var addressBarFocused: Bool
     @Binding var editText: String
@@ -921,7 +922,7 @@ private struct AddressBarView: View {
             Image(systemName: tunnelStatusIcon)
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(tunnelStatusColor)
-                .symbolEffect(.pulse, isActive: tunnelReconnecting)
+                .symbolEffect(.pulse, isActive: tunnelBusy)
                 .frame(width: 40, height: 36)
         }
         .buttonStyle(.plain)
@@ -1157,7 +1158,7 @@ private struct AddressDisplayParts {
 @MainActor
 private struct SiteSecurityPopover: View {
     let tab: BrowserTab
-    let route: PageRoute?
+    let route: Route?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1179,10 +1180,9 @@ private struct SiteSecurityPopover: View {
 
             if let route {
                 Divider()
-                Label(route == .tunnel ? "Through the tunnel" : "Direct (not in the tunnel set)",
-                      systemImage: route == .tunnel ? "bolt.horizontal.circle.fill" : "arrow.up.right.circle")
+                Label(route.label, systemImage: route.systemImage)
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(route == .tunnel ? .green : .secondary)
+                    .foregroundStyle(route.isTunneled ? .green : .secondary)
                     .accessibilityIdentifier("browser.siteRoute")
             }
         }

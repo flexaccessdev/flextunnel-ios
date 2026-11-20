@@ -1,8 +1,8 @@
 import Foundation
 import os
 
-/// The app's small on-disk JSON stores — connection profiles and port-forward
-/// definitions. Non-secret data only: secrets live in the Keychain
+/// The app's small on-disk JSON stores — the client's destinations and
+/// port-forward definitions. Non-secret data only: secrets live in the Keychain
 /// (`SecretStore`), which is the whole reason these files can be plain JSON.
 ///
 /// Writes are atomic, happen off the main thread, carry a file-protection
