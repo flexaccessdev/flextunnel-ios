@@ -551,6 +551,7 @@ struct ContentView: View {
             browserModel = BrowserModel(
                 socksPort: socksPort,
                 proxyMatchDomains: proxy.routeTable?.proxyMatchDomains,
+                privateHosts: proxy.routeTable?.exactNames ?? [],
                 library: library)
         case .proxyOnly:
             proxyOnlyActive = true

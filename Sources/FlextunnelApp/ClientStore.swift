@@ -109,8 +109,8 @@ final class ClientStore: ObservableObject {
     /// Normalize `destination` and check it against the others. These are the
     /// core's own rules for a destination (`route_table.rs`), repeated here so a
     /// mistake is reported next to the field instead of when a session starts;
-    /// the core checks again at start and is the authority — the server node id
-    /// in particular is only parsed there.
+    /// the core checks again at start and is the authority — whether a server
+    /// node id is a real key in particular is only decided there.
     func validated(_ destination: Destination) -> Result<Destination, ValidationError> {
         var result = destination
         switch Self.validatedHost(destination.host) {
@@ -137,7 +137,8 @@ final class ClientStore: ObservableObject {
                 message: "\(other.host) routes \(result.host) as a domain, but a destination's "
                     + "own name always means that server itself."))
         }
-        if let other = others.first(where: { $0.serverNodeID.lowercased() == result.serverNodeID.lowercased() }) {
+        let node = Self.nodeKey(result.serverNodeID)
+        if let other = others.first(where: { Self.nodeKey($0.serverNodeID) == node }) {
             return .failure(.init(message: "\(other.host) already reaches that server."))
         }
 
@@ -166,8 +167,12 @@ final class ClientStore: ObservableObject {
                 return .failure(.init(
                     message: "\(cidr) is not an IP range. Use a network like 10.0.0.0/8, or one address."))
             }
-            // By the network itself, not its spelling: `10.1.2.3/8` and
-            // `10.0.0.0/8` are one rule, as are a bare address and its /32.
+            if let standard = RouteTable.networkWithoutHostBits(cidr) {
+                return .failure(.init(
+                    message: "\(cidr) has address bits beyond its prefix. Use \(standard)."))
+            }
+            // By the network itself, not its spelling: a bare address and its
+            // /32 are one rule, as are two ways of writing an IPv6 address.
             if let other = others.first(where: { $0.routedCIDRs.contains { RouteTable.networkKey($0) == network } }) {
                 return .failure(.init(message: "\(cidr) is already routed through \(other.host)."))
             }
@@ -228,6 +233,41 @@ final class ClientStore: ObservableObject {
 
     private static func unbracketed(_ text: String) -> String {
         text.hasPrefix("[") && text.hasSuffix("]") ? String(text.dropFirst().dropLast()) : text
+    }
+
+    /// A server node id in a form its equivalent spellings share. The core
+    /// reads an id as 64 lowercase hex digits or as unpadded base32 in either
+    /// case (iroh's `PublicKey`), and both name the same 32-byte key — which it
+    /// then refuses to have on two destinations. An id that is neither is
+    /// compared as written, ignoring case; the core rejects it when a session
+    /// starts.
+    static func nodeKey(_ id: String) -> String {
+        let text = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Marked, so text that is no key never equals one that decoded.
+        let asWritten = "?" + text.lowercased()
+        let hexDigits = Array("0123456789abcdef".utf8)
+        if text.utf8.count == 64 {
+            return text.utf8.allSatisfy(hexDigits.contains) ? text : asWritten
+        }
+        // RFC 4648 base32, 5 bits a character: 52 characters carry the 256 bits
+        // of a key and 4 more, which must be zero.
+        let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".utf8)
+        var bytes: [UInt8] = []
+        var buffer: UInt32 = 0
+        var bits = 0
+        for character in text.uppercased().utf8 {
+            guard let value = alphabet.firstIndex(of: character) else { return asWritten }
+            buffer = (buffer << 5) | UInt32(value)
+            bits += 5
+            if bits >= 8 {
+                bits -= 8
+                bytes.append(UInt8((buffer >> UInt32(bits)) & 0xFF))
+            }
+        }
+        guard text.utf8.count == 52, bytes.count == 32, buffer & ((1 << UInt32(bits)) - 1) == 0 else {
+            return asWritten
+        }
+        return bytes.map { String(format: "%02x", $0) }.joined()
     }
 
     /// A domain rule as the core compares it.

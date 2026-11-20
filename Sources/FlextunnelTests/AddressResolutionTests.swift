@@ -25,6 +25,24 @@ final class AddressResolutionTests: XCTestCase {
         XCTAssertEqual(resolved("[fdb8::1]:8006"), "https://[fdb8::1]:8006")
     }
 
+    /// A destination may be named with a single label. Typed with or without
+    /// a scheme it is an address: as a search, the name, port and path of a
+    /// private address would go to the search engine.
+    func testANameTheSessionRoutesIsAnAddressNotASearch() {
+        let hosts: Set<String> = ["office", "nas"]
+        func resolved(_ text: String) -> String? {
+            BrowserModel.resolve(text, privateHosts: hosts)?.absoluteString
+        }
+        XCTAssertEqual(resolved("http://office:8080/settings"), "http://office:8080/settings")
+        XCTAssertEqual(resolved("https://Office/"), "https://Office/")
+        XCTAssertEqual(resolved("office:8080/settings"), "https://office:8080/settings")
+        XCTAssertEqual(resolved("nas"), "https://nas")
+        // A name the session doesn't route is still a search.
+        XCTAssertEqual(BrowserModel.resolve("http://intranet:8080/x", privateHosts: hosts)?.host(), "duckduckgo.com")
+        XCTAssertEqual(BrowserModel.resolve("intranet", privateHosts: hosts)?.host(), "duckduckgo.com")
+        XCTAssertEqual(BrowserModel.resolve("office hours", privateHosts: hosts)?.host(), "duckduckgo.com")
+    }
+
     func testAnythingElseIsASearch() throws {
         for query in ["flextunnel docs", "intranet", "3.14", "ftp://files.example"] {
             let url = try XCTUnwrap(BrowserModel.resolve(query), query)

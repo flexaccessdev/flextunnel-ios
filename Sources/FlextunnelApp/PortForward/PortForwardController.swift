@@ -146,11 +146,30 @@ final class PortForwardController: ObservableObject {
                 retainedSetupErrors[forward.id] = "no destination routes \(forward.remoteHost)"
             }
         }
-        if let error = proxy.setPortForwards(forwards) {
-            for forward in forwards where forward.enabled {
-                runtime[forward.id] = RuntimeStatus(state: .failed(error))
+        if proxy.setPortForwards(forwards) != nil {
+            // The core takes the set whole, and a set it refuses changes
+            // nothing there: every listener it had stays up, including one
+            // that was just switched off here. So find what it objects to —
+            // start from nothing listening, offer the enabled forwards one
+            // more at a time, and switch off each it refuses with its reason —
+            // which leaves the core listening on exactly what reads as on.
+            var offered = forwards
+            for index in offered.indices { offered[index].enabled = false }
+            if let error = proxy.setPortForwards(offered) {
+                // Not about any one forward: the session isn't taking sets.
+                for forward in forwards where forward.enabled {
+                    runtime[forward.id] = RuntimeStatus(state: .failed(error))
+                }
+                return
             }
-            return
+            for index in forwards.indices where forwards[index].enabled {
+                offered[index].enabled = true
+                if let reason = proxy.setPortForwards(offered) {
+                    offered[index].enabled = false
+                    forwards[index].enabled = false
+                    retainedSetupErrors[forwards[index].id] = reason
+                }
+            }
         }
         refreshRuntime()
     }

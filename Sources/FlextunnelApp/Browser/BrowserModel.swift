@@ -12,6 +12,9 @@ import WebKit
 @Observable
 final class BrowserModel {
     let socksPort: UInt16
+    /// The names the session routes by exact match (`RouteTable.exactNames`):
+    /// typed into the address bar, each is an address, never a search.
+    let privateHosts: Set<String>
     let library: BrowserLibrary
     let downloads: BrowserDownloadManager
     private(set) var tabs: [BrowserTab]
@@ -21,8 +24,12 @@ final class BrowserModel {
     private let websiteDataStore = WKWebsiteDataStore.default()
     private let certificateTrustStore = BrowserCertificateTrustStore()
 
-    init(socksPort: UInt16, proxyMatchDomains: [String]?, library: BrowserLibrary) {
+    init(
+        socksPort: UInt16, proxyMatchDomains: [String]?, privateHosts: Set<String>,
+        library: BrowserLibrary
+    ) {
         self.socksPort = socksPort
+        self.privateHosts = privateHosts
         self.library = library
         websiteDataStore.proxyConfigurations = [
             .loopbackSocks5(port: socksPort, matchDomains: proxyMatchDomains)
@@ -92,11 +99,12 @@ final class BrowserModel {
     /// Resolves address-bar text and loads it in the selected tab.
     /// - URL-like input (no spaces, contains a dot, or already has a scheme) loads
     ///   directly; a missing scheme is prepended (`http://` for `.onion`, else `https://`).
+    /// - So does a name the session routes by exact match, dot or no dot.
     /// - Anything else is treated as a query and sent to DuckDuckGo.
     func navigate(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard let url = Self.resolve(trimmed) else { return }
+        guard let url = Self.resolve(trimmed, privateHosts: privateHosts) else { return }
         let tab = selectedTab ?? addTab()
         tab.load(url, displayAddress: trimmed)
     }
@@ -106,11 +114,15 @@ final class BrowserModel {
         downloads.shutdown()
     }
 
-    static func resolve(_ text: String) -> URL? {
+    /// `privateHosts` are the names the session routes by exact match
+    /// (lowercased). A destination may be named with a single label, which
+    /// otherwise reads as a search term — and a search would send the name,
+    /// port and path of a private address to a search engine.
+    static func resolve(_ text: String, privateHosts: Set<String> = []) -> URL? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        if let url = webURL(from: trimmed) {
+        if let url = webURL(from: trimmed, privateHosts: privateHosts) {
             return url
         }
 
@@ -119,21 +131,21 @@ final class BrowserModel {
         return components?.url
     }
 
-    private static func webURL(from text: String) -> URL? {
+    private static func webURL(from text: String, privateHosts: Set<String>) -> URL? {
         if let localhostURL = localhostURL(from: text) {
             return localhostURL
         }
 
         let lowercased = text.lowercased()
         if lowercased.hasPrefix("http://") || lowercased.hasPrefix("https://") {
-            return validHTTPURL(from: text)
+            return validHTTPURL(from: text, privateHosts: privateHosts)
         }
 
         if lowercased.contains("://") {
             return nil
         }
 
-        return bareHostURL(from: text)
+        return bareHostURL(from: text, privateHosts: privateHosts)
     }
 
     private static func localhostURL(from text: String) -> URL? {
@@ -145,22 +157,20 @@ final class BrowserModel {
         return components.url
     }
 
-    private static func validHTTPURL(from text: String) -> URL? {
+    private static func validHTTPURL(from text: String, privateHosts: Set<String>) -> URL? {
         guard !text.contains(" "),
               let components = URLComponents(string: text),
               let scheme = components.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
               let host = components.host,
-              hostIsNavigable(host) else {
+              hostIsNavigable(host, privateHosts: privateHosts) else {
             return nil
         }
         return components.url
     }
 
-    private static func bareHostURL(from text: String) -> URL? {
-        // A bracketed IPv6 literal (`[fdb8::1]:8006`) is an address even though
-        // it has no dot.
-        guard !text.contains(" "), text.contains(".") || text.hasPrefix("["), Double(text) == nil else { return nil }
+    private static func bareHostURL(from text: String, privateHosts: Set<String>) -> URL? {
+        guard !text.contains(" "), Double(text) == nil else { return nil }
 
         // Parse with a default scheme so the host is isolated from any port or
         // path, then pick the real scheme from the parsed host. Onion services
@@ -169,7 +179,10 @@ final class BrowserModel {
         // regardless of case or port — uses http; everything else stays https.
         guard var components = URLComponents(string: "https://\(text)"),
               let host = components.host,
-              hostIsNavigable(host) else {
+              // A bracketed IPv6 literal (`[fdb8::1]:8006`) is an address even
+              // though it has no dot, and so is a private name (`office:8080`).
+              text.contains(".") || text.hasPrefix("[") || privateHosts.contains(host.lowercased()),
+              hostIsNavigable(host, privateHosts: privateHosts) else {
             return nil
         }
         if host.lowercased().hasSuffix(".onion") {
@@ -178,10 +191,11 @@ final class BrowserModel {
         return components.url
     }
 
-    private static func hostIsNavigable(_ host: String) -> Bool {
+    private static func hostIsNavigable(_ host: String, privateHosts: Set<String>) -> Bool {
         // A colon in the parsed host means an IPv6 literal (URLComponents keeps
         // the port separate), e.g. https://[fdb8:d92a:f690:1abf::1]:8006.
         host == "localhost" || host.contains(".") || host.contains(":")
+            || privateHosts.contains(host.lowercased())
     }
 }
 

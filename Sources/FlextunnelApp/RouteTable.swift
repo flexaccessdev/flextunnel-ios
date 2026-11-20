@@ -77,6 +77,22 @@ struct RouteTable: Equatable {
         return nil
     }
 
+    /// The names the table routes by exact match: each destination's own host
+    /// and its exact domain rules, lowercased and without the root dot. These
+    /// are private names by configuration, whatever they look like — a single
+    /// label such as `office` included.
+    var exactNames: Set<String> {
+        var names = Set<String>()
+        for entry in entries {
+            names.insert(Self.routingKey(entry.host.lowercased()))
+            for domain in entry.domains {
+                let rule = Self.rule(domain)
+                if !rule.contains("*") { names.insert(rule) }
+            }
+        }
+        return names
+    }
+
     /// The destination whose `*` rule takes every hostname no other rule
     /// claims, so nothing by name is left to connect directly.
     var catchAllDestination: String? {
@@ -186,15 +202,41 @@ struct RouteTable: Equatable {
 
     // MARK: - Networks
 
-    /// The raw bytes of an IPv4 or IPv6 literal, or nil for a hostname.
+    /// The raw bytes of an IPv4 or IPv6 literal, or nil for a hostname — by
+    /// the core's reading of a literal, not the system's. Rust takes an IPv4
+    /// address only as four decimal octets, where `IPv4Address` also takes the
+    /// `inet_aton` shorthands (`10.1`, `203.0.28937`) and leading zeros; and it
+    /// takes no zone on an IPv6 address (`fe80::1%en0`). To the core those are
+    /// hostnames, so reading them as addresses here would route, label and
+    /// validate them the opposite way.
     static func addressBytes(_ text: String) -> [UInt8]? {
-        if let v4 = IPv4Address(text) { return [UInt8](v4.rawValue) }
-        if let v6 = IPv6Address(text) { return [UInt8](v6.rawValue) }
-        return nil
+        if let v4 = ipv4Bytes(text) { return v4 }
+        guard !text.contains("%"), let v6 = IPv6Address(text) else { return nil }
+        return [UInt8](v6.rawValue)
     }
 
-    /// A network rule of either family (`10.0.0.0/8`, `fd00::/8`); a bare IP is
-    /// a single-host network. Nil for a malformed rule, which matches nothing.
+    private static func ipv4Bytes(_ text: String) -> [UInt8]? {
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return nil }
+        var bytes: [UInt8] = []
+        for part in parts {
+            guard isNumber(part), let octet = UInt8(part) else { return nil }
+            bytes.append(octet)
+        }
+        return bytes
+    }
+
+    /// A number in its one standard spelling: ASCII digits and nothing else —
+    /// no sign, no space, no other script — and no leading zero.
+    private static func isNumber(_ text: Substring) -> Bool {
+        !text.isEmpty && text.utf8.allSatisfy { $0 >= 0x30 && $0 <= 0x39 }
+            && (text == "0" || !text.hasPrefix("0"))
+    }
+
+    /// A network rule of either family in standard CIDR notation — a full
+    /// address, then optionally `/` and a prefix length (`10.0.0.0/8`,
+    /// `fd00::/8`); a bare IP is a single-host network. Nil for anything else
+    /// (`10.1/16`, `10.0.0.0/-0`), which matches nothing.
     private static func parseCIDR(_ rule: String) -> (base: [UInt8], bits: Int)? {
         let parts = rule.trimmingCharacters(in: .whitespacesAndNewlines)
             .split(separator: "/", omittingEmptySubsequences: false)
@@ -202,7 +244,9 @@ struct RouteTable: Equatable {
               let base = addressBytes(String(first)) else { return nil }
         let maxBits = base.count * 8
         guard parts.count == 2 else { return (base, maxBits) }
-        guard let bits = Int(parts[1]), (0...maxBits).contains(bits) else { return nil }
+        // Standard notation only: `Int` would also take a sign (`/-0`), which
+        // the core refuses.
+        guard isNumber(parts[1]), let bits = Int(parts[1]), bits <= maxBits else { return nil }
         return (base, bits)
     }
 
@@ -213,14 +257,33 @@ struct RouteTable: Equatable {
     /// however it was written). Nil when `rule` is not a network rule.
     static func networkKey(_ rule: String) -> String? {
         guard let network = parseCIDR(rule) else { return nil }
+        // The byte count tells the families apart.
+        return networkAddress(network).map { String(format: "%02x", $0) }.joined() + "/\(network.bits)"
+    }
+
+    /// The standard spelling of a network rule written with address bits
+    /// beyond its prefix (`10.1.2.3/8` is `10.0.0.0/8`), or nil when `rule` has
+    /// none — it is standard already, or not a network rule at all. The core
+    /// takes such a rule and routes the whole network; the editor asks for the
+    /// network as it will be routed.
+    static func networkWithoutHostBits(_ rule: String) -> String? {
+        guard let network = parseCIDR(rule) else { return nil }
+        let address = networkAddress(network)
+        guard address != network.base else { return nil }
+        let text = address.count == 4
+            ? address.map(String.init).joined(separator: ".")
+            : IPv6Address(Data(address)).map { "\($0)" } ?? ""
+        return "\(text)/\(network.bits)"
+    }
+
+    /// A network's address: its base with every bit beyond the prefix cleared.
+    private static func networkAddress(_ network: (base: [UInt8], bits: Int)) -> [UInt8] {
         var remaining = network.bits
-        let masked = network.base.map { byte -> UInt8 in
+        return network.base.map { byte -> UInt8 in
             defer { remaining -= 8 }
             if remaining >= 8 { return byte }
             return remaining > 0 ? byte & ~(0xFF >> UInt8(remaining)) : 0
         }
-        // The byte count tells the families apart.
-        return masked.map { String(format: "%02x", $0) }.joined() + "/\(network.bits)"
     }
 
     /// Network containment; never true across families.

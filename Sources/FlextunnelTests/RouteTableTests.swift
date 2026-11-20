@@ -166,6 +166,49 @@ final class RouteTableTests: XCTestCase {
         XCTAssertFalse(tunneled("fd00::1", cidrs: cidrs))
     }
 
+    /// The core reads an address the way Rust does: four decimal octets, or an
+    /// IPv6 address without a zone. What the system's parser also takes — the
+    /// `inet_aton` shorthands, leading zeros, a zone — is a hostname to it.
+    func testOnlyWhatTheCoreReadsAsAnAddressIsOne() {
+        let cidrs = ["203.0.113.0/24", "10.0.0.0/8", "fe80::/10"]
+        XCTAssertTrue(tunneled("203.0.113.9", cidrs: cidrs))
+        for host in ["203.0.28937", "203.7434505", "10.1", "010.0.0.1", "0x0a.0.0.1", "10.0.0.1.", "fe80::1%en0"] {
+            XCTAssertFalse(tunneled(host, cidrs: cidrs), "\(host) was read as an address")
+            XCTAssertNil(RouteTable.addressBytes(host), host)
+        }
+        // As a hostname, such a name is the domain rules' to route.
+        XCTAssertTrue(tunneled("203.0.28937", domains: ["*"], cidrs: cidrs))
+        XCTAssertTrue(tunneled("10.1", domains: ["10.1"]))
+    }
+
+    func testNetworkRulesTheCoreRefusesAreNotRules() {
+        for rule in ["10.1/16", "10.0.0.0/-0", "10.0.0.0/+8", "10.0.0.0/ 8", "10.0.0.0/", "010.0.0.0/8",
+                     "10.0.0.0/08", "10.0.0.0/00", "fe80::1%en0/64"] {
+            XCTAssertNil(RouteTable.networkKey(rule), rule)
+            XCTAssertFalse(tunneled("10.0.0.1", cidrs: [rule]), rule)
+        }
+    }
+
+    func testHostBitsAreReportedWithTheStandardSpelling() {
+        XCTAssertEqual(RouteTable.networkWithoutHostBits("10.1.2.3/8"), "10.0.0.0/8")
+        XCTAssertEqual(RouteTable.networkWithoutHostBits("192.168.1.5/24"), "192.168.1.0/24")
+        XCTAssertEqual(RouteTable.networkWithoutHostBits("10.9.9.9/0"), "0.0.0.0/0")
+        XCTAssertEqual(RouteTable.networkWithoutHostBits("FD00:1::1/8"), "fd00::/8")
+        XCTAssertEqual(RouteTable.networkWithoutHostBits("2001:db8::1/64"), "2001:db8::/64")
+        // Standard already, a bare address (its own host network), or no rule.
+        for rule in ["10.0.0.0/8", "192.168.1.5", "192.168.1.5/32", "0.0.0.0/0", "fd00::/8", "2001:db8::1",
+                     "::/0", "10.1/16", "not-an-ip"] {
+            XCTAssertNil(RouteTable.networkWithoutHostBits(rule), rule)
+        }
+    }
+
+    func testExactNamesAreDestinationHostsAndExactRules() {
+        let t = table(
+            ("Office", ["*.corp.example", "Wiki.Example.", "nas"], ["10.0.0.0/8"]),
+            ("home.internal", ["*"], []))
+        XCTAssertEqual(t.exactNames, ["office", "wiki.example", "nas", "home.internal"])
+    }
+
     func testEquivalentNetworkRulesShareAKey() {
         // The core compares two destinations' networks as `network/prefix`.
         XCTAssertEqual(RouteTable.networkKey("10.1.2.3/8"), RouteTable.networkKey(" 10.0.0.0/8 "))

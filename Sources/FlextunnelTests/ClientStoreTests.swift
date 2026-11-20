@@ -72,6 +72,32 @@ final class ClientStoreTests: XCTestCase {
             "Another destination is already named a.internal.")
     }
 
+    /// The core reads a node id as lowercase hex or as base32 in either case,
+    /// and refuses the same key on two destinations however each is written.
+    func testOneServerIsOneDestinationHoweverItsIDIsWritten() {
+        let hex = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+        let base32 = "AEBAGBAFAYDQQCIKBMGA2DQPCAIREEYUCULBOGAZDINRYHI6D4QA"
+        XCTAssertEqual(ClientStore.nodeKey(base32), hex)
+        XCTAssertEqual(ClientStore.nodeKey(" \(base32.lowercased())\n"), hex)
+        XCTAssertEqual(ClientStore.nodeKey(hex), hex)
+
+        XCTAssertNil(store.save(destination(host: "a.internal", node: hex)))
+        for same in [base32, base32.lowercased()] {
+            XCTAssertEqual(
+                store.save(destination(host: "b.internal", node: same))?.message,
+                "a.internal already reaches that server.")
+        }
+        // Another key is another server.
+        let other = String(repeating: "A", count: 52)
+        XCTAssertEqual(ClientStore.nodeKey(other), String(repeating: "0", count: 64))
+        XCTAssertNil(store.save(destination(host: "b.internal", node: other)))
+        // Text that is no key is never mistaken for one: base32 with stray
+        // trailing bits, the wrong length, uppercase hex.
+        for invalid in [String(repeating: "A", count: 51) + "B", String(repeating: "A", count: 51), hex.uppercased()] {
+            XCTAssertTrue(ClientStore.nodeKey(invalid).hasPrefix("?"), invalid)
+        }
+    }
+
     func testDomainRulesAreNamesNotAddresses() {
         for rule in ["10.0.0.1", "[fd00::1]", "*.*.example", "a..b", "has space.example",
                      "flextunnel.internal", "*.flextunnel.internal", "a.internal"] {
@@ -84,13 +110,31 @@ final class ClientStoreTests: XCTestCase {
     }
 
     func testIPRangesMustParse() {
-        for rule in ["10.0.0.0/33", "not-an-ip", "corp.example", "fd00::/129"] {
+        for rule in ["10.0.0.0/33", "not-an-ip", "corp.example", "fd00::/129", "10.1/16", "10.0.0.0/-0"] {
             XCTAssertNotNil(
                 store.save(destination(host: "a.internal", node: "node-a", cidrs: [rule])),
                 "\(rule) was accepted")
         }
         XCTAssertNil(store.save(destination(
             host: "a.internal", node: "node-a", cidrs: ["10.0.0.0/8", "192.168.1.5", "fd00::/8"])))
+    }
+
+    /// An IP range is written as the network it routes: address bits beyond
+    /// the prefix are refused, with the standard spelling offered.
+    func testIPRangesAreWrittenWithoutHostBits() {
+        XCTAssertEqual(
+            store.save(destination(host: "a.internal", node: "node-a", cidrs: ["10.1.2.3/8"]))?.message,
+            "10.1.2.3/8 has address bits beyond its prefix. Use 10.0.0.0/8.")
+        XCTAssertEqual(
+            store.save(destination(host: "a.internal", node: "node-a", cidrs: ["192.168.1.5/24"]))?.message,
+            "192.168.1.5/24 has address bits beyond its prefix. Use 192.168.1.0/24.")
+        XCTAssertEqual(
+            store.save(destination(host: "a.internal", node: "node-a", cidrs: ["fd00::1/8"]))?.message,
+            "fd00::1/8 has address bits beyond its prefix. Use fd00::/8.")
+        XCTAssertTrue(store.destinations.isEmpty)
+        // One address is its own network.
+        XCTAssertNil(store.save(destination(
+            host: "a.internal", node: "node-a", cidrs: ["192.168.1.5", "192.168.2.5/32", "fd00::1"])))
     }
 
     func testARuleBelongsToOneDestination() {
@@ -139,10 +183,10 @@ final class ClientStoreTests: XCTestCase {
         XCTAssertNil(store.save(destination(
             host: "a.internal", node: "node-a",
             cidrs: ["10.0.0.0/8", "192.168.1.5", "fd00::/8", "2001:db8::1"])))
-        for same in ["10.1.2.3/8", "192.168.1.5/32", "FD00:0:0::/8", "fd00:0000::1/8", "2001:DB8:0:0:0:0:0:1/128"] {
+        for same in [" 10.0.0.0/8", "192.168.1.5/32", "FD00:0:0::/8", "2001:DB8:0:0:0:0:0:1/128"] {
             XCTAssertEqual(
                 store.save(destination(host: "b.internal", node: "node-b", cidrs: [same]))?.message,
-                "\(same) is already routed through a.internal.")
+                "\(same.trimmingCharacters(in: .whitespaces)) is already routed through a.internal.")
         }
         // Distinct nested prefixes are different rules: the longer one wins.
         XCTAssertNil(store.save(destination(

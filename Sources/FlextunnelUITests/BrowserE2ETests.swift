@@ -43,7 +43,9 @@ final class BrowserE2ETests: XCTestCase {
     }
 
     private static let siteHost = "site.e2e.internal"
-    private static let plainHost = "plain.e2e.internal"
+    /// A single label, as a destination may be named: in the address bar it
+    /// has to load as an address rather than go out as a search.
+    private static let plainHost = "plain"
     private static let cidrHost = "cidr.e2e.internal"
 
     private var app: XCUIApplication!
