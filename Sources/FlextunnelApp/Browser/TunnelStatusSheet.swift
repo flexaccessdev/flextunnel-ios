@@ -253,8 +253,8 @@ struct TunnelStatusSheet: View {
                     }
                     .accessibilityIdentifier("tunnelStatus.connectionPath.\(destination.host)")
                 }
-                // The server's own view — its routed set, host aliases, DNS
-                // forwards and bridges. Fetching it connects the destination.
+                // The server's own view — its routed set, host aliases and DNS
+                // forwards. Fetching it connects the destination.
                 Button {
                     onOpenStatusPage(URL(string: "http://flextunnel.internal/servers/\(destination.host)/")!)
                 } label: {
