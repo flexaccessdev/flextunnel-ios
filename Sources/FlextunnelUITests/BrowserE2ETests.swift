@@ -55,6 +55,9 @@ final class BrowserE2ETests: XCTestCase {
     private var closedPort: String!
     /// `ci/e2e.sh`'s control endpoint, which stops and restarts a server.
     private var control: String!
+    /// Where the app writes its core's log (see `E2ELaunchConfig.redirectLog`),
+    /// which says how the in-app proxy routed each request that reached it.
+    private var appLog: URL!
     /// A free loopback port for the app to forward. The simulator shares this
     /// Mac's loopback, so the test reaches the forward itself.
     private var forwardPort: String!
@@ -87,6 +90,12 @@ final class BrowserE2ETests: XCTestCase {
         self.control = control
         app = XCUIApplication()
         app.launchEnvironment["FLEXTUNNEL_E2E_AUTH_SECRET"] = secret
+        let appLog = FileManager.default.temporaryDirectory
+            .appendingPathComponent("flextunnel-e2e-app-\(UUID().uuidString).log")
+        self.appLog = appLog
+        addTeardownBlock { try? FileManager.default.removeItem(at: appLog) }
+        app.launchEnvironment["FLEXTUNNEL_E2E_APP_LOG"] = appLog.path
+        app.launchEnvironment["RUST_LOG"] = "warn,flextunnel_core=debug"
     }
 
     override func tearDown() {
@@ -357,6 +366,12 @@ final class BrowserE2ETests: XCTestCase {
     /// nothing answers, so the log is the only evidence of the path: loopback
     /// and this device's own addresses are never proxied, so no local IP can
     /// stand in.)
+    ///
+    /// A page on no route loads the same whether WebKit sent it to the proxy
+    /// or went around it, so that it loads proves nothing about the path: the
+    /// app's own log does, where the proxy records each request it sends out
+    /// directly. The name `localhost` is proxied like any other hostname — it
+    /// is the loopback *addresses* the system keeps to itself.
     func testNetworkRouteTunnelsItsIPRangeAndKeepsOtherHostsLoading() {
         connect(with: .network)
 
@@ -371,13 +386,20 @@ final class BrowserE2ETests: XCTestCase {
         let unrouted = "http://localhost:\(sitePort)"
         open(unrouted + "/")
         waitForPageText("flextunnel e2e home")
+        XCTAssertTrue(
+            waitForDirectRequests(to: "localhost", atLeast: 1),
+            "the page on no route did not go through the in-app proxy")
 
         let tunneledAddress = "203.0.113.9"
         XCTAssertFalse(serverLog(.cidr).contains(tunneledAddress))
 
         takeDown(.cidr)
+        let before = directRequests(to: "localhost")
         open(unrouted + "/page2.html")
         waitForPageText("flextunnel e2e page two")
+        XCTAssertTrue(
+            waitForDirectRequests(to: "localhost", atLeast: before + 1),
+            "with its server down, the page on no route did not go through the in-app proxy")
 
         open("http://\(tunneledAddress)/")
         bringBack(.cidr)
@@ -600,6 +622,24 @@ final class BrowserE2ETests: XCTestCase {
             Thread.sleep(forTimeInterval: 1)
         } while Date() < deadline
         return false
+    }
+
+    /// How many requests for `host` the in-app proxy has sent out directly so
+    /// far, by the core's own account of each one.
+    private func directRequests(to host: String) -> Int {
+        let log = (try? String(contentsOf: appLog, encoding: .utf8)) ?? ""
+        return log.components(separatedBy: "Direct (no destination routes it): Domain(\"\(host)\"").count - 1
+    }
+
+    /// Waits for the in-app proxy to have sent `count` requests for `host` out
+    /// directly.
+    private func waitForDirectRequests(to host: String, atLeast count: Int) -> Bool {
+        let deadline = Date().addingTimeInterval(10)
+        while directRequests(to: host) < count {
+            guard Date() < deadline else { return false }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        return true
     }
 
     /// Stops or starts `server` through `ci/e2e.sh`'s control endpoint, and

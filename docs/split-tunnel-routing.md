@@ -108,12 +108,20 @@ scoping. See [port forwarding](port-forwarding.md).
 
 ## Verifying the split
 
-- With hostname-only routes, stop the proxy or observe an outage. A fresh
-  request to a host outside every proxy suffix should still load;
-  `http://flextunnel.internal` should fail without a running session. If
-  everything fails, WebKit scoping is not active: check **Tunnel status** for a
-  `*` or IP-range route. Existing pooled connections and cached pages can
-  obscure this check.
+- With hostname-only routes, the direct evidence is what happens when the
+  local SOCKS listener alone is gone, with the browser still open and the
+  device online — **Tunnel status** then reads *Stopped* with **SOCKS
+  listener: Not listening** (the session ended behind the browser; nothing in
+  the app stops the listener on its own). In that state make two fresh
+  requests: a page you know is reachable on a host outside every proxy suffix
+  should still load, and `http://flextunnel.internal`, which only the listener
+  answers, should fail. If both fail, WebKit scoping is not active: check
+  **Tunnel status** for a `*` or IP-range route. Existing pooled connections
+  and cached pages can obscure this check.
+  A server being unreachable is not this test, and neither is losing the
+  Internet: with the listener up the proxy still sends unrouted hosts out
+  directly, so they load whether or not WebKit went around it, and offline
+  nothing loads either way. The two checks below work at any time.
 - SOCKS5 carries only TCP CONNECT, so QUIC/HTTP-3 cannot use the proxy. An
   unrouted HTTP/3 site (for example `https://cloudflare-quic.com`) reporting
   HTTP/3 bypassed it.
@@ -121,9 +129,14 @@ scoping. See [port forwarding](port-forwarding.md).
   reaching the Rust proxy log `Tunneling via <destination>: …` or
   `Direct (no destination routes it): …`. Hosts bypassing it produce neither
   line.
-- For server-side DNS, route a hostname that only resolves on the server and
-  load it from the app. Server debug logs (`RUST_LOG=flextunnel=debug`) show
-  `Stream target: Domain(…)` after aliasing and before dialing.
+- For server-side DNS, load a hostname that only resolves on the server. It
+  has to be in two places: on a destination's routes in the app, which only
+  chooses the server, and in that server's own routed set
+  (`routed_domains`), which is what lets the server dial it — adding it in the
+  app does not add it there. Add it to both first, or use a hostname the
+  server already allows. Server debug logs (`RUST_LOG=flextunnel=debug`) then
+  show `Stream target: Domain(…)` after aliasing and before dialing; a name
+  the server doesn't allow is refused before any lookup.
 
 `RouteTableTests` covers the routing mirror and the scoping list;
 `ProxyConfigurationTests` covers scoping and disabled failover.

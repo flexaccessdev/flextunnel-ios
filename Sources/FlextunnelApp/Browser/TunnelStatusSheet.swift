@@ -192,8 +192,12 @@ struct TunnelStatusSheet: View {
     }
 
     private var healthExplanation: String {
+        // A `*` rule takes only what reaches the in-app proxy as a hostname
+        // and matches nothing more specific: this app answers its own status
+        // page, and loopback and the device's own addresses never get there.
         let split = proxy.routeTable?.catchAllDestination.map {
-            "Every site goes through a destination — \($0) takes the ones no other claims."
+            "A hostname that reaches the in-app proxy and is on no other route goes through \($0). "
+                + "This app's own status page, loopback and this device's own addresses don't."
         } ?? "Sites on a destination's routes go through its server; everything else connects directly."
         switch proxy.health {
         case .connected:

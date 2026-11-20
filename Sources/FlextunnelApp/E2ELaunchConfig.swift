@@ -46,6 +46,17 @@ enum E2ELaunchConfig {
             relayURLs: env["FLEXTUNNEL_E2E_RELAY_URLS"] ?? "")
     }
 
+    /// Sends the process's stderr — where the core logs — to the file a test
+    /// names in `FLEXTUNNEL_E2E_APP_LOG`, so the test can read how the in-app
+    /// proxy routed a request (with `RUST_LOG` raising the core to debug).
+    /// The Simulator doesn't confine an app to its container, so the path can
+    /// be the test runner's own.
+    static func redirectLog() {
+        guard let path = ProcessInfo.processInfo.environment["FLEXTUNNEL_E2E_APP_LOG"],
+              !path.isEmpty else { return }
+        freopen(path, "a", stderr)
+    }
+
     /// Seeds and picks the E2E key, and replaces the destinations. The
     /// simulator's Keychain outlives an uninstall, so a key left by an earlier
     /// run is reused when it holds the same secret and replaced when it doesn't

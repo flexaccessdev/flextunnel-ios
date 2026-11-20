@@ -109,8 +109,8 @@ final class ClientStore: ObservableObject {
     /// Normalize `destination` and check it against the others. These are the
     /// core's own rules for a destination (`route_table.rs`), repeated here so a
     /// mistake is reported next to the field instead of when a session starts;
-    /// the core checks again at start and is the authority — whether a server
-    /// node id is a real key in particular is only decided there.
+    /// the core checks again at start and is the authority — whether a
+    /// well-formed server node id is a real key is only decided there.
     func validated(_ destination: Destination) -> Result<Destination, ValidationError> {
         var result = destination
         switch Self.validatedHost(destination.host) {
@@ -125,6 +125,13 @@ final class ClientStore: ObservableObject {
         if result.serverNodeID.isEmpty {
             return .failure(.init(message: "Server node id is required."))
         }
+        // One bad id stops the whole session from starting, for every
+        // destination, so it is refused here rather than saved.
+        guard let node = Self.nodeKey(result.serverNodeID) else {
+            return .failure(.init(
+                message: "That is not a server node id. Paste the id the server prints: "
+                    + "64 hex digits, or its 52-character base32 form."))
+        }
         let others = destinations.filter { $0.id != destination.id }
         if others.contains(where: { $0.host == result.host }) {
             return .failure(.init(message: "Another destination is already named \(result.host)."))
@@ -137,7 +144,6 @@ final class ClientStore: ObservableObject {
                 message: "\(other.host) routes \(result.host) as a domain, but a destination's "
                     + "own name always means that server itself."))
         }
-        let node = Self.nodeKey(result.serverNodeID)
         if let other = others.first(where: { Self.nodeKey($0.serverNodeID) == node }) {
             return .failure(.init(message: "\(other.host) already reaches that server."))
         }
@@ -235,19 +241,18 @@ final class ClientStore: ObservableObject {
         text.hasPrefix("[") && text.hasSuffix("]") ? String(text.dropFirst().dropLast()) : text
     }
 
-    /// A server node id in a form its equivalent spellings share. The core
-    /// reads an id as 64 lowercase hex digits or as unpadded base32 in either
-    /// case (iroh's `PublicKey`), and both name the same 32-byte key — which it
-    /// then refuses to have on two destinations. An id that is neither is
-    /// compared as written, ignoring case; the core rejects it when a session
-    /// starts.
-    static func nodeKey(_ id: String) -> String {
+    /// The 32-byte key a server node id names, as hex — the form its
+    /// equivalent spellings share — or nil when it is not a node id. This is
+    /// how the core reads one (iroh's `PublicKey`): 64 lowercase hex digits, or
+    /// unpadded base32 in either case. Both name the same key, which the core
+    /// refuses to have on two destinations. What it cannot be told here is
+    /// whether the 32 bytes are a point on the curve; the core decides that
+    /// when a session starts.
+    static func nodeKey(_ id: String) -> String? {
         let text = id.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Marked, so text that is no key never equals one that decoded.
-        let asWritten = "?" + text.lowercased()
         let hexDigits = Array("0123456789abcdef".utf8)
         if text.utf8.count == 64 {
-            return text.utf8.allSatisfy(hexDigits.contains) ? text : asWritten
+            return text.utf8.allSatisfy(hexDigits.contains) ? text : nil
         }
         // RFC 4648 base32, 5 bits a character: 52 characters carry the 256 bits
         // of a key and 4 more, which must be zero.
@@ -256,7 +261,7 @@ final class ClientStore: ObservableObject {
         var buffer: UInt32 = 0
         var bits = 0
         for character in text.uppercased().utf8 {
-            guard let value = alphabet.firstIndex(of: character) else { return asWritten }
+            guard let value = alphabet.firstIndex(of: character) else { return nil }
             buffer = (buffer << 5) | UInt32(value)
             bits += 5
             if bits >= 8 {
@@ -265,7 +270,7 @@ final class ClientStore: ObservableObject {
             }
         }
         guard text.utf8.count == 52, bytes.count == 32, buffer & ((1 << UInt32(bits)) - 1) == 0 else {
-            return asWritten
+            return nil
         }
         return bytes.map { String(format: "%02x", $0) }.joined()
     }

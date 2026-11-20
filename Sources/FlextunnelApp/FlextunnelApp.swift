@@ -8,6 +8,13 @@ import SwiftUI
 /// destination routes is tunneled, which is where its access protection applies.
 @main
 struct FlextunnelApp: App {
+    init() {
+        #if DEBUG
+        // Before anything logs.
+        E2ELaunchConfig.redirectLog()
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()

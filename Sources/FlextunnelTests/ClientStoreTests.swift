@@ -24,12 +24,12 @@ final class ClientStoreTests: XCTestCase {
 
     func testSaveNormalizesTheFields() {
         XCTAssertNil(store.save(destination(
-            host: " Office.Internal ", node: " node-a\n",
+            host: " Office.Internal ", node: " \(Self.nodeID("node-a"))\n",
             domains: [" *.corp.example ", "", "*.CORP.example", "wiki.example"],
             cidrs: [" 10.0.0.0/8 "])))
         let saved = store.destinations[0]
         XCTAssertEqual(saved.host, "office.internal")
-        XCTAssertEqual(saved.serverNodeID, "node-a")
+        XCTAssertEqual(saved.serverNodeID, Self.nodeID("node-a"))
         XCTAssertEqual(saved.routedDomains, ["*.corp.example", "wiki.example"], "blanks and repeats dropped")
         XCTAssertEqual(saved.routedCIDRs, ["10.0.0.0/8"])
         XCTAssertEqual(
@@ -62,14 +62,38 @@ final class ClientStoreTests: XCTestCase {
     }
 
     func testServerNodeIDIsRequiredAndUnique() {
-        XCTAssertNotNil(store.save(destination(host: "a.internal", node: " ")))
+        XCTAssertEqual(
+            store.save(destination(host: "a.internal", node: " "))?.message, "Server node id is required.")
         XCTAssertNil(store.save(destination(host: "a.internal", node: "node-a")))
         XCTAssertEqual(
-            store.save(destination(host: "b.internal", node: "NODE-A"))?.message,
+            store.save(destination(host: "b.internal", node: "node-a"))?.message,
             "a.internal already reaches that server.")
         XCTAssertEqual(
             store.save(destination(host: "A.Internal", node: "node-b"))?.message,
             "Another destination is already named a.internal.")
+    }
+
+    /// An id the core could not read stops every session from starting, so
+    /// it is refused when saved — a new destination and an edit alike — and
+    /// the list stays as it was.
+    func testAServerNodeIDMustBeOneTheCoreReads() {
+        let valid = Self.nodeID("node-a")
+        for invalid in ["not-an-id", "office.internal", String(valid.dropLast()), valid + "0", valid.uppercased(),
+                        String(repeating: "g", count: 64), String(repeating: "A", count: 51),
+                        String(repeating: "A", count: 51) + "B", String(repeating: "1", count: 52)] {
+            let refused = store.save(destination(host: "a.internal", node: invalid))?.message ?? ""
+            XCTAssertTrue(refused.hasPrefix("That is not a server node id."), "\(invalid) was accepted")
+        }
+        XCTAssertTrue(store.destinations.isEmpty)
+
+        XCTAssertNil(store.save(destination(host: "a.internal", node: valid)))
+        var edited = store.destinations[0]
+        edited.serverNodeID = "not-an-id"
+        XCTAssertNotNil(store.save(edited))
+        XCTAssertEqual(store.destinations[0].serverNodeID, valid)
+        // Both of the core's spellings are accepted.
+        XCTAssertNil(store.save(destination(host: "b.internal", node: String(repeating: "a", count: 52))))
+        XCTAssertNil(store.save(destination(host: "c.internal", node: String(repeating: "B", count: 51) + "A")))
     }
 
     /// The core reads a node id as lowercase hex or as base32 in either case,
@@ -91,10 +115,10 @@ final class ClientStoreTests: XCTestCase {
         let other = String(repeating: "A", count: 52)
         XCTAssertEqual(ClientStore.nodeKey(other), String(repeating: "0", count: 64))
         XCTAssertNil(store.save(destination(host: "b.internal", node: other)))
-        // Text that is no key is never mistaken for one: base32 with stray
+        // Text that is no key is never read as one: base32 with stray
         // trailing bits, the wrong length, uppercase hex.
         for invalid in [String(repeating: "A", count: 51) + "B", String(repeating: "A", count: 51), hex.uppercased()] {
-            XCTAssertTrue(ClientStore.nodeKey(invalid).hasPrefix("?"), invalid)
+            XCTAssertNil(ClientStore.nodeKey(invalid), invalid)
         }
     }
 
@@ -209,7 +233,15 @@ final class ClientStoreTests: XCTestCase {
         host: String, node: String, domains: [String] = [], cidrs: [String] = []
     ) -> ClientStore.Destination {
         ClientStore.Destination(
-            id: UUID().uuidString, host: host, serverNodeID: node,
+            id: UUID().uuidString, host: host,
+            serverNodeID: node.hasPrefix("node-") ? Self.nodeID(node) : node,
             routedDomains: domains, routedCIDRs: cidrs)
+    }
+
+    /// A well-formed node id for a test's `node-…` label: 32 bytes made of
+    /// the label's own, as hex.
+    private static func nodeID(_ label: String) -> String {
+        let bytes = Array(label.utf8)
+        return (0..<32).map { String(format: "%02x", bytes[$0 % bytes.count]) }.joined()
     }
 }
