@@ -3,11 +3,12 @@ import SwiftUI
 import WidgetKit
 
 /// Lock-screen banner + Dynamic Island rendering for a port-forwarding session
-/// (browser sessions never start one). Colors
-/// follow tunnel-link state: green when connected, orange while reconnecting. Once
-/// the pushed state goes stale (`context.isStale` — the app stopped updating, e.g.
-/// it was suspended in the background), everything dims to a neutral "status
-/// unknown, open app" look so we never show a confidently-wrong "Connected".
+/// (browser sessions never start one). Colors follow the session's state: green
+/// while it serves, orange while a server is connecting or can't be reached.
+/// Once the pushed state goes stale (`context.isStale` — the app stopped
+/// updating, e.g. it was suspended in the background), everything dims to a
+/// neutral "status unknown, open app" look so we never show a confidently-wrong
+/// "Connected".
 struct TunnelLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: TunnelActivityAttributes.self) { context in
@@ -125,12 +126,14 @@ private struct StatusPill: View {
     }
 }
 
-/// Neutral once stale; otherwise green connected / orange reconnecting.
+/// Neutral once stale or stopped; otherwise green serving / orange in trouble.
 private func statusColor(_ state: TunnelActivityAttributes.ContentState, isStale: Bool) -> Color {
     if isStale { return .secondary }
-    if state.tunnelConnected { return .green }
-    if state.socksAlive { return .orange }
-    return .secondary
+    switch state.level {
+    case .ok: return .green
+    case .attention: return .orange
+    case .down: return .secondary
+    }
 }
 
 private func statusText(_ state: TunnelActivityAttributes.ContentState, isStale: Bool) -> String {

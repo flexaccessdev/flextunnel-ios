@@ -1,8 +1,8 @@
 import SwiftUI
 import UIKit
 
-/// Full-screen forwarding-only session: tunnel status and server-direct local
-/// forwards, with no browser and no SOCKS5 listener. Other apps on the device
+/// Full-screen forwarding-only session: each destination's state and the
+/// server-direct local forwards, with no browser and no SOCKS5 listener. Other apps on the device
 /// reach the configured forwards at localhost while this app is alive; when the
 /// keep-alive was opted into on the start screen, the location session (see
 /// `BackgroundKeepAlive`) holds this one in the background, otherwise it is
@@ -14,28 +14,29 @@ struct ProxyOnlyView: View {
     let onStop: () -> Void
 
     @State private var editingDraft: ForwardDraft?
-    /// Drives the on-demand connection-path snapshot sheet.
-    @State private var showingConnPath = false
+    /// The destination whose on-demand connection-path snapshot is shown.
+    @State private var connPathHost: ConnPathTarget?
 
     var body: some View {
         NavigationStack {
             List {
                 statusSection
+                destinationsSection
                 forwardsSection
                 backgroundSection
 
                 Section {
-                    // Offered whenever the link is down, not just when the proxy
-                    // died: if the core's own reconnect is stuck this is the only
-                    // way out — it relaunches the session. Held off while a
-                    // relaunch is still establishing.
-                    if !proxy.sessionAlive || !proxy.tunnelConnected {
+                    // A destination that can't be reached retries on its own
+                    // whenever a forward uses it; Restart is the way out when
+                    // that isn't enough, or when the session itself ended. Held
+                    // off while a relaunch is in flight.
+                    if proxy.health == .stopped || proxy.health == .trouble || proxy.health == .restarting {
                         Button {
-                            proxy.retryNow()
+                            proxy.restartNow()
                         } label: {
-                            Label("Reconnect", systemImage: "arrow.clockwise")
+                            Label("Restart Session", systemImage: "arrow.clockwise")
                         }
-                        .disabled(!proxy.canRetry)
+                        .disabled(!proxy.canRestart)
                     }
                     Button(role: .destructive, action: onStop) {
                         Label("Stop Forwarding", systemImage: "stop.circle")
@@ -60,6 +61,7 @@ struct ProxyOnlyView: View {
                 ForwardEditSheet(
                     draft: draft,
                     isLocalPortTaken: { store.isLocalPortTaken($0, excluding: draft.existingID) },
+                    destination: { proxy.routeTable?.destination(for: $0) },
                     onSave: { forward in
                         if draft.existingID != nil {
                             store.update(forward)
@@ -68,24 +70,24 @@ struct ProxyOnlyView: View {
                         }
                     })
             }
-            .sheet(isPresented: $showingConnPath) {
-                ConnPathSheet(query: { proxy.queryConnPath() })
+            .sheet(item: $connPathHost) { target in
+                ConnPathSheet(host: target.host, query: { proxy.queryConnPath(host: target.host) })
             }
         }
     }
 
     // MARK: - Status
 
-    /// Mirrors the browser's TunnelStatusPopover row-for-row so both surfaces
-    /// report the tunnel at the same level of detail.
+    /// The session as a whole. Each server's own state is its destination's,
+    /// in the section below.
     private var statusSection: some View {
-        Section("Tunnel") {
+        Section("Session") {
             HStack {
-                Label(healthTitle, systemImage: healthIcon)
+                Label(proxy.health.title, systemImage: healthIcon)
                     .font(.headline)
-                    .foregroundStyle(healthColor)
+                    .foregroundStyle(proxy.health.color)
                 Spacer()
-                if proxy.isReconnecting && !proxy.tunnelStuck {
+                if proxy.health.isTransient {
                     ProgressView()
                 }
             }
@@ -93,81 +95,60 @@ struct ProxyOnlyView: View {
             InfoRow("State", proxy.status)
             InfoRow("Forward engine", proxy.sessionAlive ? "running" : "stopped",
                     valueColor: proxy.sessionAlive ? .green : .red)
-            InfoRow("Tunnel link", tunnelLinkText, valueColor: healthColor)
-            if let summary = proxy.connectionSummary {
-                InfoRow("Server node id", summary.serverNodeID, monospace: true)
-                InfoRow("Relay URLs", summary.relayURLs.isEmpty
+            if proxy.routeTable != nil {
+                InfoRow("Relay URLs", proxy.relayURLs.isEmpty
                     ? "iroh defaults"
-                    : summary.relayURLs.joined(separator: "\n"))
+                    : proxy.relayURLs.joined(separator: "\n"))
                 InfoRow("iroh peer discovery", "enabled (n0 discovery)")
-            }
-
-            forwardedRoutesRows
-
-            // One-shot snapshot of the live iroh path, shown in its own sheet — a
-            // point-in-time check. Only offered while the link is up (the snapshot
-            // is empty otherwise), so it appears and disappears with the tunnel,
-            // mirroring the desktop CTA.
-            if proxy.tunnelConnected {
-                Button {
-                    showingConnPath = true
-                } label: {
-                    Label("Connection path", systemImage: "point.3.connected.trianglepath.dotted")
-                }
             }
 
             if let error = proxy.lastError {
                 InfoRow("Last error", error, valueColor: .red)
             }
-
-            if proxy.isReconnecting {
-                Text(proxy.tunnelStuck
-                    ? "The tunnel hasn't reconnected on its own — Reconnect relaunches the session. Port forwards are unavailable."
-                    : "Port forwards are unavailable until the tunnel link recovers.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
     }
 
-    /// The tunnel set the server pushed — same presentation as the popover:
-    /// "Full tunnel" or the routed domains/CIDRs, shown even while the link is
-    /// down so it's clear which forward targets are temporarily unavailable.
-    @ViewBuilder
-    private var forwardedRoutesRows: some View {
-        if let routes = proxy.forwardedRoutes {
-            if routes.isFullTunnel {
-                InfoRow("Tunnel set", "Full tunnel (all traffic)")
-            } else if routes.isKnown && routes.isEmpty {
-                InfoRow("Tunnel set", "Nothing but flextunnel.internal")
-            } else {
-                if !routes.domains.isEmpty {
-                    InfoRow("Tunneled domains", routes.domains.joined(separator: "\n"), monospace: true)
+    /// Each destination: its state, what is routed through it — which is what
+    /// a forward can target — and, while it is connected, the one-shot snapshot
+    /// of its live iroh path.
+    private var destinationsSection: some View {
+        Section {
+            ForEach(proxy.destinations) { destination in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(destination.host)
+                        .font(.subheadline.monospaced().weight(.medium))
+                        .textSelection(.enabled)
+                    DestinationStateRow(destination: destination)
+                    InfoRow("Server node id", destination.serverNodeID, monospace: true)
+                    InfoRow(
+                        "Reaches",
+                        (["\(destination.host) (with a port: the server itself)"]
+                            + destination.routedDomains + destination.routedCIDRs)
+                            .joined(separator: "\n"),
+                        monospace: true)
+                    if destination.state == .connected {
+                        Button {
+                            connPathHost = ConnPathTarget(host: destination.host)
+                        } label: {
+                            Label("Connection path", systemImage: "point.3.connected.trianglepath.dotted")
+                        }
+                        .buttonStyle(.borderless)
+                    }
                 }
-                if !routes.cidrs.isEmpty {
-                    InfoRow("Tunneled CIDRs", routes.cidrs.joined(separator: "\n"), monospace: true)
-                }
+                .padding(.vertical, 2)
             }
-            if !routes.hostAliases.isEmpty {
-                InfoRow(
-                    "Host aliases",
-                    routes.hostAliases.map { "\($0.alias) → \($0.target)" }.joined(separator: "\n"),
-                    monospace: true)
-            }
-            if !routes.dnsForwards.isEmpty {
-                InfoRow(
-                    "DNS forwards",
-                    routes.dnsForwards
-                        .map { "\($0.suffix) (+ subdomains) → \($0.servers.joined(separator: ", "))" }
-                        .joined(separator: "\n"),
-                    monospace: true)
-            }
-            if !routes.bridges.isEmpty {
-                InfoRow(
-                    "Bridge routes",
-                    routes.bridges.map(\.summary).joined(separator: "\n\n"),
-                    monospace: true)
-            }
+        } header: {
+            Text("Destinations")
+        } footer: {
+            Text("A destination connects when a forward first uses it, and disconnects after 5 minutes unused. A forward waits for it to connect, and fails if it can't be reached.")
+        }
+    }
+
+    private var healthIcon: String {
+        switch proxy.health {
+        case .connected: return "bolt.horizontal.circle.fill"
+        case .ready, .connecting, .restarting: return "bolt.horizontal.circle"
+        case .trouble, .stopped: return "bolt.slash.circle"
         }
     }
 
@@ -176,7 +157,7 @@ struct ProxyOnlyView: View {
     private var forwardsSection: some View {
         Section {
             if store.forwards.isEmpty {
-                Text("No port forwards. Tap + to forward a local port to a private host through the tunnel.")
+                Text("No port forwards. Tap + to forward a local port to a host behind one of the destinations.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -184,7 +165,7 @@ struct ProxyOnlyView: View {
                 ForwardRow(
                     forward: forward,
                     status: store.runtime[forward.id] ?? .init(),
-                    routes: proxy.forwardedRoutes,
+                    routeTable: proxy.routeTable,
                     onToggle: { store.setEnabled($0, id: forward.id) })
                     .contentShape(Rectangle())
                     .onTapGesture {
@@ -238,31 +219,6 @@ struct ProxyOnlyView: View {
                 + " It also lets go after \(keepAlive.timeoutLabel.lowercased()) with no movement, no open forward connection and the app not in front — set the limit on the start screen."
         }
     }
-
-    private var tunnelLinkText: String {
-        if proxy.tunnelConnected { return "connected" }
-        if !proxy.isReconnecting { return "down" }
-        return proxy.tunnelStuck ? "disconnected" : "reconnecting"
-    }
-
-    private var healthTitle: String {
-        if proxy.tunnelConnected { return "Tunnel connected" }
-        if proxy.tunnelStuck { return "Tunnel disconnected" }
-        if proxy.isReconnecting { return "Tunnel reconnecting" }
-        return "Tunnel unavailable"
-    }
-
-    private var healthIcon: String {
-        if proxy.tunnelConnected { return "bolt.horizontal.circle.fill" }
-        return proxy.tunnelStuck ? "bolt.slash.circle" : "bolt.horizontal.circle"
-    }
-
-    private var healthColor: Color {
-        if proxy.tunnelConnected { return .green }
-        if proxy.tunnelStuck { return .red }
-        if proxy.isReconnecting { return .orange }
-        return .red
-    }
 }
 
 // MARK: - Forward row
@@ -270,46 +226,57 @@ struct ProxyOnlyView: View {
 private struct ForwardRow: View {
     let forward: PortForward
     let status: PortForwardController.RuntimeStatus
-    let routes: ProxyController.ForwardedRoutes?
+    let routeTable: RouteTable?
     let onToggle: (Bool) -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(forward.displayName)
-                        .font(.subheadline.weight(.medium))
-                        .lineLimit(1)
-                    routeBadge
-                }
+                Text(forward.displayName)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
                 Text(forward.routeDescription)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                // On its own line: it names a destination's host, which is
+                // too long to share one with the forward's name.
+                routeBadge
                 statusLine
             }
             Spacer()
             Toggle("", isOn: Binding(get: { forward.enabled }, set: onToggle))
                 .labelsHidden()
+                .accessibilityIdentifier("forward.enabled")
         }
         .padding(.vertical, 2)
     }
 
+    /// Which destination the forward goes through, or that none routes its
+    /// host — in which case it can't be switched on. The table is the session's
+    /// own, so this is known whether or not any server is connected.
     @ViewBuilder
     private var routeBadge: some View {
-        if forward.enabled, let routes, routes.isKnown {
-            let allowed = RouteMatch.isTunneled(host: forward.remoteHost, routes: routes)
-            Text(allowed ? "server-direct" : "not routed")
+        if let routeTable {
+            let destination = routeTable.destination(for: forward.remoteHost)
+            Text(destination.map { "via \($0)" } ?? "no route")
+                .accessibilityIdentifier("forward.route")
                 .font(.caption2.weight(.semibold))
+                .lineLimit(1)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 1)
-                .background(allowed ? Color.green.opacity(0.15) : Color.orange.opacity(0.15), in: Capsule())
-                .foregroundStyle(allowed ? .green : .orange)
+                .background(
+                    (destination == nil ? Color.orange : Color.green).opacity(0.15), in: Capsule())
+                .foregroundStyle(destination == nil ? .orange : .green)
         }
     }
 
-    @ViewBuilder
     private var statusLine: some View {
+        statusText.accessibilityIdentifier("forward.status")
+    }
+
+    @ViewBuilder
+    private var statusText: some View {
         switch status.state {
         case .starting:
             Text("starting…")
@@ -365,6 +332,8 @@ private struct ForwardDraft: Identifiable {
 private struct ForwardEditSheet: View {
     @State var draft: ForwardDraft
     let isLocalPortTaken: (UInt16) -> Bool
+    /// The destination that routes a host, or nil when none does.
+    let destination: (String) -> String?
     let onSave: (PortForward) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -374,6 +343,7 @@ private struct ForwardEditSheet: View {
                 Section("Local") {
                     TextField("Local port (e.g. 8080)", text: $draft.localPortText)
                         .keyboardType(.numberPad)
+                        .accessibilityIdentifier("forward.localPort")
                         .onChange(of: draft.localPortText) { _, newValue in
                             let filtered = newValue.filter(\.isNumber)
                             if filtered != newValue { draft.localPortText = filtered }
@@ -384,17 +354,23 @@ private struct ForwardEditSheet: View {
                             .foregroundStyle(.orange)
                     }
                 }
-                Section("Remote target") {
+                Section {
                     TextField("Host or IP (resolved by server)", text: $draft.remoteHost)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
+                        .accessibilityIdentifier("forward.remoteHost")
                     TextField("Port (e.g. 22)", text: $draft.remotePortText)
                         .keyboardType(.numberPad)
+                        .accessibilityIdentifier("forward.remotePort")
                         .onChange(of: draft.remotePortText) { _, newValue in
                             let filtered = newValue.filter(\.isNumber)
                             if filtered != newValue { draft.remotePortText = filtered }
                         }
+                } header: {
+                    Text("Remote target")
+                } footer: {
+                    Text(routeNote)
                 }
                 Section("Options") {
                     TextField("Label (optional)", text: $draft.label)
@@ -420,6 +396,7 @@ private struct ForwardEditSheet: View {
                         }
                     }
                     .disabled(builtForward == nil)
+                    .accessibilityIdentifier("forward.save")
                 }
             }
         }
@@ -435,6 +412,22 @@ private struct ForwardEditSheet: View {
         guard let value = Int(text.trimmingCharacters(in: .whitespaces)),
               (1...65535).contains(value) else { return nil }
         return UInt16(value)
+    }
+
+    /// Where the typed host would go: a forward only works through a
+    /// destination, so one that none routes is said up front.
+    private var routeNote: String {
+        guard !trimmedHost.isEmpty else {
+            return "A destination's own host name is that server itself; any other "
+                + "host must be on a destination's routes."
+        }
+        if let host = destination(trimmedHost) {
+            return host.lowercased() == trimmedHost.lowercased()
+                ? "\(host) is a destination: this reaches the port on that server itself."
+                : "Goes through \(host)."
+        }
+        return "No destination routes \(trimmedHost), so this forward can't be switched on "
+            + "until one does."
     }
 
     /// Non-nil once every field validates; drives Save.

@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 /// Stores the app's secrets in the iOS Keychain — encrypted, OS-managed
-/// storage. Everything else (profile names, server node ids, relay URLs,
+/// storage. Everything else (destinations, server node ids, relay URLs,
 /// forwards) is non-sensitive and lives in plain JSON via `JSONStore`, or in
 /// UserDefaults via @AppStorage.
 ///
@@ -10,17 +10,15 @@ import Security
 /// unlock following a boot (so it survives backgrounding), never synced to
 /// iCloud, and never restored onto another device.
 enum SecretStore {
-    /// The account for secrets there is only ever one of. Per-profile secrets
-    /// pass the profile id instead, so each profile keeps its own.
+    /// The account every secret is stored under: there is one of each.
     static let defaultAccount = "default"
 
     /// The named client auth keys — the whole list as one JSON blob of
     /// {id, name, secret} records (see `AuthKeyStore`). The derived public
-    /// halves are not stored: each is re-derived via the FFI on load. One
-    /// shared list, so several profiles can authenticate with the same keypair.
+    /// halves are not stored: each is re-derived via the FFI on load. The
+    /// client authenticates to every destination with the one it picks.
     static let authKeyService = "com.example.flextunnel.authKey"
-    /// The bearer token for custom relays, stored per profile: the account is
-    /// the profile id (custom relays only).
+    /// The client's bearer token for custom relays (custom relays only).
     static let relayTokenService = "com.example.flextunnel.relayAuthToken"
 
     /// Persist `secret` under `service`/`account`, replacing any existing

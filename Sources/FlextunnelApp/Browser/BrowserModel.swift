@@ -5,27 +5,31 @@ import WebKit
 
 /// Owns the browser's tab list, the shared SOCKS5 port, and the shared data
 /// store's proxy configuration. Every tab shares the same in-app listener
-/// (flextunnel allows one instance at a time), scoped to the tunnel set's
-/// hosts via `matchDomains` so off-list traffic skips the proxy entirely.
+/// (flextunnel allows one instance at a time), scoped to the routed hosts via
+/// `matchDomains` so traffic on no destination's route skips the proxy
+/// entirely.
 @MainActor
 @Observable
 final class BrowserModel {
     let socksPort: UInt16
+    /// The names the session routes by exact match (`RouteTable.exactNames`):
+    /// typed into the address bar, each is an address, never a search.
+    let privateHosts: Set<String>
     let library: BrowserLibrary
     let downloads: BrowserDownloadManager
     private(set) var tabs: [BrowserTab]
     var selectedID: BrowserTab.ID?
-    /// The tunnel set's host patterns (`ForwardedRoutes.proxyMatchDomains`);
-    /// nil proxies every host.
-    private(set) var proxyMatchDomains: [String]?
     // Persistent (default) store so cookies, logins, and cache survive across
     // launches like a mainstream browser. (Downloads stay session-only by design.)
     private let websiteDataStore = WKWebsiteDataStore.default()
     private let certificateTrustStore = BrowserCertificateTrustStore()
 
-    init(socksPort: UInt16, proxyMatchDomains: [String]?, library: BrowserLibrary) {
+    init(
+        socksPort: UInt16, proxyMatchDomains: [String]?, privateHosts: Set<String>,
+        library: BrowserLibrary
+    ) {
         self.socksPort = socksPort
-        self.proxyMatchDomains = proxyMatchDomains
+        self.privateHosts = privateHosts
         self.library = library
         websiteDataStore.proxyConfigurations = [
             .loopbackSocks5(port: socksPort, matchDomains: proxyMatchDomains)
@@ -44,21 +48,9 @@ final class BrowserModel {
         self.selectedID = first.id
     }
 
-    /// Applies an updated tunnel set (the server can push new routes across a
-    /// reconnect). Connections opened after this pick up the new scoping; the
-    /// proxy's own routed set keeps already-open ones correct either way.
-    func updateProxyMatchDomains(_ matchDomains: [String]?) {
-        guard matchDomains != proxyMatchDomains else { return }
-        proxyMatchDomains = matchDomains
-        websiteDataStore.proxyConfigurations = [
-            .loopbackSocks5(port: socksPort, matchDomains: matchDomains)
-        ]
-        downloads.updateProxyMatchDomains(matchDomains)
-    }
-
     /// Reloads the tabs whose last load failed on a URL `shouldRetry` accepts —
-    /// the tunneled ones, once the link is back — the way a mainstream browser
-    /// reloads its offline pages when the network returns. Only idempotent
+    /// the ones routed through a destination that has just connected — the way
+    /// a mainstream browser reloads its offline pages when the network returns. Only idempotent
     /// requests: a retry reloads the URL, which would turn a failed form POST
     /// into a GET.
     func retryFailedLoads(where shouldRetry: (URL) -> Bool) {
@@ -107,11 +99,12 @@ final class BrowserModel {
     /// Resolves address-bar text and loads it in the selected tab.
     /// - URL-like input (no spaces, contains a dot, or already has a scheme) loads
     ///   directly; a missing scheme is prepended (`http://` for `.onion`, else `https://`).
+    /// - So does a name the session routes by exact match, dot or no dot.
     /// - Anything else is treated as a query and sent to DuckDuckGo.
     func navigate(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard let url = Self.resolve(trimmed) else { return }
+        guard let url = Self.resolve(trimmed, privateHosts: privateHosts) else { return }
         let tab = selectedTab ?? addTab()
         tab.load(url, displayAddress: trimmed)
     }
@@ -121,11 +114,15 @@ final class BrowserModel {
         downloads.shutdown()
     }
 
-    static func resolve(_ text: String) -> URL? {
+    /// `privateHosts` are the names the session routes by exact match
+    /// (lowercased). A destination may be named with a single label, which
+    /// otherwise reads as a search term — and a search would send the name,
+    /// port and path of a private address to a search engine.
+    static func resolve(_ text: String, privateHosts: Set<String> = []) -> URL? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        if let url = webURL(from: trimmed) {
+        if let url = webURL(from: trimmed, privateHosts: privateHosts) {
             return url
         }
 
@@ -134,21 +131,21 @@ final class BrowserModel {
         return components?.url
     }
 
-    private static func webURL(from text: String) -> URL? {
+    private static func webURL(from text: String, privateHosts: Set<String>) -> URL? {
         if let localhostURL = localhostURL(from: text) {
             return localhostURL
         }
 
         let lowercased = text.lowercased()
         if lowercased.hasPrefix("http://") || lowercased.hasPrefix("https://") {
-            return validHTTPURL(from: text)
+            return validHTTPURL(from: text, privateHosts: privateHosts)
         }
 
         if lowercased.contains("://") {
             return nil
         }
 
-        return bareHostURL(from: text)
+        return bareHostURL(from: text, privateHosts: privateHosts)
     }
 
     private static func localhostURL(from text: String) -> URL? {
@@ -160,22 +157,20 @@ final class BrowserModel {
         return components.url
     }
 
-    private static func validHTTPURL(from text: String) -> URL? {
+    private static func validHTTPURL(from text: String, privateHosts: Set<String>) -> URL? {
         guard !text.contains(" "),
               let components = URLComponents(string: text),
               let scheme = components.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
               let host = components.host,
-              hostIsNavigable(host) else {
+              hostIsNavigable(host, privateHosts: privateHosts) else {
             return nil
         }
         return components.url
     }
 
-    private static func bareHostURL(from text: String) -> URL? {
-        // A bracketed IPv6 literal (`[fdb8::1]:8006`) is an address even though
-        // it has no dot.
-        guard !text.contains(" "), text.contains(".") || text.hasPrefix("["), Double(text) == nil else { return nil }
+    private static func bareHostURL(from text: String, privateHosts: Set<String>) -> URL? {
+        guard !text.contains(" "), Double(text) == nil else { return nil }
 
         // Parse with a default scheme so the host is isolated from any port or
         // path, then pick the real scheme from the parsed host. Onion services
@@ -184,7 +179,10 @@ final class BrowserModel {
         // regardless of case or port — uses http; everything else stays https.
         guard var components = URLComponents(string: "https://\(text)"),
               let host = components.host,
-              hostIsNavigable(host) else {
+              // A bracketed IPv6 literal (`[fdb8::1]:8006`) is an address even
+              // though it has no dot, and so is a private name (`office:8080`).
+              text.contains(".") || text.hasPrefix("[") || privateHosts.contains(host.lowercased()),
+              hostIsNavigable(host, privateHosts: privateHosts) else {
             return nil
         }
         if host.lowercased().hasSuffix(".onion") {
@@ -193,10 +191,11 @@ final class BrowserModel {
         return components.url
     }
 
-    private static func hostIsNavigable(_ host: String) -> Bool {
+    private static func hostIsNavigable(_ host: String, privateHosts: Set<String>) -> Bool {
         // A colon in the parsed host means an IPv6 literal (URLComponents keeps
         // the port separate), e.g. https://[fdb8:d92a:f690:1abf::1]:8006.
         host == "localhost" || host.contains(".") || host.contains(":")
+            || privateHosts.contains(host.lowercased())
     }
 }
 
@@ -205,11 +204,11 @@ extension ProxyConfiguration {
     /// only proxies matching hosts (suffix match: apex + subdomains) and
     /// connects to everything else directly; nil/empty proxies every host.
     /// SOCKS5 passes matched hostnames to the proxy (ATYP_DOMAIN), so DNS for
-    /// tunnel-set names still resolves on the flextunnel server.
+    /// routed names still resolves on the destination's server.
     ///
-    /// Failover is pinned off: a proxied (tunnel-set) host whose proxy
-    /// connection fails — listener closed across a relaunch, tunnel down —
-    /// fails the load instead of being retried directly. A private host that
+    /// Failover is pinned off: a proxied (routed) host whose proxy connection
+    /// fails — listener closed across a relaunch, server unreachable — fails
+    /// the load instead of being retried directly. A private host that
     /// also happens to resolve and answer off-tunnel would otherwise flap
     /// between the tunnel and a direct path with every link blip, and a
     /// direct retry leaks the request past the server's routing.

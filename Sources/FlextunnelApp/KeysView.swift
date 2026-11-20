@@ -22,6 +22,13 @@ struct KeysView: View {
     @State private var errorMessage: String?
 
     var body: some View {
+        errorAlert(keyDialogs(addAlerts(keyList)))
+    }
+
+    /// The list itself. The alerts and dialogs are attached in the functions
+    /// below, a few at a time: as one modifier chain on `body` they are more
+    /// than the compiler type-checks as a single expression.
+    private var keyList: some View {
         List {
             if store.keys.isEmpty {
                 Text("No keys yet. Generate one (or paste an existing secret key), "
@@ -62,76 +69,90 @@ struct KeysView: View {
                     .accessibilityLabel("Add key")
             }
         }
-        .alert("Name the new key", isPresented: $showGenerateAlert) {
-            TextField("e.g. this phone", text: $nameField)
-            Button("Generate") { generateKey() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Names only exist in this app's key list.")
-        }
-        .alert("Enter existing key", isPresented: $showImportAlert) {
-            TextField("Name (e.g. work laptop)", text: $nameField)
-            SecureField("ed25519-sec:…", text: $secretField)
-            Button("Add Key") { importKey() }
-            Button("Cancel", role: .cancel) { secretField = "" }
-        } message: {
-            Text("Paste a secret key generated elsewhere — exported from the "
-                + "desktop app, or by \"flexaccess-keys generate-auth-key\" — "
-                + "to reuse its identity.")
-        }
-        .alert(
-            "Rename key",
-            isPresented: presented($renameTarget),
-            presenting: renameTarget
-        ) { key in
-            TextField("Name", text: $nameField)
-            Button("Rename") {
-                if let error = store.rename(id: key.id, to: nameField) {
-                    errorMessage = error.message
-                }
+    }
+
+    /// The two ways to add a key.
+    private func addAlerts(_ content: some View) -> some View {
+        content
+            .alert("Name the new key", isPresented: $showGenerateAlert) {
+                TextField("e.g. this phone", text: $nameField)
+                Button("Generate") { generateKey() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Names only exist in this app's key list.")
             }
-            Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("")
-        }
-        .confirmationDialog(
-            "Copy the secret key?",
-            isPresented: presented($exportTarget),
-            titleVisibility: .visible,
-            presenting: exportTarget
-        ) { key in
-            Button("Copy Secret Key") { copySecret(key.secret) }
-        } message: { key in
-            Text("Anyone holding the secret key can connect as \"\(key.name)\". "
-                + "Paste it into another device's key import.")
-        }
-        .confirmationDialog(
-            "Delete this key?",
-            isPresented: presented($deleteTarget),
-            titleVisibility: .visible,
-            presenting: deleteTarget
-        ) { key in
-            Button("Delete \"\(key.name)\"", role: .destructive) {
-                if let error = store.delete(id: key.id) {
-                    errorMessage = error.message
-                } else if selectedKeyID == key.id {
-                    selectedKeyID = ""
-                }
+            .alert("Enter existing key", isPresented: $showImportAlert) {
+                TextField("Name (e.g. work laptop)", text: $nameField)
+                SecureField("ed25519-sec:…", text: $secretField)
+                Button("Add Key") { importKey() }
+                Button("Cancel", role: .cancel) { secretField = "" }
+            } message: {
+                Text("Paste a secret key generated elsewhere — exported from the "
+                    + "desktop app, or by \"flexaccess-keys generate-auth-key\" — "
+                    + "to reuse its identity.")
             }
-        } message: { _ in
-            Text("The secret key is removed from this device. The server keeps "
-                + "trusting its public key until that's taken off the "
-                + "authorized-keys file.")
-        }
-        .alert(
-            "Can't do that",
-            isPresented: presented($errorMessage),
-            presenting: errorMessage
-        ) { _ in
-            Button("OK", role: .cancel) {}
-        } message: { message in
-            Text(message)
-        }
+    }
+
+    /// What a key's own menu opens: rename, export, delete.
+    private func keyDialogs(_ content: some View) -> some View {
+        content
+            .alert(
+                "Rename key",
+                isPresented: presented($renameTarget),
+                presenting: renameTarget
+            ) { key in
+                TextField("Name", text: $nameField)
+                Button("Rename") {
+                    if let error = store.rename(id: key.id, to: nameField) {
+                        errorMessage = error.message
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("")
+            }
+            .confirmationDialog(
+                "Copy the secret key?",
+                isPresented: presented($exportTarget),
+                titleVisibility: .visible,
+                presenting: exportTarget
+            ) { key in
+                Button("Copy Secret Key") { copySecret(key.secret) }
+            } message: { key in
+                Text("Anyone holding the secret key can connect as \"\(key.name)\". "
+                    + "Paste it into another device's key import.")
+            }
+            .confirmationDialog(
+                "Delete this key?",
+                isPresented: presented($deleteTarget),
+                titleVisibility: .visible,
+                presenting: deleteTarget
+            ) { key in
+                Button("Delete \"\(key.name)\"", role: .destructive) {
+                    if let error = store.delete(id: key.id) {
+                        errorMessage = error.message
+                    } else if selectedKeyID == key.id {
+                        selectedKeyID = ""
+                    }
+                }
+            } message: { _ in
+                Text("The secret key is removed from this device. The server keeps "
+                    + "trusting its public key until that's taken off the "
+                    + "authorized-keys file.")
+            }
+    }
+
+    private func errorAlert(_ content: some View) -> some View {
+        content
+            .alert(
+                "Can't do that",
+                isPresented: presented($errorMessage),
+                presenting: errorMessage
+            ) { _ in
+                Button("OK", role: .cancel) {}
+            } message: { message in
+                Text(message)
+            }
     }
 
     private func row(_ key: AuthKeyStore.Key) -> some View {

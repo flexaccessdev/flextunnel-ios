@@ -2,9 +2,9 @@ import ActivityKit
 import Foundation
 import os
 
-/// Owns the single tunnel Live Activity: request it once a forwarding session
-/// connects, push state updates as the link flaps, and end it on an explicit
-/// Stop. Browser sessions never have one (see `ContentView.syncLiveActivity`).
+/// Owns the single session Live Activity: request it once a forwarding session
+/// is running, push state updates as its servers connect and drop, and end it
+/// on an explicit Stop. Browser sessions never have one (see `ContentView.syncLiveActivity`).
 /// This is UX only — it neither grants nor relies on background execution (see the
 /// keep-alive note in `ContentView.handleScenePhase`). If the user has Live
 /// Activities disabled system-wide, every call is a no-op.
@@ -35,10 +35,10 @@ final class LiveActivityController {
     private static let staleAfter: TimeInterval = 90
 
     /// Start the activity, or update it if one is already live (so callers can
-    /// treat this as idempotent "reflect the connected state"). If a previous
+    /// treat this as idempotent "reflect the running session"). If a previous
     /// activity is `.ended`/`.dismissed` (e.g. a survivor reattached on launch),
     /// drop it and request a fresh one so the banner reappears for a still-
-    /// connected session.
+    /// running session.
     func start(state: TunnelActivityAttributes.ContentState) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         if let current = activity {

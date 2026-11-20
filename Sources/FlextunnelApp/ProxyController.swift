@@ -2,59 +2,123 @@ import Foundation
 import Combine
 import Network
 
-/// Drives the in-process flextunnel session via the Rust FFI
-/// (libflextunnel.a). Browser sessions expose a SOCKS5 port to WKWebView;
-/// forwarding-only sessions expose no proxy and use native server-direct
-/// forward listeners.
+/// Drives the in-process flextunnel client via the Rust FFI (libflextunnel.a).
+/// Browser sessions expose a SOCKS5 port to WKWebView; forwarding-only sessions
+/// expose no proxy and use native server-direct forward listeners.
+///
+/// One session serves every configured destination. Starting it connects
+/// nothing: the core connects a destination's server when something is first
+/// sent to it, and closes the connection again once it has gone unused. So a
+/// session is *running* as soon as its listeners are bound, and the state of
+/// each server is its destination's, read from the core on every poll.
 @MainActor
 final class ProxyController: ObservableObject {
-    /// Lifecycle phase. Drives whether the browser is presented: it appears once
-    /// we reach `.connected` (the first handshake landed). Because the core keeps
-    /// the native session serving and reconnects the tunnel on its own across
-    /// drops, the browser then stays presented until an explicit quit.
+    /// Lifecycle phase. Drives whether the session's screen is presented: it
+    /// appears once the session is `.running`, and stays until an explicit
+    /// quit.
     enum Phase: Equatable {
         case idle
-        /// Initial connect attempt (no browser presented yet).
-        case connecting
-        /// Handshake landed at least once; browser is presented. Relaunches of
-        /// the native session (`isRelaunching`) stay in this phase.
-        case connected
-        /// Initial connect failed (terminal; shown on the setup screen).
+        /// The native session is being started (no screen presented yet).
+        case starting
+        /// The session started; its screen is presented. Relaunches of the
+        /// native session (`isRelaunching`) and a session that died stay in
+        /// this phase.
+        case running
+        /// The start failed (terminal; shown on the setup screen).
         case failed
+    }
+
+    /// A destination's connection state, as the core reports it.
+    enum LinkState: String {
+        /// Not connected and nothing is asking for it — the resting state.
+        case idle
+        /// Building its endpoint, connecting or authenticating.
+        case connecting
+        case connected
+        /// The last attempt failed and requests are still waiting on a retry.
+        case backoff
+        /// The server refused this client (an unauthorized key, say); requests
+        /// fail at once until the core's next attempt.
+        case failed
+    }
+
+    /// One destination's state, safe to show in UI. Only what changes when the
+    /// state does: the per-second counters the core also reports (connection
+    /// age, open streams) are left out, so the 1 Hz poll republishes nothing
+    /// while a destination sits in one state.
+    struct DestinationStatus: Identifiable, Equatable {
+        var host: String
+        var serverNodeID: String
+        var state: LinkState
+        /// What the last failed attempt said. Kept by the core while the
+        /// destination is idle again, and cleared by a successful connection —
+        /// so an idle destination carrying one failed the last time it was used.
+        var lastError: String?
+        var routedDomains: [String]
+        var routedCIDRs: [String]
+
+        var id: String { host }
+
+        /// Idle after a failed attempt: it retries on its next use, not before.
+        var lastAttemptFailed: Bool { state == .idle && lastError != nil }
+    }
+
+    /// The session's overall state, for the surfaces that show one indicator.
+    enum Health: Equatable {
+        /// The native session ended; nothing is served until it is restarted.
+        case stopped
+        /// The native session is being replaced.
+        case restarting
+        /// A destination can't be reached: it is retrying, was refused, or
+        /// failed the last time it was used.
+        case trouble
+        /// A destination is connecting, none is in trouble.
+        case connecting
+        /// At least one destination is connected, none is in trouble.
+        case connected
+        /// Running with every destination idle: each connects when used.
+        case ready
+
+        var title: String {
+            switch self {
+            case .stopped: return "Stopped"
+            case .restarting: return "Restarting"
+            case .trouble: return "Unreachable"
+            case .connecting: return "Connecting"
+            case .connected: return "Connected"
+            case .ready: return "Ready"
+            }
+        }
     }
 
     @Published var status: String = "idle"
     @Published var lastError: String?
-    /// Current lifecycle phase; drives whether the browser is presented.
+    /// Current lifecycle phase; drives whether the session's screen is presented.
     @Published private(set) var phase: Phase = .idle
     /// Loopback SOCKS5 port the core actually bound, or nil while stopped. In
     /// browser mode this is an OS-assigned ephemeral port, pinned into the
-    /// replayed settings so it survives reconnects; forwarding-only mode
+    /// replayed settings so it survives relaunches; forwarding-only mode
     /// leaves it nil.
     @Published var socksPort: UInt16?
-    /// The native tunnel session is alive (FFI health == 1). In browser mode it
-    /// also owns the SOCKS5 listener; forwarding-only mode has no proxy listener.
+    /// The native session is alive (FFI health == 1). In browser mode it also
+    /// owns the SOCKS5 listener; forwarding-only mode has no proxy listener.
     @Published var sessionAlive: Bool = false
     /// Changes for every successfully-created native session. Port forwarding
     /// uses this to apply its desired listener set to a replacement handle.
     @Published private(set) var forwardingSessionID: UUID?
-    /// The tunnel link to the server is up (handshake live). On-list targets (in
-    /// the routed tunnel set) only work while this is true; off-list targets don't.
-    @Published var tunnelConnected: Bool = false
-    /// The tunnel link has been down for longer than `reconnectGrace` while the
-    /// native session stayed alive: the core's own reconnect is presumed stuck, so
-    /// the UI shows a disconnected state and offers a manual Retry.
-    @Published private(set) var tunnelStuck: Bool = false
-    /// An established session's native handle is being replaced (manual Retry,
-    /// suspension recovery, stuck-link relaunch) and the new one hasn't landed
-    /// its first handshake yet. The session's screen stays up throughout, and
-    /// Retry is held off unless the relaunch itself goes stuck (`canRetry`).
+    /// An established session's native handle is being replaced (manual
+    /// restart, suspension recovery) and the new one hasn't started yet. The
+    /// session's screen stays up throughout.
     @Published private(set) var isRelaunching: Bool = false
-    /// Non-secret settings for the currently running proxy, safe to show in UI.
-    @Published private(set) var connectionSummary: ConnectionSummary?
-    /// The tunnel set the server pushed: domains/CIDRs routed through the tunnel.
-    /// Nil until the first handshake; retained across drops by the core.
-    @Published private(set) var forwardedRoutes: ForwardedRoutes?
+    /// Each destination's state, in the order configured. Empty while stopped
+    /// and until a new session's first poll.
+    @Published private(set) var destinations: [DestinationStatus] = []
+    /// The session's routing table — fixed for its lifetime, since routing is
+    /// this client's configuration and nothing about it is learned from a
+    /// server. Nil while no session is running.
+    @Published private(set) var routeTable: RouteTable?
+    /// The relay URLs the running session uses; empty means iroh's defaults.
+    @Published private(set) var relayURLs: [String] = []
 
     /// Called (on the main actor) from the poll loop when the Live-Activity-
     /// relevant state changes while a forwarding session is backgrounded with
@@ -89,18 +153,10 @@ final class ProxyController: ObservableObject {
     /// detect a meaningful change worth pushing to the banner.
     private struct LiveActivityState: Equatable {
         let phase: Phase
-        let socksAlive: Bool
-        let tunnelConnected: Bool
-        let tunnelStuck: Bool
-        let relaunching: Bool
+        let health: Health
     }
     private var liveActivityState: LiveActivityState {
-        LiveActivityState(
-            phase: phase,
-            socksAlive: sessionAlive,
-            tunnelConnected: tunnelConnected,
-            tunnelStuck: tunnelStuck,
-            relaunching: isRelaunching)
+        LiveActivityState(phase: phase, health: health)
     }
 
     /// Borrowed from `native` for the status calls; nil whenever a start or stop
@@ -123,46 +179,30 @@ final class ProxyController: ObservableObject {
     /// Mirrors the scene phase (set by `ContentView`); drives the poll cadence
     /// here and the core's heartbeat cadence over the FFI.
     private var isBackgrounded = false
-    /// Last path verdict from `NWPathMonitor`, forwarded to the core so its
-    /// reconnect loop parks while there is genuinely no network.
+    /// Last path verdict from `NWPathMonitor`, forwarded to the core so no
+    /// destination dials while there is genuinely no network.
     private var pathAvailable = true
     private let pathMonitor = NWPathMonitor()
     private var lowPowerObserver: NSObjectProtocol?
-    /// Give up on a stalled first handshake after this long.
-    private static let connectTimeout: TimeInterval = 20
-    private var connectDeadline: Date?
-    /// When the tunnel link dropped while connected; nil while the link is up.
-    private var linkDownSince: Date?
-    /// When the core's current reconnect series began: the drop, or the last
-    /// time it started over with a fresh backoff (the network path returning,
-    /// the app coming to the foreground). The stuck-link relaunch measures
-    /// from here, so time offline or backgrounded never counts as the core
-    /// failing to reconnect. Nil while the link is up.
-    private var recoverySince: Date?
-    /// A link down longer than this stops reading as a transient reconnect.
-    private static let reconnectGrace: TimeInterval = 30
-    /// How long the link stays down before the app relaunches the session on
-    /// its own. Past the core's own recovery: its 45s hold on tunneled
-    /// requests, and the reconnect attempt that follows its first full backoff
-    /// steps (1s doubling to 32s, then a 60s cap) — a relaunch any earlier
-    /// would cut off a reconnect that was about to land, failing the held
-    /// requests with it.
-    private static let autoRelaunchAfter: TimeInterval = 90
-    /// Last settings that drove a launch, replayed by the manual Reconnect.
+    /// Last settings that drove a launch, replayed by a relaunch.
     private var lastSettings: Settings?
     /// Bumped on every start and teardown so an in-flight async start whose FFI
     /// finishes after a newer start/stop is discarded instead of clobbering state.
     private var startEpoch = 0
-    /// The stuck-link relaunch already fired for the current outage, so a link
-    /// that stays down after it is left for a manual Retry rather than
-    /// relaunched every grace window. Cleared when the link comes back.
-    private var autoRelaunchedThisOutage = false
 
-    /// Connection parameters entered in the UI.
+    /// What a session is started with.
     struct Settings {
-        var serverNodeID: String
-        /// The client auth secret key ("ed25519-sec:…"); its public
-        /// half must be on the server's authorized-keys file.
+        /// One server this client reaches; see `ClientStore.Destination`.
+        struct Destination {
+            var host: String
+            var serverNodeID: String
+            var routedDomains: [String]
+            var routedCIDRs: [String]
+        }
+
+        var destinations: [Destination]
+        /// The client auth secret key ("ed25519-sec:…"); its public half must
+        /// be on every server's authorized-keys file.
         var authKey: String
         /// Loopback SOCKS5 port for browser mode. `nil` means a forwarding-only
         /// session with no SOCKS5 listener; `0` requests an OS-assigned
@@ -174,81 +214,17 @@ final class ProxyController: ObservableObject {
         /// Shared bearer token sent to every custom relay's WebSocket upgrade.
         /// Empty means none; only valid with custom `relayURLs`.
         var relayAuthToken: String
-    }
 
-    struct ConnectionSummary {
-        var serverNodeID: String
-        var relayURLs: [String]
-    }
-
-    /// The tunnel set as reported by the core: the domains/CIDRs routed through
-    /// the tunnel (off-list targets connect directly). The set is optional: an
-    /// empty one routes nothing but the reserved `flextunnel.internal`
-    /// namespace, which is always tunneled.
-    struct ForwardedRoutes: Equatable {
-        var connected: Bool
-        /// Whether this snapshot carries a tunnel set the handshake actually
-        /// learned. An empty set is valid, so emptiness can't tell; instead the
-        /// core publishes the lists together with `connected` and keeps them
-        /// across drops, so the set is known once this session has reported
-        /// connected. Until then — a session relaunched by the manual Reconnect
-        /// or the suspension recovery, polled before its first handshake lands —
-        /// the empty lists mean "not known yet", not "nothing is routed".
-        var isKnown: Bool
-        var domains: [String]
-        var cidrs: [String]
-        /// Server-side host aliases (`alias -> target`), informational only —
-        /// the server resolves them; shown in the status popover like the
-        /// server status page shows them.
-        var hostAliases: [HostAlias]
-        /// Server-side conditional DNS forwards (split-DNS), informational only —
-        /// names under `suffix` resolve via `servers` on the server side; shown
-        /// in the status popover like the server status page shows them.
-        var dnsForwards: [DNSForward]
-        /// Server-to-server bridge routes, informational only — targets matching
-        /// a bridge's domains/CIDRs are forwarded to another flextunnel server.
-        /// The rules are already part of the routed set, so nothing is enforced
-        /// caller-side; shown in the status popover like the server status page.
-        var bridges: [BridgeRoute]
-
-        /// Whether the set routes nothing but the reserved namespace.
-        var isEmpty: Bool { domains.isEmpty && cidrs.isEmpty }
-
-        /// A `*` domain or a default-route CIDR means everything is tunneled, so a
-        /// tunnel drop is a full outage (nothing is off-list to browse directly).
-        var isFullTunnel: Bool {
-            domains.contains("*") || cidrs.contains { $0 == "0.0.0.0/0" || $0 == "::/0" }
-        }
-
-        /// Host patterns for WebKit-level split-tunneling
-        /// (`ProxyConfiguration.matchDomains`): matching hosts go through the
-        /// SOCKS5 proxy, everything else connects directly from the network
-        /// process (local DNS, HTTP/3, no loopback hop). Nil means the whole
-        /// optimization is off and every host goes through the proxy — required
-        /// when the set is full-tunnel or routes CIDRs, which hostname patterns
-        /// can't express (an IP-literal URL must still reach the proxy's CIDR
-        /// check).
-        ///
-        /// WebKit suffix-matches each entry (apex + all subdomains), a superset
-        /// of the core's exact/`*.` rules, so both rule forms map to the bare
-        /// domain. Over-matching is safe: the local proxy's routed set makes the
-        /// exact tunnel-vs-direct call for whatever reaches it. Under-matching
-        /// would break private hosts, so the list must cover everything the core
-        /// would tunnel — including the always-tunneled `flextunnel.internal`
-        /// namespace.
-        var proxyMatchDomains: [String]? {
-            guard !isFullTunnel, cidrs.isEmpty else { return nil }
-            var bases = Set(domains.map { domain in
-                domain.hasPrefix("*.") ? String(domain.dropFirst(2)).lowercased() : domain.lowercased()
+        var routeTable: RouteTable {
+            RouteTable(entries: destinations.map {
+                RouteTable.Entry(host: $0.host, domains: $0.routedDomains, cidrs: $0.routedCIDRs)
             })
-            bases.insert("flextunnel.internal")
-            return bases.sorted()
         }
     }
 
-    /// A single connection-path snapshot — one iroh path to the server — for the
+    /// A single connection-path snapshot — one iroh path to a server — for the
     /// on-demand "connection path" readout. Mirrors the desktop's `ConnPath` and
-    /// `ezvpn client status`; produced by `queryConnPath()`.
+    /// `ezvpn client status`; produced by `queryConnPath(host:)`.
     struct ConnPath: Identifiable {
         /// Stable synthetic identity = the path's index in the snapshot. `display`
         /// can't be the id: it embeds the RTT, so it churns every refresh for the
@@ -265,7 +241,7 @@ final class ProxyController: ObservableObject {
             case direct, relay, other
 
             /// Parse the FFI JSON token, defaulting to `.other` for anything
-            /// unrecognized (a missing/old field or a future value).
+            /// unrecognized (a missing field or a future value).
             init(token: String?) {
                 self = token.flatMap(Kind.init(rawValue:)) ?? .other
             }
@@ -285,8 +261,8 @@ final class ProxyController: ObservableObject {
         var id: String { url }
     }
 
-    /// One on-demand connection snapshot: the live iroh path(s) plus custom-relay
-    /// health. Empty on both counts while the tunnel link is down.
+    /// One on-demand connection snapshot: a destination's live iroh path(s)
+    /// plus custom-relay health. No paths while the destination isn't connected.
     struct ConnectionSnapshot {
         var paths: [ConnPath] = []
         var customRelays: [CustomRelay] = []
@@ -299,71 +275,41 @@ final class ProxyController: ObservableObject {
         var udpRxDatagrams: UInt64 = 0
     }
 
-    /// A server-to-server bridge route: targets matching `domains`/`cidrs` are
-    /// forwarded to another flextunnel server (identified by `endpointID`).
-    /// Informational only — the rules are already part of the routed set.
-    /// A server-side host alias: requests for `alias` go to `target`.
-    struct HostAlias: Equatable {
-        var alias: String
-        var target: String
-    }
-
-    /// A server-side conditional DNS forward: names under `suffix` resolve via
-    /// `servers`.
-    struct DNSForward: Equatable {
-        var suffix: String
-        var servers: [String]
-    }
-
-    struct BridgeRoute: Identifiable, Equatable {
-        var name: String
-        var endpointID: String
-        var domains: [String]
-        var cidrs: [String]
-
-        var id: String { name }
-
-        /// A structured, multi-line summary for the status views: the bridge name,
-        /// then its endpoint id and the routed domains/CIDRs as bulleted lists.
-        var summary: String {
-            var lines = ["\(name):", "  endpoint id: \(endpointID)"]
-            if !domains.isEmpty {
-                lines.append("  routed domains:")
-                lines.append(contentsOf: domains.map { "    - \($0)" })
-            }
-            if !cidrs.isEmpty {
-                lines.append("  routed CIDRs:")
-                lines.append(contentsOf: cidrs.map { "    - \($0)" })
-            }
-            return lines.joined(separator: "\n")
+    /// The session's overall state: one indicator over every destination.
+    var health: Health {
+        if isRelaunching { return .restarting }
+        guard sessionAlive else { return .stopped }
+        if destinations.contains(where: { $0.state == .backoff || $0.state == .failed || $0.lastAttemptFailed }) {
+            return .trouble
         }
+        if destinations.contains(where: { $0.state == .connecting }) { return .connecting }
+        if destinations.contains(where: { $0.state == .connected }) { return .connected }
+        return .ready
     }
 
-    /// The browser's WebKit-level scoping (`ProxyConfiguration.matchDomains`) to
-    /// apply right now, or nil while no tunnel set is known — no snapshot yet, or
-    /// a relaunched session polled before its first handshake. Callers keep the
-    /// last known scoping through that gap: unscoping the browser would hand the
-    /// private hosts back to the device's own DNS, which answers NXDOMAIN for
-    /// names that only resolve server-side (conditional DNS forwarding), instead
-    /// of letting the proxy hold them for the reconnect.
-    ///
-    /// Double optional on purpose: the inner nil (a full-tunnel set, where every
-    /// host must go through the proxy) is a real value that must be applied.
-    var browserMatchDomains: [String]?? {
-        guard let routes = forwardedRoutes, routes.isKnown else { return nil }
-        return .some(routes.proxyMatchDomains)
+    /// The destinations connected right now.
+    var connectedHosts: Set<String> {
+        Set(destinations.lazy.filter { $0.state == .connected }.map(\.host))
     }
 
-    /// True when everything is routed through the tunnel (full-tunnel set), so a
-    /// drop leaves nothing to browse directly.
-    var isFullTunnel: Bool { forwardedRoutes?.isFullTunnel ?? false }
+    /// The destinations that can't be reached right now (see `Health.trouble`).
+    var troubledHosts: [String] {
+        destinations
+            .filter { $0.state == .backoff || $0.state == .failed || $0.lastAttemptFailed }
+            .map(\.host)
+    }
+
+    func destination(host: String) -> DestinationStatus? {
+        destinations.first { $0.host == host }
+    }
 
     init() {
         flextunnel_init_logging()
         // Watch the device's network path for the whole controller lifetime and
         // feed it to whichever session is live: while no path is usable the
-        // core parks its reconnect loop (no backoff timers into a dead
-        // network), and the path's return reconnects immediately.
+        // core dials nothing (no backoff timers into a dead network), and the
+        // path's return gives every destination with requests waiting an
+        // immediate attempt.
         pathMonitor.pathUpdateHandler = { [weak self] path in
             let available = path.status == .satisfied
             Task { @MainActor in self?.notePathChanged(available) }
@@ -379,17 +325,16 @@ final class ProxyController: ObservableObject {
     }
 
     /// Scene-phase mirror from `ContentView`. Backgrounded, the health poll
-    /// drops to minute cadence and the core slows its heartbeat (its only
-    /// periodic traffic) from 10s to 60s, so an idle held-alive session wakes
-    /// the cellular radio once a minute instead of continuously; foregrounded,
-    /// both snap back and an immediate poll refreshes the UI.
+    /// drops to minute cadence and the core slows each connected destination's
+    /// heartbeat — that connection's only periodic traffic — from every 10s to
+    /// every 60s (each destination beats on its own clock, so several
+    /// connected ones don't line up); foregrounded, both snap back, the core
+    /// ends any retry backoff in progress, and an immediate poll refreshes the
+    /// UI.
     func setBackgrounded(_ backgrounded: Bool) {
         guard backgrounded != isBackgrounded else { return }
         isBackgrounded = backgrounded
         if let handle { _ = flextunnel_set_background(handle, backgrounded ? 1 : 0) }
-        // Foregrounded, the core ends any backoff wait and retries at once.
-        // Before the immediate poll below, which could otherwise relaunch.
-        if !backgrounded { restartRecoveryClock() }
         reschedulePolling()
     }
 
@@ -397,14 +342,6 @@ final class ProxyController: ObservableObject {
         guard available != pathAvailable else { return }
         pathAvailable = available
         if let handle { _ = flextunnel_set_network_available(handle, available ? 1 : 0) }
-        // The path's return reconnects immediately with a fresh backoff series.
-        if available { restartRecoveryClock() }
-    }
-
-    /// The core just started its reconnect over: give it a full window before
-    /// the stuck-link relaunch can cut in.
-    private func restartRecoveryClock() {
-        if recoverySince != nil { recoverySince = Date() }
     }
 
     /// Re-arm the poll timer at the cadence for the current scene phase and
@@ -423,23 +360,20 @@ final class ProxyController: ObservableObject {
         let message: String
     }
 
-    /// User-initiated start from the setup screen: always a fresh session that
-    /// goes through the initial connect, whatever state a previous one was
-    /// left in.
+    /// User-initiated start from the setup screen: always a fresh session,
+    /// whatever state a previous one was left in.
     func start(_ s: Settings) {
         launch(s, relaunch: false)
     }
 
-    /// Builds the FFI config, starts the proxy, and publishes the bound port.
+    /// Builds the FFI config, starts the client, and publishes the bound port.
     ///
-    /// The connecting state is published immediately, then the blocking
+    /// The starting state is published immediately, then the blocking
     /// `flextunnel_start` (and any previous handle's teardown) runs on the
     /// lifecycle queue so the UI shows the spinner instead of freezing on the tap.
     ///
     /// A relaunch replaces an established session's handle in place and the
-    /// phase stays `.connected`: going back through the initial connect would
-    /// let its timeout end the session behind its own screen, where nothing
-    /// recovers it.
+    /// phase stays `.running`, so the session's screen stays up.
     private func launch(_ s: Settings, relaunch: Bool) {
         lastSettings = s
         lastError = nil
@@ -455,31 +389,32 @@ final class ProxyController: ObservableObject {
         forwardingSessionID = nil
         socksPort = nil
         sessionAlive = false
-        tunnelConnected = false
-        linkDownSince = nil
-        recoverySince = nil
-        tunnelStuck = false
-        connectionSummary = nil
-        forwardedRoutes = nil
+        destinations = []
         if relaunch {
             isRelaunching = true
-            connectDeadline = nil
-            status = "relaunching tunnel session…"
+            status = "restarting session…"
         } else {
             isRelaunching = false
-            autoRelaunchedThisOutage = false
-            phase = .connecting
-            connectDeadline = Date().addingTimeInterval(Self.connectTimeout)
-            status = "connecting to server…"
+            routeTable = nil
+            relayURLs = []
+            phase = .starting
+            status = "starting…"
         }
 
         let relayAuthToken = s.relayAuthToken.trimmingCharacters(in: .whitespacesAndNewlines)
         let configDict: [String: Any] = [
-            "server_node_id": s.serverNodeID,
             "auth_key": s.authKey,
             "socks_port": s.socksPort.map { Int($0) } ?? NSNull(),
             "relay_urls": s.relayURLs,
             "relay_auth_token": relayAuthToken.isEmpty ? NSNull() : relayAuthToken,
+            "destinations": s.destinations.map { destination in
+                [
+                    "host": destination.host,
+                    "server_node_id": destination.serverNodeID,
+                    "routed_domains": destination.routedDomains,
+                    "routed_cidrs": destination.routedCIDRs,
+                ] as [String: Any]
+            },
         ]
         guard
             let data = try? JSONSerialization.data(withJSONObject: configDict),
@@ -502,7 +437,7 @@ final class ProxyController: ObservableObject {
         guard epoch == startEpoch else { return }
 
         guard let handle = result.handle else {
-            launchFailed("start failed: \(result.message)")
+            launchFailed(result.message)
             return
         }
 
@@ -522,14 +457,6 @@ final class ProxyController: ObservableObject {
             launchFailed("bad result JSON: \(result.message)")
             return
         }
-        // The browser's proxy configuration names the session's pinned port,
-        // which stays fixed until the session quits. A core that still falls
-        // back to another port when it's taken is refused here like a failed
-        // bind, ending the relaunch rather than moving the session.
-        if let requested = s.socksPort, requested != 0, port != requested {
-            launchFailed("SOCKS port \(requested) is in use by another app — disconnect and start again")
-            return
-        }
 
         self.handle = handle
         // A fresh handle starts foregrounded-and-online in the core; replay the
@@ -537,57 +464,52 @@ final class ProxyController: ObservableObject {
         // keep-alive's suspension recovery) or offline paces itself correctly.
         _ = flextunnel_set_background(handle, isBackgrounded ? 1 : 0)
         _ = flextunnel_set_network_available(handle, pathAvailable ? 1 : 0)
-        connectionSummary = ConnectionSummary(
-            serverNodeID: s.serverNodeID,
-            relayURLs: s.relayURLs)
+        routeTable = s.routeTable
+        relayURLs = s.relayURLs
         socksPort = port
         // Pin the OS-assigned SOCKS port so relaunches of this session (manual
-        // Reconnect, suspend recovery) bind the same port and the browser's
-        // proxy config stays valid; one that can't get it back fails above.
+        // restart, suspend recovery) bind the same port and the browser's
+        // proxy config stays valid; one that can't get it back fails the start.
         lastSettings?.socksPort = port
         forwardingSessionID = UUID()
-        // Not usable yet: the handle only means the listener bound and the connect
-        // loop spawned. Stay in `.connecting` until the first handshake lands.
+        isRelaunching = false
+        // The listeners are bound and the client is serving. No server has been
+        // contacted, and none needs to be: each connects on first use.
+        phase = .running
         startHealthPolling()
     }
 
     /// Explicit user quit: fully tear down.
     func stop() {
-        connectDeadline = nil
         teardownHandle()
-        autoRelaunchedThisOutage = false
+        routeTable = nil
+        relayURLs = []
         phase = .idle
         status = "idle"
     }
 
-    /// Whether the manual Retry/Reconnect does anything right now: only for an
-    /// established session, and not while a relaunch is still establishing —
-    /// unless that relaunch has itself gone stuck.
-    var canRetry: Bool {
-        phase == .connected && lastSettings != nil && (!isRelaunching || tunnelStuck)
+    /// Whether Restart does anything right now: only for an established
+    /// session, and not while a relaunch is already in flight.
+    var canRestart: Bool {
+        phase == .running && lastSettings != nil && !isRelaunching
     }
 
-    /// The established session is between links: the core is reconnecting it,
-    /// or its handle is being relaunched.
-    var isReconnecting: Bool {
-        phase == .connected && !tunnelConnected && (sessionAlive || isRelaunching)
-    }
-
-    /// Manual Retry/Reconnect — the core reconnects the tunnel link on its own,
-    /// so this is the way out of a reconnect that's stuck or a session that
-    /// died. Ignored while `canRetry` is false: a second tap during a relaunch
-    /// would only restart it from scratch.
-    func retryNow() {
-        guard canRetry else { return }
+    /// Manual restart — the way out of a session that died, or of a destination
+    /// that stays unreachable: a fresh session drops every connection and
+    /// builds each destination's endpoint anew on its next use. Ignored while
+    /// `canRestart` is false: a second tap during a relaunch would only restart
+    /// it from scratch.
+    func restartNow() {
+        guard canRestart else { return }
         relaunch()
     }
 
     /// Replace the established session's native handle with a fresh one from
-    /// the last settings. Unlike `retryNow` it doesn't defer to a relaunch in
+    /// the last settings. Unlike `restartNow` it doesn't defer to a relaunch in
     /// progress: the suspension recovery needs a handle whose sockets were never
     /// frozen, and the lifecycle queue makes back-to-back launches safe.
     func relaunch() {
-        guard phase == .connected, let lastSettings else { return }
+        guard phase == .running, let lastSettings else { return }
         launch(lastSettings, relaunch: true)
     }
 
@@ -595,22 +517,13 @@ final class ProxyController: ObservableObject {
     /// front-end and every forward listener) so local clients get an immediate
     /// connection-refused instead of hanging in a frozen process's accept
     /// backlog. One-way for this handle — the on-foreground recovery
-    /// (`recoverFromSuspension`) relaunches the session, which rebinds
-    /// everything. Guarded to `.connected` because that recovery only
-    /// relaunches connected sessions; pausing any other phase would orphan a
+    /// (`ContentView.recoverFromSuspension`) relaunches the session, which
+    /// rebinds everything. Guarded to `.running` because that recovery only
+    /// relaunches running sessions; pausing any other phase would orphan a
     /// handle that never gets its listeners back.
     func closeListenersForSuspension() {
-        guard phase == .connected, let handle else { return }
+        guard phase == .running, let handle else { return }
         _ = flextunnel_close_listeners(handle)
-    }
-
-    /// Called on return to foreground. `connectDeadline` is wall-clock, so time
-    /// spent suspended would count against a still-pending first connect and
-    /// fail it spuriously on the first resumed poll; grant a fresh window.
-    func noteForegrounded() {
-        if phase == .connecting, connectDeadline != nil {
-            connectDeadline = Date().addingTimeInterval(Self.connectTimeout)
-        }
     }
 
     private func stopPolling() {
@@ -618,46 +531,38 @@ final class ProxyController: ObservableObject {
         healthTimer = nil
     }
 
-    /// Stop the FFI handle and polling and clear per-session state.
+    /// Stop the FFI handle and polling and clear per-session state. The
+    /// session's configuration (its routing table and relays) is left to the
+    /// caller: a session that ended behind its own screen still shows it.
     private func teardownHandle() {
         // Supersede any in-flight async start so its result is discarded; the
         // shutdown queued behind it stops whatever handle it produces.
         startEpoch &+= 1
         stopPolling()
-        connectDeadline = nil
         handle = nil
         native.shutdown()
         forwardingSessionID = nil
         socksPort = nil
         sessionAlive = false
-        tunnelConnected = false
-        linkDownSince = nil
-        recoverySince = nil
-        tunnelStuck = false
         isRelaunching = false
-        connectionSummary = nil
-        forwardedRoutes = nil
+        destinations = []
     }
 
-    /// Terminal initial-connect failure: surfaced on the setup screen.
-    private func fail(_ reason: String) {
-        teardownHandle()
-        phase = .failed
-        status = reason
-        if lastError == nil { lastError = reason }
-    }
-
-    /// A launch couldn't produce a usable session. Before the first connect
-    /// that's the setup screen's failure; for an established session the
-    /// screen stays up, offering Reconnect.
+    /// A launch couldn't produce a usable session. Before the session's screen
+    /// is up that's the setup screen's failure; for an established session the
+    /// screen stays up, offering Restart.
     private func launchFailed(_ reason: String) {
-        guard phase == .connected else {
-            fail(reason)
-            return
-        }
         teardownHandle()
-        status = "session stopped — tap Reconnect"
-        lastError = reason
+        if phase == .running {
+            // The routing table stays: the session's screen still labels pages
+            // and forwards with it while the user decides to restart or quit.
+            status = "session stopped — tap Restart"
+            lastError = reason
+        } else {
+            phase = .failed
+            status = "couldn't start: \(reason)"
+            lastError = status
+        }
     }
 
     // MARK: - Healthcheck
@@ -698,97 +603,21 @@ final class ProxyController: ObservableObject {
             }
         }
 
-        // health == 0 means the serve loop ended. Before the first connect that's
-        // a fatal initial failure; after, the whole native session died (rare — the core
-        // keeps the loop alive and retries the tunnel across drops).
+        // health == 0 means the client ended, which only happens when a local
+        // listener is lost for good — no destination's trouble ends it. Keep
+        // the session's screen mounted but mark it unusable, offering Restart.
         if flextunnel_health(handle) == 0 {
-            switch phase {
-            case .connecting:
-                fail("couldn't connect — check server id / auth / reachability")
-            case .connected:
-                // Session died; keep the browser mounted but mark it unusable so the
-                // popover can offer a manual Reconnect. Not relaunched on its own:
-                // the loop only ends on a permanent error (a rejected key).
-                sessionAlive = false
-                tunnelConnected = false
-                linkDownSince = nil
-                recoverySince = nil
-                tunnelStuck = false
-                isRelaunching = false
-                status = "session stopped — tap Reconnect"
-                stopPolling()
-            case .idle, .failed:
-                break
-            }
+            sessionAlive = false
+            destinations = []
+            status = "session stopped — tap Restart"
+            stopPolling()
             return
         }
 
         publish(\.sessionAlive, true)
-        refreshRoutes()
+        refreshDestinations()
         onForwardStatusRefresh?()
-        publish(\.tunnelConnected, forwardedRoutes?.connected == true)
-        trackLinkOutage()
-
-        switch phase {
-        case .connecting:
-            if tunnelConnected {
-                phase = .connected
-                status = connectedStatus
-            } else if let deadline = connectDeadline, Date() >= deadline {
-                fail("timed out connecting — check server id / auth / reachability")
-            }
-        case .connected:
-            // A tunnel-link drop is not a terminal session failure: the core
-            // reconnects on its own. Browser off-list traffic still works, and
-            // on-list requests are held by the core for the reconnect (its 45s
-            // recovery hold) instead of failing outright; server-direct
-            // forwards fail until it recovers.
-            if tunnelConnected {
-                publish(\.isRelaunching, false)
-                autoRelaunchedThisOutage = false
-                publish(\.status, connectedStatus)
-            } else if tunnelStuck {
-                // Once the core's own recovery has had its full window, its
-                // reconnect is presumed wedged: relaunch once on our own — a
-                // fresh handle is what a manual Retry (or quitting and starting
-                // again) would get — and only then leave it to the user. Not
-                // without a network path (the core is parked, not stuck) or in
-                // the background (the suspension recovery covers that).
-                if !autoRelaunchedThisOutage, pathAvailable, !isBackgrounded,
-                   let since = recoverySince,
-                   Date().timeIntervalSince(since) >= Self.autoRelaunchAfter {
-                    autoRelaunchedThisOutage = true
-                    relaunch()
-                    return
-                }
-                publish(\.status, "tunnel disconnected — retry to relaunch")
-            } else if isRelaunching {
-                publish(\.status, "relaunching tunnel session…")
-            } else {
-                publish(\.status, "tunnel reconnecting — off-list browsing active")
-            }
-        case .idle, .failed:
-            break
-        }
-    }
-
-    /// Track how long the tunnel link has been down while connected. Within the
-    /// grace window a drop reads as "reconnecting" (the core retries on its own);
-    /// past it the reconnect is presumed stuck and `tunnelStuck` flips the UI to
-    /// a disconnected state offering a manual Retry. Time spent suspended counts
-    /// on purpose: a link that died hours ago in the background should surface as
-    /// disconnected on resume, not spin as "reconnecting".
-    private func trackLinkOutage() {
-        guard phase == .connected, !tunnelConnected else {
-            linkDownSince = nil
-            recoverySince = nil
-            publish(\.tunnelStuck, false)
-            return
-        }
-        let downSince = linkDownSince ?? Date()
-        linkDownSince = downSince
-        recoverySince = recoverySince ?? downSince
-        publish(\.tunnelStuck, Date().timeIntervalSince(downSince) >= Self.reconnectGrace)
+        publish(\.status, runningStatus)
     }
 
     /// Writes a published property only when the value changes. Every write
@@ -799,8 +628,10 @@ final class ProxyController: ObservableObject {
         if self[keyPath: property] != value { self[keyPath: property] = value }
     }
 
-    private var connectedStatus: String {
-        socksPort.map { "connected on 127.0.0.1:\($0)" } ?? "connected"
+    private var runningStatus: String {
+        let listening = socksPort.map { "listening on 127.0.0.1:\($0)" } ?? "running"
+        let connected = connectedHosts.count
+        return connected == 0 ? listening : "\(listening) · \(connected) connected"
     }
 
     struct NativeForwardStatus {
@@ -812,7 +643,7 @@ final class ProxyController: ObservableObject {
     /// Reconcile the complete desired native forward set. Returns an error
     /// message when the session is unavailable or the FFI rejects the config.
     func setPortForwards(_ forwards: [PortForward]) -> String? {
-        guard let handle else { return "tunnel session is not running" }
+        guard let handle else { return "the session is not running" }
         let values: [[String: Any]] = forwards.map { forward in
             [
                 "id": forward.id.uuidString,
@@ -870,62 +701,51 @@ final class ProxyController: ObservableObject {
         return statuses
     }
 
-    /// Poll the core for the tunnel set learned during the handshake. It rides the
-    /// handshake response, so a generous buffer is used.
-    private func refreshRoutes() {
+    /// Poll the core for each destination's state. Reading it never causes a
+    /// connection. The snapshot grows with the destination list, so a buffer
+    /// that turns out too small is doubled and the call repeated.
+    private func refreshDestinations() {
         guard let handle else { return }
         var buf = [CChar](repeating: 0, count: 64 * 1024)
-        guard flextunnel_routes(handle, &buf, buf.count) == 1 else { return }
-        guard
-            let data = String(cString: buf).data(using: .utf8),
-            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return }
+        var written = flextunnel_status(handle, &buf, buf.count)
+        while written == 0, buf.count < 4 * 1024 * 1024 {
+            buf = [CChar](repeating: 0, count: buf.count * 2)
+            written = flextunnel_status(handle, &buf, buf.count)
+        }
+        guard written == 1,
+              let data = String(cString: buf).data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let entries = obj["destinations"] as? [[String: Any]] else { return }
 
-        // host_aliases is a JSON array of [alias, target] pairs.
-        let hostAliases = (obj["host_aliases"] as? [[String]] ?? [])
-            .compactMap { pair -> HostAlias? in
-                pair.count == 2 ? HostAlias(alias: pair[0], target: pair[1]) : nil
+        publish(\.destinations, entries.compactMap { entry -> DestinationStatus? in
+            guard let host = entry["host"] as? String,
+                  let state = (entry["state"] as? String).flatMap(LinkState.init(rawValue:)) else {
+                return nil
             }
-        // dns_forwards is a JSON array of {"suffix","servers"} objects.
-        let dnsForwards = (obj["dns_forwards"] as? [[String: Any]] ?? [])
-            .compactMap { entry -> DNSForward? in
-                guard let suffix = entry["suffix"] as? String else { return nil }
-                return DNSForward(suffix: suffix, servers: entry["servers"] as? [String] ?? [])
-            }
-        // bridges is a JSON array of {"name","endpoint_id","domains","cidrs"}.
-        let bridges = (obj["bridges"] as? [[String: Any]] ?? [])
-            .compactMap { entry -> BridgeRoute? in
-                guard let name = entry["name"] as? String else { return nil }
-                return BridgeRoute(
-                    name: name,
-                    endpointID: entry["endpoint_id"] as? String ?? "",
-                    domains: entry["domains"] as? [String] ?? [],
-                    cidrs: entry["cidrs"] as? [String] ?? [])
-            }
-        // `forwardedRoutes` is reset to nil whenever the handle changes, so the
-        // previous snapshot is this session's.
-        let connected = obj["connected"] as? Bool ?? false
-        publish(\.forwardedRoutes, ForwardedRoutes(
-            connected: connected,
-            isKnown: connected || forwardedRoutes?.isKnown == true,
-            domains: obj["domains"] as? [String] ?? [],
-            cidrs: obj["cidrs"] as? [String] ?? [],
-            hostAliases: hostAliases,
-            dnsForwards: dnsForwards,
-            bridges: bridges))
+            return DestinationStatus(
+                host: host,
+                serverNodeID: entry["server_node_id"] as? String ?? "",
+                state: state,
+                lastError: entry["last_error"] as? String,
+                routedDomains: entry["routed_domains"] as? [String] ?? [],
+                routedCIDRs: entry["routed_cidrs"] as? [String] ?? [])
+        })
     }
 
-    /// One-shot snapshot of the live connection's iroh path(s) — a point-in-time
-    /// readout (relay/direct) for the "connection path" status sheet, mirroring
-    /// the desktop CTA. Empty while the tunnel link is down (the core routes over
-    /// no path then), so callers only offer it while `tunnelConnected`.
-    func queryConnPath() -> ConnectionSnapshot {
+    /// One-shot snapshot of the iroh path(s) to the destination `host` — a
+    /// point-in-time readout (relay/direct) for the "connection path" sheet,
+    /// mirroring the desktop CTA. No paths unless that destination is
+    /// connected, so callers only offer it for one that is; asking never
+    /// connects it.
+    func queryConnPath(host: String) -> ConnectionSnapshot {
         guard let handle else { return ConnectionSnapshot() }
         var buf = [CChar](repeating: 0, count: 8 * 1024)
-        guard flextunnel_conn_path(handle, &buf, buf.count) == 1 else { return ConnectionSnapshot() }
-        guard
-            let data = String(cString: buf).data(using: .utf8),
-            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let written = host.withCString { cstr in
+            flextunnel_conn_path(handle, cstr, &buf, buf.count)
+        }
+        guard written == 1,
+              let data = String(cString: buf).data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return ConnectionSnapshot() }
 
         let paths = (obj["paths"] as? [[String: Any]] ?? []).enumerated().compactMap {
@@ -975,14 +795,15 @@ private final class NativeSession: @unchecked Sendable {
     /// Only touched on `queue`.
     private var current: OpaquePointer?
 
-    /// Stop the current handle, if any, then create the iroh endpoint and bind
-    /// the SOCKS listener — the slow work that must not run on the UI thread.
-    /// Queued before returning, so it is ordered against a `shutdown` the
-    /// caller issues right after; `completion` runs on the queue.
+    /// Stop the current handle, if any, then validate the config and bind the
+    /// local listeners — off the UI thread, since stopping the predecessor
+    /// closes its endpoints first. Queued before returning, so it is ordered
+    /// against a `shutdown` the caller issues right after; `completion` runs on
+    /// the queue.
     func launch(config: String, completion: @escaping @Sendable (ProxyController.StartResult) -> Void) {
         queue.async {
             self.stopCurrent()
-            var buf = [CChar](repeating: 0, count: 1024)
+            var buf = [CChar](repeating: 0, count: 2048)
             let handle = config.withCString { cstr in
                 flextunnel_start(cstr, &buf, buf.count)
             }

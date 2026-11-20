@@ -1,17 +1,20 @@
 import SwiftUI
 
 /// On-demand "connection path" readout: a point-in-time snapshot of how the
-/// current session reaches the server (the live iroh relay/direct paths),
-/// mirroring the desktop's connection-path modal and `ezvpn client status`.
+/// session reaches one destination's server (the live iroh relay/direct
+/// paths), mirroring the desktop's connection-path modal and
+/// `ezvpn client status`.
 ///
-/// Presented as a sheet from the tunnel-status surfaces (browser popover and the
-/// proxy-only screen), which only offer it while the tunnel link is up — the
-/// core routes over no path while disconnected, so the snapshot would be empty.
+/// Presented as a sheet from the status surfaces (the browser's sheet and the
+/// proxy-only screen), which only offer it for a destination that is connected
+/// — there is no path to one that isn't, so the snapshot would be empty.
 /// The snapshot is captured on appear and re-captured by Refresh; like the
 /// desktop modal it is a point-in-time check, not a live field.
 struct ConnPathSheet: View {
-    /// Snapshots the live paths + custom-relay health right now
-    /// (`ProxyController.queryConnPath()`).
+    /// The destination whose connection this reads.
+    let host: String
+    /// Snapshots its live paths + custom-relay health right now
+    /// (`ProxyController.queryConnPath(host:)`).
     let query: () -> ProxyController.ConnectionSnapshot
 
     @Environment(\.dismiss) private var dismiss
@@ -22,7 +25,7 @@ struct ConnPathSheet: View {
             List {
                 Section {
                     if snapshot.paths.isEmpty {
-                        Text("No path yet — still establishing. Close this and try again in a moment.")
+                        Text("No path — \(host) isn't connected right now. It connects when something is sent to it.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     } else {
@@ -30,8 +33,12 @@ struct ConnPathSheet: View {
                             ConnPathRow(path: path)
                         }
                     }
+                } header: {
+                    Text(host)
+                        .textCase(nil)
+                        .font(.footnote.monospaced())
                 } footer: {
-                    Text("Snapshot taken just now — how this session reaches the server. Direct paths are peer-to-peer; relay paths hop through an iroh relay.")
+                    Text("Snapshot taken just now — how this session reaches that server. Direct paths are peer-to-peer; relay paths hop through an iroh relay.")
                 }
 
                 if !snapshot.customRelays.isEmpty {
