@@ -23,8 +23,8 @@ IPs sent in hostname form. A hostname is not reclassified by its resolved IP.
 To route every target type through one destination, give it `*` for domains
 and both `0.0.0.0/0` and `::/0` for IPs.
 
-Each server still enforces **its own** routed set, host aliases, DNS forwards
-and bridges on what arrives: a route here only chooses the server, and the
+Each server still enforces **its own** routed set, host aliases and DNS
+forwards on what arrives: a route here only chooses the server, and the
 server refuses a target off its list. A destination's own host name is the
 exception — the server's loopback is reachable whatever that server routes.
 
@@ -96,8 +96,8 @@ Two status pages are served through the in-app proxy:
 - `http://flextunnel.internal/` — the client's own: its destinations and their
   state. Reading it connects nothing.
 - `http://flextunnel.internal/servers/<host>/` — that destination server's
-  page: its routed set, host aliases, DNS forwards and bridges. Fetching it
-  connects the destination.
+  page: its routed set, host aliases and DNS forwards. Fetching it connects
+  the destination.
 
 Both are a tap away under **Tunnel status** (**Client Status Page**, and
 **Server Status Page** on each destination). Other `*.flextunnel.internal`
