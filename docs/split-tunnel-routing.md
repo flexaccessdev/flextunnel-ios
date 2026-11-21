@@ -104,8 +104,8 @@ Two status pages are served through the in-app proxy:
 - `http://flextunnel.internal/` — the client's own: its destinations and their
   state. Reading it connects nothing.
 - `http://flextunnel.internal/servers/<host>/` — that destination server's
-  page: its routed set, host aliases and DNS forwards. Fetching it connects
-  the destination.
+  page: its routed set and host aliases. Fetching it connects the
+  destination.
 
 Both are a tap away under **Tunnel status** (**Client Status Page**, and
 **Server Status Page** on each destination). Other `*.flextunnel.internal`
