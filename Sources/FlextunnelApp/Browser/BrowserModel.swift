@@ -137,8 +137,8 @@ final class BrowserModel {
             return url
         }
 
-        if !trimmed.contains(where: \.isWhitespace) {
-            let host = RouteTable.routingKey(leadingHost(of: trimmed))
+        if let leading = leadingHost(of: trimmed) {
+            let host = RouteTable.routingKey(leading)
             if host == RouteTable.statusHost || RouteTable.isReserved(host) || privateHosts.contains(host) {
                 return nil
             }
@@ -150,15 +150,28 @@ final class BrowserModel {
     }
 
     /// The host the text starts with, read without a URL parser (the text may
-    /// be one no parser takes) and lowercased: past any scheme and user info,
-    /// up to a port, path, query or fragment.
-    private static func leadingHost(of text: String) -> String {
+    /// be one no parser takes) and lowercased: past a scheme that starts the
+    /// text and any user info, up to a port, path, query or fragment. Nil when
+    /// that authority has a space, which makes the text a search (`office
+    /// hours`) — a space further on (`http://office/a b`) does not.
+    private static func leadingHost(of text: String) -> String? {
         var rest = Substring(text)
-        if let scheme = rest.range(of: "://") { rest = rest[scheme.upperBound...] }
+        if let delimiter = rest.range(of: "://"), isScheme(rest[..<delimiter.lowerBound]) {
+            rest = rest[delimiter.upperBound...]
+        }
         rest = rest.prefix { !"/?#".contains($0) }
+        if rest.contains(where: \.isWhitespace) { return nil }
         if let at = rest.lastIndex(of: "@") { rest = rest[rest.index(after: at)...] }
         if !rest.hasPrefix("["), let colon = rest.lastIndex(of: ":") { rest = rest[..<colon] }
         return rest.lowercased()
+    }
+
+    /// A URL scheme (RFC 3986): a letter, then letters, digits, `+`, `-` or
+    /// `.` — so a `://` later in a path or query (`office/?next=http://x`) is
+    /// not taken for one.
+    private static func isScheme(_ text: Substring) -> Bool {
+        guard let first = text.first, first.isASCII, first.isLetter else { return false }
+        return text.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "+-.".contains($0)) }
     }
 
     private static func webURL(from text: String, privateHosts: Set<String>) -> URL? {

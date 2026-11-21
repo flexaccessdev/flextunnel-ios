@@ -51,9 +51,16 @@ final class AddressResolutionTests: XCTestCase {
                      "xn--a.localhost.flextunnel.internal:8080/settings",
                      "https://user@XN--A.localhost.flextunnel.internal./x",
                      "ftp://nas.localhost.flextunnel.internal",
-                     "ftp://office/x"] {
+                     "ftp://office/x",
+                     // A space in the path, not the host, keeps it an address.
+                     "http://office/a b",
+                     "office/a b",
+                     // A `://` after the host is no scheme.
+                     "office/a b?next=http://elsewhere.example"] {
             XCTAssertNil(BrowserModel.resolve(text, privateHosts: hosts), text)
         }
+        // A space in what would be the host makes it a search.
+        XCTAssertEqual(BrowserModel.resolve("office hours/x", privateHosts: hosts)?.host(), "duckduckgo.com")
         XCTAssertEqual(
             BrowserModel.resolve("http://nas.localhost.flextunnel.internal:8080/x")?.absoluteString,
             "http://nas.localhost.flextunnel.internal:8080/x")
