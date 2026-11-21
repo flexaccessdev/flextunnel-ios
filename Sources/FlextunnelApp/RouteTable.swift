@@ -44,9 +44,11 @@ struct RouteTable: Equatable {
 
     /// Route `host` — a hostname or an IP literal, optionally bracketed. As in
     /// the core, brackets are stripped only to read an IP literal; a bracketed
-    /// hostname is matched as it is, so only `*` covers it.
+    /// hostname is matched as it is, so only `*` covers it. The root dot is
+    /// dropped before the literal is read, so `10.0.0.1.` is that address,
+    /// gated by the networks like it.
     func route(host: String) -> Route {
-        let lowered = host.lowercased()
+        let lowered = Self.routingKey(host.lowercased())
         let unbracketed = lowered.hasPrefix("[") && lowered.hasSuffix("]")
             ? String(lowered.dropFirst().dropLast())
             : lowered

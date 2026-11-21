@@ -149,6 +149,17 @@ final class RouteTableTests: XCTestCase {
         XCTAssertTrue(tunneled("192.168.3.4", domains: ["*"], cidrs: ["192.168.0.0/16"]))
     }
 
+    /// With the root dot an address is the same address: gated by the
+    /// networks, never by `*` (the core reads the literal after dropping it).
+    func testAnAddressWithTheRootDotIsThatAddress() {
+        XCTAssertTrue(tunneled("10.0.0.1.", cidrs: ["10.0.0.0/8"]))
+        XCTAssertFalse(tunneled("10.0.0.1.", domains: ["*"]))
+        XCTAssertTrue(tunneled("[fd00::1].", cidrs: ["fd00::/8"]))
+        let t = table(("a.internal", [], ["10.0.0.0/8"]), ("b.internal", ["*"], []))
+        XCTAssertEqual(t.route(host: "10.0.0.1."), .destination("a.internal"))
+        XCTAssertEqual(t.route(host: "8.8.8.8."), .direct)
+    }
+
     func testRulesAreTrimmedLikeTheCore() {
         let domains = [" *.corp.example ", "\twiki.example\n"]
         let cidrs = [" 10.0.0.0/8 ", " fd00::1 "]
@@ -172,7 +183,7 @@ final class RouteTableTests: XCTestCase {
     func testOnlyWhatTheCoreReadsAsAnAddressIsOne() {
         let cidrs = ["203.0.113.0/24", "10.0.0.0/8", "fe80::/10"]
         XCTAssertTrue(tunneled("203.0.113.9", cidrs: cidrs))
-        for host in ["203.0.28937", "203.7434505", "10.1", "010.0.0.1", "0x0a.0.0.1", "10.0.0.1.", "fe80::1%en0"] {
+        for host in ["203.0.28937", "203.7434505", "10.1", "010.0.0.1", "0x0a.0.0.1", "10.0.0.1..", "fe80::1%en0"] {
             XCTAssertFalse(tunneled(host, cidrs: cidrs), "\(host) was read as an address")
             XCTAssertNil(RouteTable.addressBytes(host), host)
         }
