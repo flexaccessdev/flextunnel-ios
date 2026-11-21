@@ -450,6 +450,38 @@ final class BrowserE2ETests: XCTestCase {
         snapshot("setup-destinations")
     }
 
+    /// The editor fills a destination's routes from the server it names: the
+    /// server is asked once, before the destination exists and with no
+    /// session running, and what it routes lands in the fields to be saved.
+    func testFetchFromServerFillsInWhatTheServerRoutes() {
+        launch(with: .names)
+        XCTAssertTrue(app.navigationBars["flextunnel"].waitForExistence(timeout: 10))
+        app.buttons["setup.addDestination"].tap()
+        let node = app.textFields["destination.serverNodeID"]
+        XCTAssertTrue(node.waitForExistence(timeout: 5))
+        let fetch = app.buttons["destination.fetchRoutes"]
+        XCTAssertFalse(fetch.isEnabled, "there is no server to ask yet")
+
+        node.tap()
+        node.typeText(nodes[.cidr]!)
+        XCTAssertTrue(fetch.isEnabled)
+        fetch.tap()
+
+        // A multi-line field isn't a plain text field to the test runner.
+        let ranges = app.descendants(matching: .any)["destination.routedCIDRs"]
+        let filled = NSPredicate(format: "value == %@", "203.0.113.0/24")
+        wait(for: [expectation(for: filled, evaluatedWith: ranges)], timeout: Self.loadTimeout)
+        let note = app.staticTexts["destination.fetchRoutesNote"]
+        XCTAssertTrue(note.label.contains("0 domain(s) and 1 IP range(s)"), note.label)
+        snapshot("destination-editor-fetched")
+
+        let host = app.textFields["destination.host"]
+        host.tap()
+        host.typeText(Self.cidrHost)
+        app.buttons["destination.save"].tap()
+        XCTAssertTrue(app.buttons["setup.destination.\(Self.cidrHost)"].waitForExistence(timeout: 5))
+    }
+
     /// A port forward goes through the destination that routes its host — here
     /// a destination's own name, which is the server's loopback — and one to a
     /// host no destination routes is switched back off, saying so.

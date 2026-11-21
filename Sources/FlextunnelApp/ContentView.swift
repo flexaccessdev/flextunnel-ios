@@ -190,6 +190,7 @@ struct ContentView: View {
             .sheet(item: $destinationDraft) { draft in
                 DestinationEditSheet(
                     draft: draft,
+                    routesAccess: routesAccess,
                     validate: { client.validated($0) },
                     onSave: { _ = client.save($0) },
                     onDelete: { client.delete(id: draft.id) })
@@ -513,12 +514,26 @@ struct ContentView: View {
             // asks for an OS-assigned port; ProxyController pins the assigned
             // port into its replayed settings so relaunches keep it.
             socksPort: sessionMode == .browser ? 0 : nil,
-            relayURLs: client.relayURLs
-                .split(separator: ",")
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty },
+            relayURLs: relayURLList,
             relayAuthToken: relayAuthToken
         )
+    }
+
+    /// The relay URLs field, split into its entries.
+    private var relayURLList: [String] {
+        client.relayURLs
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// What a destination's editor asks its server with (see `ServerRoutes`):
+    /// the picked key and the relays as the fields hold them now, exactly what
+    /// a session started this moment would use. Nil until a key is picked.
+    private var routesAccess: ServerRoutes.Access? {
+        guard let key = selectedKey else { return nil }
+        return ServerRoutes.Access(
+            authKey: key.secret, relayURLs: relayURLList, relayAuthToken: relayAuthToken)
     }
 
     /// Prefill the Keychain-backed relay token on first appearance (the auth

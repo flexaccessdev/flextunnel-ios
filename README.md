@@ -38,7 +38,9 @@ the server itself, and the destination's routes are the other domains and IP
 ranges sent through it. A server is connected when something is first sent to
 it and disconnected after five minutes unused, so starting a session connects
 nothing. The routes are this app's configuration — nothing is learned from a
-server, which still enforces its own routed set.
+server, which still enforces its own routed set. To start from that set, a
+destination's editor has **Fetch from Server**: it asks the server once and
+fills the routes in for you to review and save.
 
 ## Documentation
 

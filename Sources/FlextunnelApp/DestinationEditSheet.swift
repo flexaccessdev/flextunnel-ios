@@ -41,10 +41,25 @@ struct DestinationDraft: Identifiable {
     }
 }
 
+/// Where the editor's "Fetch from Server" stands.
+enum RoutesFetch: Equatable {
+    case idle
+    /// The server was asked; the id tells this request's answer from one to an
+    /// earlier request, or for a server the draft has since been pointed away
+    /// from.
+    case fetching(UUID)
+    /// The rule fields were filled from the server's answer; what to say.
+    case filled(String)
+    case failed(String)
+}
+
 /// Add or edit one destination: the host name a server goes by on this client,
 /// the server's node id, and the further hosts routed through it.
 struct DestinationEditSheet: View {
     @State var draft: DestinationDraft
+    /// The client's key and relays, with which the draft's server can be asked
+    /// what it routes; nil while no auth key is picked.
+    let routesAccess: ServerRoutes.Access?
     /// The store's check of the draft against its rules and the other
     /// destinations.
     let validate: (ClientStore.Destination) -> Result<ClientStore.Destination, ClientStore.ValidationError>
@@ -53,6 +68,7 @@ struct DestinationEditSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var confirmingDelete = false
+    @State private var routesFetch = RoutesFetch.idle
 
     var body: some View {
         NavigationStack {
@@ -64,7 +80,7 @@ struct DestinationEditSheet: View {
                         .keyboardType(.URL)
                         .accessibilityIdentifier("destination.host")
                     // One line: wrapped, the id would be hyphenated at the break.
-                    TextField("Server node id", text: $draft.serverNodeID)
+                    TextField("Server node id", text: serverNodeID)
                         .font(.callout.monospaced())
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
@@ -78,25 +94,43 @@ struct DestinationEditSheet: View {
                 }
 
                 Section {
-                    TextField("Domains (e.g. *.corp.example)", text: $draft.routedDomains, axis: .vertical)
+                    TextField("Domains (e.g. *.corp.example)", text: rules(\.routedDomains), axis: .vertical)
                         .font(.callout.monospaced())
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                         .lineLimit(1...6)
                         .accessibilityIdentifier("destination.routedDomains")
-                    TextField("IP ranges (e.g. 10.0.0.0/8)", text: $draft.routedCIDRs, axis: .vertical)
+                    TextField("IP ranges (e.g. 10.0.0.0/8)", text: rules(\.routedCIDRs), axis: .vertical)
                         .font(.callout.monospaced())
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                         .lineLimit(1...6)
                         .accessibilityIdentifier("destination.routedCIDRs")
+                    Button {
+                        fetchRoutes()
+                    } label: {
+                        HStack {
+                            Label("Fetch from Server", systemImage: "arrow.down.circle")
+                            Spacer()
+                            if isFetchingRoutes { ProgressView() }
+                        }
+                    }
+                    .disabled(routesBlocker != nil || isFetchingRoutes)
+                    .accessibilityIdentifier("destination.fetchRoutes")
+                    if let note = routesNote {
+                        Text(note.text)
+                            .font(.footnote)
+                            .foregroundStyle(note.isProblem ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                            .accessibilityIdentifier("destination.fetchRoutesNote")
+                    }
                 } header: {
                     Text("Also send through it")
                 } footer: {
                     Text("Optional. One rule per line. A domain is an exact name, "
                         + "*.suffix for its subdomains, or * for every name; an IP range "
                         + "covers IP-address targets only, never names. The server must "
-                        + "route them too — its own list is what it allows. Anything on "
+                        + "route them too — its own list is what it allows, and Fetch "
+                        + "from Server replaces both fields with it. Anything on "
                         + "no destination's list connects directly from this device.")
                 }
 
@@ -170,5 +204,98 @@ struct DestinationEditSheet: View {
 
     private var validationMessage: String? {
         draft.isPristine ? nil : problem
+    }
+
+    // MARK: - Fetch from Server
+
+    private var isFetchingRoutes: Bool {
+        if case .fetching = routesFetch { return true }
+        return false
+    }
+
+    /// What is still missing before the server can be asked, or nil.
+    private var routesBlocker: String? {
+        if ClientStore.nodeKey(draft.serverNodeID) == nil {
+            return "Enter the server node id to fetch the server's own list."
+        }
+        if routesAccess == nil {
+            return "Pick an auth key on the setup screen to fetch the server's own list."
+        }
+        return nil
+    }
+
+    /// The line under the button: the outcome of the last fetch, or what it
+    /// is waiting for.
+    private var routesNote: (text: String, isProblem: Bool)? {
+        switch routesFetch {
+        case .fetching: return (text: "Asking the server…", isProblem: false)
+        case .filled(let note): return (text: note, isProblem: false)
+        case .failed(let reason): return (text: reason, isProblem: true)
+        case .idle: return routesBlocker.map { (text: $0, isProblem: false) }
+        }
+    }
+
+    // The fields a fetch depends on are edited through bindings that call
+    // the fetch off with the edit itself. A change handler would do it only
+    // with the next view update, and an answer landing in between would still
+    // be taken: over what was just typed, or for the server the id named
+    // before.
+
+    /// The server node id. An answer on its way is for the server the id
+    /// named, and an outcome shown no longer describes the form.
+    private var serverNodeID: Binding<String> {
+        Binding(
+            get: { draft.serverNodeID },
+            set: { edited in
+                guard edited != draft.serverNodeID else { return }
+                draft.serverNodeID = edited
+                routesFetch = .idle
+            })
+    }
+
+    /// One of the two rule fields. An answer on its way would replace both —
+    /// what is typed into one meanwhile included — so an edit calls it off.
+    private func rules(_ field: WritableKeyPath<DestinationDraft, String>) -> Binding<String> {
+        Binding(
+            get: { draft[keyPath: field] },
+            set: { edited in
+                guard edited != draft[keyPath: field] else { return }
+                draft[keyPath: field] = edited
+                if isFetchingRoutes { routesFetch = .idle }
+            })
+    }
+
+    /// Ask the draft's server what it routes and put its lists in the two rule
+    /// fields, replacing what they held; a failure leaves them alone. Nothing
+    /// is saved — that stays with Save. The editor stays usable meanwhile, and
+    /// an answer that is no longer waited for is dropped.
+    private func fetchRoutes() {
+        guard let access = routesAccess, routesBlocker == nil, !isFetchingRoutes else { return }
+        let request = UUID()
+        let node = draft.serverNodeID
+        routesFetch = .fetching(request)
+        Task {
+            let result = await ServerRoutes.fetch(serverNodeID: node, access: access)
+            guard routesFetch == .fetching(request) else { return }
+            switch result {
+            case .success(let routes):
+                if let odd = routes.entryThatIsNotOneRule {
+                    routesFetch = .failed(
+                        "The server lists \"\(odd)\", which these fields cannot hold as one "
+                            + "rule. Nothing was filled in.")
+                    return
+                }
+                routesFetch = .filled(routes.filledNote)
+                draft.routedDomains = routes.domains.joined(separator: "\n")
+                draft.routedCIDRs = routes.cidrs.joined(separator: "\n")
+            case .failure(let failure):
+                // The core's word for a key the server does not know.
+                let refused = failure.message.hasPrefix("Authentication failed")
+                routesFetch = .failed(refused
+                    ? "The server refused this device's key. Put its public key on the "
+                        + "server's authorized-keys file first."
+                    : failure.message)
+            }
+        }
     }
 }
