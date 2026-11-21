@@ -72,6 +72,23 @@ final class ServerRoutesTests: XCTestCase {
         XCTAssertNil(routes?.entryThatIsNotOneRule)
     }
 
+    /// The padding dropped is what the server drops, and no more. A zero-width
+    /// space is not whitespace to the server: it is part of the name there,
+    /// and trimming it away — as Foundation's whitespace set does — would
+    /// make a rule the server does not have. Such an entry is kept as it is,
+    /// and is not one to fill in, since saving would trim it after all.
+    func testOnlyTheServersWhitespaceIsDropped() {
+        XCTAssertEqual(ServerRoutes.serverTrimmed(" \t\u{A0}\u{3000}a.example\u{2028}\n"), "a.example")
+        XCTAssertEqual(ServerRoutes.serverTrimmed("\u{200B}a.example\u{200B}"), "\u{200B}a.example\u{200B}")
+        XCTAssertEqual(ServerRoutes.serverTrimmed(" \n"), "")
+        // What Foundation would have made of it.
+        XCTAssertEqual("\u{200B}a.example".trimmingCharacters(in: .whitespacesAndNewlines), "a.example")
+
+        let routes = ServerRoutes.parse(#"{"routed_domains":[" \u200Ba.example"],"routed_cidrs":[]}"#)
+        XCTAssertEqual(routes?.domains, ["\u{200B}a.example"])
+        XCTAssertEqual(routes?.entryThatIsNotOneRule, "\u{200B}a.example")
+    }
+
     /// Anything else is no answer, never an empty one to fill the editor with.
     func testAnswerMissingAListIsNotRead() {
         for answer in [

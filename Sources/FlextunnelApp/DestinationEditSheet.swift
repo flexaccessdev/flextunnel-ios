@@ -80,7 +80,7 @@ struct DestinationEditSheet: View {
                         .keyboardType(.URL)
                         .accessibilityIdentifier("destination.host")
                     // One line: wrapped, the id would be hyphenated at the break.
-                    TextField("Server node id", text: $draft.serverNodeID)
+                    TextField("Server node id", text: serverNodeID)
                         .font(.callout.monospaced())
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
@@ -94,13 +94,13 @@ struct DestinationEditSheet: View {
                 }
 
                 Section {
-                    TextField("Domains (e.g. *.corp.example)", text: $draft.routedDomains, axis: .vertical)
+                    TextField("Domains (e.g. *.corp.example)", text: rules(\.routedDomains), axis: .vertical)
                         .font(.callout.monospaced())
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                         .lineLimit(1...6)
                         .accessibilityIdentifier("destination.routedDomains")
-                    TextField("IP ranges (e.g. 10.0.0.0/8)", text: $draft.routedCIDRs, axis: .vertical)
+                    TextField("IP ranges (e.g. 10.0.0.0/8)", text: rules(\.routedCIDRs), axis: .vertical)
                         .font(.callout.monospaced())
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
@@ -176,14 +176,6 @@ struct DestinationEditSheet: View {
                         .accessibilityIdentifier("destination.error")
                 }
             }
-            // An answer on its way is for the server the id named.
-            .onChange(of: draft.serverNodeID) { routesFetch = .idle }
-            // And it would replace both rule fields — what is typed into one
-            // while it is on its way included — so an edit calls it off. (The
-            // fill itself lands after the fetch is over, and changes nothing
-            // here.)
-            .onChange(of: draft.routedDomains) { dropPendingRoutes() }
-            .onChange(of: draft.routedCIDRs) { dropPendingRoutes() }
             .confirmationDialog(
                 "Delete this destination?",
                 isPresented: $confirmingDelete,
@@ -243,10 +235,34 @@ struct DestinationEditSheet: View {
         }
     }
 
-    /// A rule field changed: the answer to a fetch in flight is no longer
-    /// waited for.
-    private func dropPendingRoutes() {
-        if isFetchingRoutes { routesFetch = .idle }
+    // The fields a fetch depends on are edited through bindings that call
+    // the fetch off with the edit itself. A change handler would do it only
+    // with the next view update, and an answer landing in between would still
+    // be taken: over what was just typed, or for the server the id named
+    // before.
+
+    /// The server node id. An answer on its way is for the server the id
+    /// named, and an outcome shown no longer describes the form.
+    private var serverNodeID: Binding<String> {
+        Binding(
+            get: { draft.serverNodeID },
+            set: { edited in
+                guard edited != draft.serverNodeID else { return }
+                draft.serverNodeID = edited
+                routesFetch = .idle
+            })
+    }
+
+    /// One of the two rule fields. An answer on its way would replace both —
+    /// what is typed into one meanwhile included — so an edit calls it off.
+    private func rules(_ field: WritableKeyPath<DestinationDraft, String>) -> Binding<String> {
+        Binding(
+            get: { draft[keyPath: field] },
+            set: { edited in
+                guard edited != draft[keyPath: field] else { return }
+                draft[keyPath: field] = edited
+                if isFetchingRoutes { routesFetch = .idle }
+            })
     }
 
     /// Ask the draft's server what it routes and put its lists in the two rule
@@ -269,8 +285,6 @@ struct DestinationEditSheet: View {
                             + "rule. Nothing was filled in.")
                     return
                 }
-                // The outcome first: the fields' change handlers then find
-                // no fetch to call off.
                 routesFetch = .filled(routes.filledNote)
                 draft.routedDomains = routes.domains.joined(separator: "\n")
                 draft.routedCIDRs = routes.cidrs.joined(separator: "\n")

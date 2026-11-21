@@ -39,8 +39,11 @@ struct ServerRoutes: Equatable, Sendable {
             DispatchQueue.global(qos: .userInitiated).async {
                 // The call returns the bytes its answer needs, or -1 with the
                 // reason in the buffer. An answer larger than the buffer means
-                // asking the server again, so the first one is generous.
-                var buf = [CChar](repeating: 0, count: 64 * 1024)
+                // asking the server again — a second connection, which can
+                // fail where the first was answered — so the first one holds
+                // the largest there can be: the lists are part of a status
+                // page, and the core takes none over this size.
+                var buf = [CChar](repeating: 0, count: largestAnswer)
                 var needed = request.withCString { flextunnel_fetch_server_routes($0, &buf, buf.count) }
                 if needed > buf.count {
                     buf = [CChar](repeating: 0, count: needed)
@@ -59,6 +62,10 @@ struct ServerRoutes: Equatable, Sendable {
         }
     }
 
+    /// The core's limit on a server's status page (`SERVER_STATUS_LIMIT`),
+    /// and so on the routes read out of one.
+    static let largestAnswer = 1024 * 1024
+
     /// The FFI's request: the server, and the key and relays to reach it with.
     static func requestJSON(serverNodeID: String, access: Access) -> String? {
         let token = access.relayAuthToken.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -74,8 +81,9 @@ struct ServerRoutes: Equatable, Sendable {
 
     /// The FFI's answer, `{"routed_domains":[…],"routed_cidrs":[…]}`; nil when
     /// it is anything else. A server reports its entries as configured and
-    /// trims them itself, so padding around one is dropped here: it is not
-    /// part of the rule.
+    /// trims them itself, so padding around one is dropped here, by the
+    /// server's own measure of it (`serverTrimmed`): it is not part of the
+    /// rule.
     static func parse(_ json: String) -> ServerRoutes? {
         struct Answer: Decodable {
             let routed_domains: [String]
@@ -84,20 +92,34 @@ struct ServerRoutes: Equatable, Sendable {
         guard let answer = try? JSONDecoder().decode(Answer.self, from: Data(json.utf8)) else {
             return nil
         }
-        let trimmed = { (rules: [String]) in
-            rules.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        }
         return ServerRoutes(
-            domains: trimmed(answer.routed_domains), cidrs: trimmed(answer.routed_cidrs))
+            domains: answer.routed_domains.map(serverTrimmed),
+            cidrs: answer.routed_cidrs.map(serverTrimmed))
+    }
+
+    /// `rule` without the whitespace around it, as the server's `str::trim`
+    /// takes it off: Unicode `White_Space`, scalar by scalar. Foundation's
+    /// whitespace set is not the same one — it holds U+200B, which the server
+    /// keeps as part of the name — so trimming with it would turn one of the
+    /// server's rules into a name the server does not route.
+    static func serverTrimmed(_ rule: String) -> String {
+        let scalars = rule.unicodeScalars
+        guard let first = scalars.firstIndex(where: { !$0.properties.isWhitespace }),
+            let last = scalars.lastIndex(where: { !$0.properties.isWhitespace })
+        else { return "" }
+        return String(scalars[first...last])
     }
 
     /// The first entry the editor's fields would not hold as the one rule it
     /// is, if any. The fields are text split on commas and whitespace, and a
     /// server takes any text as an exact domain: one like
     /// `a.example, b.example` would be saved here as two rules the server
-    /// does not have.
+    /// does not have. Nor is an entry held that saving would change — one
+    /// the store trims further than the server did.
     var entryThatIsNotOneRule: String? {
-        (domains + cidrs).first { ClientStore.splitRules($0) != [$0] }
+        (domains + cidrs).first {
+            ClientStore.splitRules($0) != [$0] || ClientStore.cleaned([$0]) != [$0]
+        }
     }
 
     /// What to say once the lists have been put in the editor.

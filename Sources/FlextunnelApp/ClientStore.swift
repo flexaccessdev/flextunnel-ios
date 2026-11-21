@@ -280,8 +280,9 @@ final class ClientStore: ObservableObject {
         RouteTable.routingKey(raw.trimmingCharacters(in: .whitespacesAndNewlines)).lowercased()
     }
 
-    /// Trimmed, without blanks or repeats, in the order given.
-    private static func cleaned(_ rules: [String]) -> [String] {
+    /// Trimmed, without blanks or repeats, in the order given: the rules as
+    /// saving keeps them.
+    nonisolated static func cleaned(_ rules: [String]) -> [String] {
         var seen = Set<String>()
         return rules
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
