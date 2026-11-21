@@ -150,11 +150,16 @@ final class ClientStore: ObservableObject {
 
         for domain in result.routedDomains {
             let rule = Self.ruleKey(domain)
-            let name = rule.hasPrefix("*.") ? String(rule.dropFirst(2)) : rule
+            // The name as written, which is what the core reads: lowercased
+            // first, a letter it refuses (the Kelvin sign) would pass as the
+            // `k` it becomes, and the saved rule would stop every session.
+            let written = RouteTable.routingKey(domain)
+            let writtenName = written.hasPrefix("*.") ? String(written.dropFirst(2)) : written
+            let name = writtenName.lowercased()
             if RouteTable.addressBytes(Self.unbracketed(name)) != nil {
                 return .failure(.init(message: "\(domain) is an IP address — list it under IP ranges."))
             }
-            if rule != "*", name.isEmpty || name.contains("*") || Self.hostnameProblem(name) != nil {
+            if rule != "*", name.isEmpty || name.contains("*") || Self.hostnameProblem(writtenName) != nil {
                 return .failure(.init(message: "\(domain) is not a domain rule. Use a name, *.suffix or *."))
             }
             if name == RouteTable.statusHost || RouteTable.isReserved(name) {

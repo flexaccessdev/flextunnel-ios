@@ -133,6 +133,18 @@ final class ClientStoreTests: XCTestCase {
             host: "a.internal", node: "node-a", domains: ["*", "*.corp.example", "db.example."])))
     }
 
+    /// The core reads the rule as saved, so it is checked as written: the
+    /// Kelvin sign lowercases to an ASCII `k`, but the core refuses it.
+    func testADomainRuleIsCheckedAsWritten() {
+        for rule in ["\u{212A}.example", "*.\u{212A}.example"] {
+            XCTAssertNotNil(
+                store.save(destination(host: "a.internal", node: "node-a", domains: [rule])),
+                "\(rule) was accepted")
+        }
+        XCTAssertNil(store.save(destination(
+            host: "a.internal", node: "node-a", domains: ["K.example", "*.Corp.example"])))
+    }
+
     func testIPRangesMustParse() {
         for rule in ["10.0.0.0/33", "not-an-ip", "corp.example", "fd00::/129", "10.1/16", "10.0.0.0/-0"] {
             XCTAssertNotNil(
