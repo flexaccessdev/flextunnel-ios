@@ -178,6 +178,12 @@ struct DestinationEditSheet: View {
             }
             // An answer on its way is for the server the id named.
             .onChange(of: draft.serverNodeID) { routesFetch = .idle }
+            // And it would replace both rule fields — what is typed into one
+            // while it is on its way included — so an edit calls it off. (The
+            // fill itself lands after the fetch is over, and changes nothing
+            // here.)
+            .onChange(of: draft.routedDomains) { dropPendingRoutes() }
+            .onChange(of: draft.routedCIDRs) { dropPendingRoutes() }
             .confirmationDialog(
                 "Delete this destination?",
                 isPresented: $confirmingDelete,
@@ -237,6 +243,12 @@ struct DestinationEditSheet: View {
         }
     }
 
+    /// A rule field changed: the answer to a fetch in flight is no longer
+    /// waited for.
+    private func dropPendingRoutes() {
+        if isFetchingRoutes { routesFetch = .idle }
+    }
+
     /// Ask the draft's server what it routes and put its lists in the two rule
     /// fields, replacing what they held; a failure leaves them alone. Nothing
     /// is saved — that stays with Save. The editor stays usable meanwhile, and
@@ -251,9 +263,17 @@ struct DestinationEditSheet: View {
             guard routesFetch == .fetching(request) else { return }
             switch result {
             case .success(let routes):
+                if let odd = routes.entryThatIsNotOneRule {
+                    routesFetch = .failed(
+                        "The server lists \"\(odd)\", which these fields cannot hold as one "
+                            + "rule. Nothing was filled in.")
+                    return
+                }
+                // The outcome first: the fields' change handlers then find
+                // no fetch to call off.
+                routesFetch = .filled(routes.filledNote)
                 draft.routedDomains = routes.domains.joined(separator: "\n")
                 draft.routedCIDRs = routes.cidrs.joined(separator: "\n")
-                routesFetch = .filled(routes.filledNote)
             case .failure(let failure):
                 // The core's word for a key the server does not know.
                 let refused = failure.message.hasPrefix("Authentication failed")

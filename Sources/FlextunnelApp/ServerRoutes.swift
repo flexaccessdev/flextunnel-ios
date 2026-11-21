@@ -37,16 +37,23 @@ struct ServerRoutes: Equatable, Sendable {
         }
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
+                // The call returns the bytes its answer needs, or -1 with the
+                // reason in the buffer. An answer larger than the buffer means
+                // asking the server again, so the first one is generous.
                 var buf = [CChar](repeating: 0, count: 64 * 1024)
-                let ok = request.withCString { flextunnel_fetch_server_routes($0, &buf, buf.count) }
+                var needed = request.withCString { flextunnel_fetch_server_routes($0, &buf, buf.count) }
+                if needed > buf.count {
+                    buf = [CChar](repeating: 0, count: needed)
+                    needed = request.withCString { flextunnel_fetch_server_routes($0, &buf, buf.count) }
+                }
                 let output = String(cString: buf)
-                if ok == 1, let routes = parse(output) {
+                if needed < 0 {
+                    continuation.resume(returning: .failure(Failure(message: output)))
+                } else if needed <= buf.count, let routes = parse(output) {
                     continuation.resume(returning: .success(routes))
-                } else if ok == 1 {
+                } else {
                     continuation.resume(returning: .failure(
                         Failure(message: "The server's answer could not be read.")))
-                } else {
-                    continuation.resume(returning: .failure(Failure(message: output)))
                 }
             }
         }
@@ -76,6 +83,15 @@ struct ServerRoutes: Equatable, Sendable {
             return nil
         }
         return ServerRoutes(domains: answer.routed_domains, cidrs: answer.routed_cidrs)
+    }
+
+    /// The first entry the editor's fields would not hold as the one rule it
+    /// is, if any. The fields are text split on commas and whitespace, and a
+    /// server takes any text as an exact domain: one like
+    /// `a.example, b.example` would be saved here as two rules the server
+    /// does not have.
+    var entryThatIsNotOneRule: String? {
+        (domains + cidrs).first { ClientStore.splitRules($0) != [$0] }
     }
 
     /// What to say once the lists have been put in the editor.

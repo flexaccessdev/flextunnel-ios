@@ -42,6 +42,24 @@ final class ServerRoutesTests: XCTestCase {
         XCTAssertEqual(nothing?.filledNote, "The server routes nothing beyond itself.")
     }
 
+    /// The editor's fields split on commas and whitespace, and a server takes
+    /// any text as an exact domain: an entry that would come back out of a
+    /// field as something other than itself is not one to fill in.
+    func testAnEntryTheFieldsWouldSplitIsFound() {
+        XCTAssertNil(ServerRoutes(domains: ["*.corp.example", "*"], cidrs: ["10.0.0.0/8", "::/0"])
+            .entryThatIsNotOneRule)
+        XCTAssertNil(ServerRoutes(domains: [], cidrs: []).entryThatIsNotOneRule)
+        XCTAssertEqual(
+            ServerRoutes(domains: ["ok.example", "db.example, api.example"], cidrs: [])
+                .entryThatIsNotOneRule,
+            "db.example, api.example")
+        XCTAssertEqual(
+            ServerRoutes(domains: ["ok.example"], cidrs: ["10.0.0.0/8 192.168.0.0/16"])
+                .entryThatIsNotOneRule,
+            "10.0.0.0/8 192.168.0.0/16")
+        XCTAssertEqual(ServerRoutes(domains: [""], cidrs: []).entryThatIsNotOneRule, "")
+    }
+
     /// Anything else is no answer, never an empty one to fill the editor with.
     func testAnswerMissingAListIsNotRead() {
         for answer in [
