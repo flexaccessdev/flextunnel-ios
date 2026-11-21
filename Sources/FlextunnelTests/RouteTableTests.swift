@@ -73,7 +73,7 @@ final class RouteTableTests: XCTestCase {
         // `m1` is only a label: a host spelled the same is routed by the rules.
         let t = table(("m1", [], []), ("m2", ["m1", "*.internal"], []))
         XCTAssertEqual(t.route(host: "m1"), .destination("m2"))
-        XCTAssertEqual(t.route(host: "m1"), .destination("m2"))
+        XCTAssertEqual(t.route(host: "m1.internal"), .destination("m2"))
     }
 
     func testTheRootDotSelectsTheSameRoute() {

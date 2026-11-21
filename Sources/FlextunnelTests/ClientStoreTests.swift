@@ -53,6 +53,7 @@ final class ClientStoreTests: XCTestCase {
     func testNameMustBeOneDNSLabel() {
         for name in ["", "  ", "10.0.0.1", "[fd00::1]", "a.localhost", "office.internal",
                      "flextunnel.internal", "my_nas", "-a", "a-", "has space", "*", "caf\u{e9}",
+                     "xn--a", "XN--nxasmq6b", "ab--c",
                      String(repeating: "a", count: 64)] {
             XCTAssertNotNil(store.save(destination(name: name, node: "node-a")), "\(name) was accepted")
         }
@@ -60,6 +61,7 @@ final class ClientStoreTests: XCTestCase {
         XCTAssertNil(store.save(destination(name: "nas-2", node: "node-a")))
         XCTAssertNil(store.save(destination(name: String(repeating: "b", count: 63), node: "node-b")))
         XCTAssertNil(store.save(destination(name: "0", node: "node-c")))
+        XCTAssertNil(store.save(destination(name: "a-b--c", node: "node-d")), "hyphens elsewhere are fine")
     }
 
     func testServerNodeIDIsRequiredAndUnique() {

@@ -183,6 +183,17 @@ struct BrowserView: View {
                     model.addTab().load(url, displayAddress: url.absoluteString)
                 })
         }
+        .alert(
+            "Invalid Address",
+            isPresented: Binding(
+                get: { model.addressError != nil },
+                set: { if !$0 { model.addressError = nil } }),
+            presenting: model.addressError
+        ) { _ in
+            Button("OK", role: .cancel) {}
+        } message: { address in
+            Text(verbatim: "\(address) names a private address but isn't a valid URL, so it wasn't opened or searched.")
+        }
         .animation(.easeInOut(duration: 0.25), value: model.downloads.toast)
         .animation(.easeInOut(duration: 0.18), value: addressBarFocused)
         .animation(.easeInOut(duration: 0.22), value: toolbarsCollapsed)

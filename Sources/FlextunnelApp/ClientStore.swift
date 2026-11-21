@@ -191,8 +191,8 @@ final class ClientStore: ObservableObject {
 
     /// The core's `validate_destination_name`: one DNS label (RFC 1123) — 1 to
     /// 63 ASCII letters, digits and hyphens, not starting or ending with a
-    /// hyphen — as the first label of `<name>.localhost.flextunnel.internal`.
-    /// Returns it lowercased.
+    /// hyphen — as the first label of `<name>.localhost.flextunnel.internal`,
+    /// and no reserved `ab--` label. Returns it lowercased.
     static func validatedName(_ raw: String) -> Result<String, ValidationError> {
         let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty {
@@ -211,6 +211,14 @@ final class ClientStore: ObservableObject {
         }
         if name.hasPrefix("-") || name.hasSuffix("-") {
             return .failure(.init(message: "Name can't start or end with a hyphen."))
+        }
+        // Hyphens in the third and fourth places make a reserved label
+        // (RFC 5891 §4.2.3.1), `xn--` among them, and WebKit refuses a host
+        // whose `xn--` label is not a valid IDNA name — so the loopback host
+        // made from it could not be opened.
+        if name.utf8.count >= 4, Array(name.utf8)[2...3] == [0x2D, 0x2D] {
+            return .failure(.init(
+                message: "Name can't have hyphens as its third and fourth characters (reserved for internationalized names, like xn--)."))
         }
         return .success(name.lowercased())
     }

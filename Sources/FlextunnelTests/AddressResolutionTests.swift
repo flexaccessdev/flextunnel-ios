@@ -43,6 +43,22 @@ final class AddressResolutionTests: XCTestCase {
         XCTAssertEqual(BrowserModel.resolve("office hours", privateHosts: hosts)?.host(), "duckduckgo.com")
     }
 
+    /// A private address the URL parser refuses (an invalid IDNA label, say)
+    /// is an error, not a search that would leak it.
+    func testAnInvalidPrivateAddressIsNeverASearch() {
+        let hosts: Set<String> = ["office"]
+        for text in ["http://xn--a.localhost.flextunnel.internal:8080/settings",
+                     "xn--a.localhost.flextunnel.internal:8080/settings",
+                     "https://user@XN--A.localhost.flextunnel.internal./x",
+                     "ftp://nas.localhost.flextunnel.internal",
+                     "ftp://office/x"] {
+            XCTAssertNil(BrowserModel.resolve(text, privateHosts: hosts), text)
+        }
+        XCTAssertEqual(
+            BrowserModel.resolve("http://nas.localhost.flextunnel.internal:8080/x")?.absoluteString,
+            "http://nas.localhost.flextunnel.internal:8080/x")
+    }
+
     func testAnythingElseIsASearch() throws {
         for query in ["flextunnel docs", "intranet", "3.14", "ftp://files.example"] {
             let url = try XCTUnwrap(BrowserModel.resolve(query), query)

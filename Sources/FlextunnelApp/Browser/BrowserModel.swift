@@ -100,14 +100,22 @@ final class BrowserModel {
     /// - URL-like input (no spaces, contains a dot, or already has a scheme) loads
     ///   directly; a missing scheme is prepended (`http://` for `.onion`, else `https://`).
     /// - So does a name the session routes by exact match, dot or no dot.
+    /// - A private address that can't be opened raises `addressError`.
     /// - Anything else is treated as a query and sent to DuckDuckGo.
     func navigate(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard let url = Self.resolve(trimmed, privateHosts: privateHosts) else { return }
+        guard let url = Self.resolve(trimmed, privateHosts: privateHosts) else {
+            addressError = trimmed
+            return
+        }
         let tab = selectedTab ?? addTab()
         tab.load(url, displayAddress: trimmed)
     }
+
+    /// Address-bar text naming a private address that isn't a valid URL —
+    /// shown as an error, never searched.
+    var addressError: String?
 
     func stopAll() {
         tabs.forEach { $0.stop() }
@@ -117,7 +125,10 @@ final class BrowserModel {
     /// `privateHosts` are the names the session routes by exact match
     /// (lowercased). A destination may be named with a single label, which
     /// otherwise reads as a search term — and a search would send the name,
-    /// port and path of a private address to a search engine.
+    /// port and path of a private address to a search engine. For the same
+    /// reason, nil when the text names a private address — one of those or a
+    /// `flextunnel.internal` host, like a destination's loopback — that is not
+    /// a valid URL.
     static func resolve(_ text: String, privateHosts: Set<String> = []) -> URL? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -126,9 +137,28 @@ final class BrowserModel {
             return url
         }
 
+        if !trimmed.contains(where: \.isWhitespace) {
+            let host = RouteTable.routingKey(leadingHost(of: trimmed))
+            if host == RouteTable.statusHost || RouteTable.isReserved(host) || privateHosts.contains(host) {
+                return nil
+            }
+        }
+
         var components = URLComponents(string: "https://duckduckgo.com/")
         components?.queryItems = [URLQueryItem(name: "q", value: trimmed)]
         return components?.url
+    }
+
+    /// The host the text starts with, read without a URL parser (the text may
+    /// be one no parser takes) and lowercased: past any scheme and user info,
+    /// up to a port, path, query or fragment.
+    private static func leadingHost(of text: String) -> String {
+        var rest = Substring(text)
+        if let scheme = rest.range(of: "://") { rest = rest[scheme.upperBound...] }
+        rest = rest.prefix { !"/?#".contains($0) }
+        if let at = rest.lastIndex(of: "@") { rest = rest[rest.index(after: at)...] }
+        if !rest.hasPrefix("["), let colon = rest.lastIndex(of: ":") { rest = rest[..<colon] }
+        return rest.lowercased()
     }
 
     private static func webURL(from text: String, privateHosts: Set<String>) -> URL? {
