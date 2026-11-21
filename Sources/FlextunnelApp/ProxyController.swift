@@ -47,7 +47,7 @@ final class ProxyController: ObservableObject {
     /// age, open streams) are left out, so the 1 Hz poll republishes nothing
     /// while a destination sits in one state.
     struct DestinationStatus: Identifiable, Equatable {
-        var host: String
+        var name: String
         var serverNodeID: String
         var state: LinkState
         /// What the last failed attempt said. Kept by the core while the
@@ -57,7 +57,7 @@ final class ProxyController: ObservableObject {
         var routedDomains: [String]
         var routedCIDRs: [String]
 
-        var id: String { host }
+        var id: String { name }
 
         /// Idle after a failed attempt: it retries on its next use, not before.
         var lastAttemptFailed: Bool { state == .idle && lastError != nil }
@@ -194,7 +194,7 @@ final class ProxyController: ObservableObject {
     struct Settings {
         /// One server this client reaches; see `ClientStore.Destination`.
         struct Destination {
-            var host: String
+            var name: String
             var serverNodeID: String
             var routedDomains: [String]
             var routedCIDRs: [String]
@@ -217,14 +217,14 @@ final class ProxyController: ObservableObject {
 
         var routeTable: RouteTable {
             RouteTable(entries: destinations.map {
-                RouteTable.Entry(host: $0.host, domains: $0.routedDomains, cidrs: $0.routedCIDRs)
+                RouteTable.Entry(name: $0.name, domains: $0.routedDomains, cidrs: $0.routedCIDRs)
             })
         }
     }
 
     /// A single connection-path snapshot — one iroh path to a server — for the
     /// on-demand "connection path" readout. Mirrors the desktop's `ConnPath` and
-    /// `ezvpn client status`; produced by `queryConnPath(host:)`.
+    /// `ezvpn client status`; produced by `queryConnPath(name:)`.
     struct ConnPath: Identifiable {
         /// Stable synthetic identity = the path's index in the snapshot. `display`
         /// can't be the id: it embeds the RTT, so it churns every refresh for the
@@ -288,19 +288,19 @@ final class ProxyController: ObservableObject {
     }
 
     /// The destinations connected right now.
-    var connectedHosts: Set<String> {
-        Set(destinations.lazy.filter { $0.state == .connected }.map(\.host))
+    var connectedNames: Set<String> {
+        Set(destinations.lazy.filter { $0.state == .connected }.map(\.name))
     }
 
     /// The destinations that can't be reached right now (see `Health.trouble`).
-    var troubledHosts: [String] {
+    var troubledNames: [String] {
         destinations
             .filter { $0.state == .backoff || $0.state == .failed || $0.lastAttemptFailed }
-            .map(\.host)
+            .map(\.name)
     }
 
-    func destination(host: String) -> DestinationStatus? {
-        destinations.first { $0.host == host }
+    func destination(name: String) -> DestinationStatus? {
+        destinations.first { $0.name == name }
     }
 
     init() {
@@ -409,7 +409,7 @@ final class ProxyController: ObservableObject {
             "relay_auth_token": relayAuthToken.isEmpty ? NSNull() : relayAuthToken,
             "destinations": s.destinations.map { destination in
                 [
-                    "host": destination.host,
+                    "name": destination.name,
                     "server_node_id": destination.serverNodeID,
                     "routed_domains": destination.routedDomains,
                     "routed_cidrs": destination.routedCIDRs,
@@ -630,7 +630,7 @@ final class ProxyController: ObservableObject {
 
     private var runningStatus: String {
         let listening = socksPort.map { "listening on 127.0.0.1:\($0)" } ?? "running"
-        let connected = connectedHosts.count
+        let connected = connectedNames.count
         return connected == 0 ? listening : "\(listening) · \(connected) connected"
     }
 
@@ -718,12 +718,12 @@ final class ProxyController: ObservableObject {
               let entries = obj["destinations"] as? [[String: Any]] else { return }
 
         publish(\.destinations, entries.compactMap { entry -> DestinationStatus? in
-            guard let host = entry["host"] as? String,
+            guard let name = entry["name"] as? String,
                   let state = (entry["state"] as? String).flatMap(LinkState.init(rawValue:)) else {
                 return nil
             }
             return DestinationStatus(
-                host: host,
+                name: name,
                 serverNodeID: entry["server_node_id"] as? String ?? "",
                 state: state,
                 lastError: entry["last_error"] as? String,
@@ -732,15 +732,15 @@ final class ProxyController: ObservableObject {
         })
     }
 
-    /// One-shot snapshot of the iroh path(s) to the destination `host` — a
+    /// One-shot snapshot of the iroh path(s) to the destination `name` — a
     /// point-in-time readout (relay/direct) for the "connection path" sheet,
     /// mirroring the desktop CTA. No paths unless that destination is
     /// connected, so callers only offer it for one that is; asking never
     /// connects it.
-    func queryConnPath(host: String) -> ConnectionSnapshot {
+    func queryConnPath(name: String) -> ConnectionSnapshot {
         guard let handle else { return ConnectionSnapshot() }
         var buf = [CChar](repeating: 0, count: 8 * 1024)
-        let written = host.withCString { cstr in
+        let written = name.withCString { cstr in
             flextunnel_conn_path(handle, cstr, &buf, buf.count)
         }
         guard written == 1,

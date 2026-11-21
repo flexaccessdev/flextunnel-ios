@@ -4,7 +4,8 @@ import Foundation
 /// `remoteHost:remotePort` over a QUIC stream to the destination that routes
 /// `remoteHost`. A forward never connects directly.
 ///
-/// A destination's own host name is that server's loopback: the server dials
+/// A destination's `<name>.localhost.flextunnel.internal` is that server's
+/// loopback: the server dials
 /// its own localhost, whatever it routes, so such a target need not be in the
 /// server's routed set. Any other target is an ordinary routed one, which the
 /// server dials only if its own routed set allows it, and rejects otherwise.
@@ -15,7 +16,7 @@ struct PortForward: Identifiable, Codable, Equatable {
     var localPort: UInt16
     /// Hostname or IP literal. Kept a string end-to-end: it picks the
     /// destination, and an ordinary routed hostname resolves on that server
-    /// (a destination's own host name is not resolved at all — it means the
+    /// (a destination's loopback name is not resolved at all — it means the
     /// server's loopback).
     var remoteHost: String
     var remotePort: UInt16

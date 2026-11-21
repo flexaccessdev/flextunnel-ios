@@ -10,81 +10,99 @@ import XCTest
 final class RouteTableTests: XCTestCase {
     // MARK: - The table (route_table.rs)
 
-    func testOwnHostIsThatDestination() {
-        let t = table(("machine1.internal", [], []), ("machine2.internal", [], []))
-        XCTAssertEqual(t.route(host: "machine1.internal"), .destination("machine1.internal"))
-        XCTAssertEqual(t.route(host: "Machine2.Internal"), .destination("machine2.internal"))
-        // A subdomain of a destination is not the destination.
-        XCTAssertEqual(t.route(host: "a.machine1.internal"), .direct)
+    func testLoopbackNameIsThatDestination() {
+        let t = table(("machine1", [], []), ("machine2", [], []))
+        XCTAssertEqual(t.route(host: "machine1.localhost.flextunnel.internal"), .destination("machine1"))
+        XCTAssertEqual(t.route(host: "Machine2.LocalHost.FlexTunnel.Internal"), .destination("machine2"))
+        // The bare name is no host of flextunnel's: it goes where any other
+        // name would.
+        XCTAssertEqual(t.route(host: "machine1"), .direct)
+        // A name no destination has, or more than one label, is reserved.
+        XCTAssertEqual(t.route(host: "other.localhost.flextunnel.internal"), .reserved)
+        XCTAssertEqual(t.route(host: "a.machine1.localhost.flextunnel.internal"), .reserved)
     }
 
     func testReservedNamespaceIsAnsweredByTheClient() {
         // Even a catch-all route never captures the reserved names.
-        let t = table(("m1.internal", ["*"], ["0.0.0.0/0"]))
+        let t = table(("m1", ["*"], ["0.0.0.0/0"]))
         XCTAssertEqual(t.route(host: "flextunnel.internal"), .status)
         XCTAssertEqual(t.route(host: "FlexTunnel.Internal"), .status)
         XCTAssertEqual(t.route(host: "x.flextunnel.internal"), .reserved)
         XCTAssertEqual(t.route(host: "localhost.flextunnel.internal"), .reserved)
         XCTAssertEqual(t.route(host: "a.b.flextunnel.internal"), .reserved)
+        // A destination's loopback name still is its loopback.
+        XCTAssertEqual(t.route(host: "m1.localhost.flextunnel.internal"), .destination("m1"))
         // Not the namespace: an empty label, and a name that only contains it.
-        XCTAssertEqual(t.route(host: ".flextunnel.internal"), .destination("m1.internal"))
-        XCTAssertEqual(t.route(host: "flextunnel.internal.evil.com"), .destination("m1.internal"))
+        XCTAssertEqual(t.route(host: ".flextunnel.internal"), .destination("m1"))
+        XCTAssertEqual(t.route(host: "flextunnel.internal.evil.com"), .destination("m1"))
         XCTAssertEqual(table().route(host: "flextunnel.internal"), .status)
     }
 
     func testRoutedRulesPickTheirDestination() {
         let t = table(
-            ("m1.internal", ["*.corp.example", "db.internal"], ["10.0.0.0/8"]),
-            ("m2.internal", ["wiki.example"], ["192.168.7.0/24"]))
-        XCTAssertEqual(t.route(host: "api.corp.example"), .destination("m1.internal"))
-        XCTAssertEqual(t.route(host: "DB.internal"), .destination("m1.internal"))
-        XCTAssertEqual(t.route(host: "wiki.example"), .destination("m2.internal"))
-        XCTAssertEqual(t.route(host: "192.168.7.9"), .destination("m2.internal"))
-        XCTAssertEqual(t.route(host: "10.1.2.3"), .destination("m1.internal"))
+            ("m1", ["*.corp.example", "db.internal"], ["10.0.0.0/8"]),
+            ("m2", ["wiki.example"], ["192.168.7.0/24"]))
+        XCTAssertEqual(t.route(host: "api.corp.example"), .destination("m1"))
+        XCTAssertEqual(t.route(host: "DB.internal"), .destination("m1"))
+        XCTAssertEqual(t.route(host: "wiki.example"), .destination("m2"))
+        XCTAssertEqual(t.route(host: "192.168.7.9"), .destination("m2"))
+        XCTAssertEqual(t.route(host: "10.1.2.3"), .destination("m1"))
         // Off every list: direct.
         XCTAssertEqual(t.route(host: "example.org"), .direct)
         XCTAssertEqual(t.route(host: "8.8.8.8"), .direct)
-        XCTAssertEqual(t.destination(for: "wiki.example"), "m2.internal")
+        XCTAssertEqual(t.destination(for: "wiki.example"), "m2")
         XCTAssertNil(t.destination(for: "example.org"))
         XCTAssertNil(t.destination(for: "flextunnel.internal"))
     }
 
     func testTheMostSpecificRuleWinsAcrossDestinations() {
         let t = table(
-            ("m1.internal", ["*", "*.corp.example"], ["10.0.0.0/8"]),
-            ("m2.internal", ["*.dev.corp.example", "exact.corp.example"], ["10.1.0.0/16"]))
-        XCTAssertEqual(t.route(host: "anything.example"), .destination("m1.internal"), "only the catch-all matches")
-        XCTAssertEqual(t.route(host: "api.corp.example"), .destination("m1.internal"), "the shorter suffix")
-        XCTAssertEqual(t.route(host: "x.dev.corp.example"), .destination("m2.internal"), "the longer suffix beats it")
-        XCTAssertEqual(t.route(host: "exact.corp.example"), .destination("m2.internal"), "an exact name beats a suffix")
-        XCTAssertEqual(t.route(host: "10.2.0.1"), .destination("m1.internal"))
-        XCTAssertEqual(t.route(host: "10.1.0.1"), .destination("m2.internal"), "the longer prefix")
+            ("m1", ["*", "*.corp.example"], ["10.0.0.0/8"]),
+            ("m2", ["*.dev.corp.example", "exact.corp.example"], ["10.1.0.0/16"]))
+        XCTAssertEqual(t.route(host: "anything.example"), .destination("m1"), "only the catch-all matches")
+        XCTAssertEqual(t.route(host: "api.corp.example"), .destination("m1"), "the shorter suffix")
+        XCTAssertEqual(t.route(host: "x.dev.corp.example"), .destination("m2"), "the longer suffix beats it")
+        XCTAssertEqual(t.route(host: "exact.corp.example"), .destination("m2"), "an exact name beats a suffix")
+        XCTAssertEqual(t.route(host: "10.2.0.1"), .destination("m1"))
+        XCTAssertEqual(t.route(host: "10.1.0.1"), .destination("m2"), "the longer prefix")
         // `*` is a hostname catch-all only: an unlisted IP still goes direct.
         XCTAssertEqual(t.route(host: "8.8.8.8"), .direct)
     }
 
-    func testOwnHostBeatsAWildcardThatCoversIt() {
-        let t = table(("m1.internal", [], []), ("m2.internal", ["*.internal"], []))
-        XCTAssertEqual(t.route(host: "m1.internal"), .destination("m1.internal"))
-        XCTAssertEqual(t.route(host: "nas.internal"), .destination("m2.internal"))
+    func testANameNeverShadowsARoutedHost() {
+        // `m1` is only a label: a host spelled the same is routed by the rules.
+        let t = table(("m1", [], []), ("m2", ["m1", "*.internal"], []))
+        XCTAssertEqual(t.route(host: "m1"), .destination("m2"))
+        XCTAssertEqual(t.route(host: "m1"), .destination("m2"))
     }
 
     func testTheRootDotSelectsTheSameRoute() {
-        let t = table(("a.internal", ["db.example"], []), ("b.internal", ["*"], []))
+        let t = table(("a", ["db.example"], []), ("b", ["*"], []))
         for host in ["db.example", "db.example.", "DB.Example."] {
-            XCTAssertEqual(t.route(host: host), .destination("a.internal"), host)
+            XCTAssertEqual(t.route(host: host), .destination("a"), host)
         }
-        for host in ["a.internal", "a.internal."] {
-            XCTAssertEqual(t.route(host: host), .destination("a.internal"), host)
+        for host in ["a.localhost.flextunnel.internal", "a.localhost.flextunnel.internal."] {
+            XCTAssertEqual(t.route(host: host), .destination("a"), host)
         }
-        XCTAssertEqual(t.route(host: "unrelated.example."), .destination("b.internal"))
+        XCTAssertEqual(t.route(host: "unrelated.example."), .destination("b"))
         XCTAssertEqual(t.route(host: "flextunnel.internal."), .status)
         XCTAssertEqual(t.route(host: "x.flextunnel.internal."), .reserved)
         // A rule written with the root dot is the same rule.
-        XCTAssertEqual(table(("a.internal", ["db.example."], [])).route(host: "db.example"), .destination("a.internal"))
+        XCTAssertEqual(table(("a", ["db.example."], [])).route(host: "db.example"), .destination("a"))
     }
 
     // MARK: - Rule matching (routed_set.rs)
+
+    func testLoopbackHostsAreSingleLabelsUnderLocalhost() {
+        XCTAssertEqual(RouteTable.loopbackHost("machine1"), "machine1.localhost.flextunnel.internal")
+        XCTAssertEqual(RouteTable.loopbackName("machine1.localhost.flextunnel.internal"), "machine1")
+        for other in ["localhost.flextunnel.internal", ".localhost.flextunnel.internal",
+                      "a.b.localhost.flextunnel.internal", "machine1.flextunnel.internal",
+                      "machine1.localhost", "machine1.localhost.flextunnel.internal.evil.com"] {
+            XCTAssertNil(RouteTable.loopbackName(other), other)
+        }
+        XCTAssertTrue(RouteTable.isReserved(RouteTable.loopbackHost("machine1")))
+    }
 
     func testBracketsAreStrippedOnlyFromIPLiterals() {
         // The core unbrackets only to parse an IP; a bracketed hostname is
@@ -155,8 +173,8 @@ final class RouteTableTests: XCTestCase {
         XCTAssertTrue(tunneled("10.0.0.1.", cidrs: ["10.0.0.0/8"]))
         XCTAssertFalse(tunneled("10.0.0.1.", domains: ["*"]))
         XCTAssertTrue(tunneled("[fd00::1].", cidrs: ["fd00::/8"]))
-        let t = table(("a.internal", [], ["10.0.0.0/8"]), ("b.internal", ["*"], []))
-        XCTAssertEqual(t.route(host: "10.0.0.1."), .destination("a.internal"))
+        let t = table(("a", [], ["10.0.0.0/8"]), ("b", ["*"], []))
+        XCTAssertEqual(t.route(host: "10.0.0.1."), .destination("a"))
         XCTAssertEqual(t.route(host: "8.8.8.8."), .direct)
     }
 
@@ -213,11 +231,14 @@ final class RouteTableTests: XCTestCase {
         }
     }
 
-    func testExactNamesAreDestinationHostsAndExactRules() {
+    func testExactNamesAreLoopbackNamesAndExactRules() {
         let t = table(
             ("Office", ["*.corp.example", "Wiki.Example.", "nas"], ["10.0.0.0/8"]),
-            ("home.internal", ["*"], []))
-        XCTAssertEqual(t.exactNames, ["office", "wiki.example", "nas", "home.internal"])
+            ("home", ["*"], []))
+        XCTAssertEqual(t.exactNames, [
+            "office.localhost.flextunnel.internal", "wiki.example", "nas",
+            "home.localhost.flextunnel.internal",
+        ])
     }
 
     func testEquivalentNetworkRulesShareAKey() {
@@ -239,12 +260,12 @@ final class RouteTableTests: XCTestCase {
     // MARK: - Browser proxy scoping
 
     func testScopingCoversEveryNameTheProxyMustSee() {
+        // The loopback names are all under `flextunnel.internal`, which WebKit
+        // suffix-matches; the bare names are no hosts.
         let t = table(
-            ("Office.Internal", ["*.corp.example", "Wiki.Example."], []),
-            ("home.internal", [], []))
-        XCTAssertEqual(
-            t.proxyMatchDomains,
-            ["corp.example", "flextunnel.internal", "home.internal", "office.internal", "wiki.example"])
+            ("Office", ["*.corp.example", "Wiki.Example."], []),
+            ("home", [], []))
+        XCTAssertEqual(t.proxyMatchDomains, ["corp.example", "flextunnel.internal", "wiki.example"])
         // No destination at all still scopes to the client's own namespace.
         XCTAssertEqual(table().proxyMatchDomains, ["flextunnel.internal"])
     }
@@ -252,28 +273,29 @@ final class RouteTableTests: XCTestCase {
     func testACatchAllOrANetworkTurnsScopingOff() {
         // Hostname patterns can't express either, so every host must reach the
         // proxy for the core to classify.
-        XCTAssertNil(table(("a.internal", ["*"], [])).proxyMatchDomains)
-        XCTAssertNil(table(("a.internal", ["corp.example"], []), ("b.internal", [], ["10.0.0.0/8"])).proxyMatchDomains)
-        XCTAssertEqual(table(("a.internal", [], []), ("b.internal", [" * "], [])).catchAllDestination, "b.internal")
-        XCTAssertNil(table(("a.internal", ["*.corp.example"], ["0.0.0.0/0"])).catchAllDestination)
+        XCTAssertNil(table(("a", ["*"], [])).proxyMatchDomains)
+        XCTAssertNil(table(("a", ["corp.example"], []), ("b", [], ["10.0.0.0/8"])).proxyMatchDomains)
+        XCTAssertEqual(table(("a", [], []), ("b", [" * "], [])).catchAllDestination, "b")
+        XCTAssertNil(table(("a", ["*.corp.example"], ["0.0.0.0/0"])).catchAllDestination)
     }
 
     // MARK: - Page routes
 
     func testPageRoutesFollowTheSessionsTable() {
-        let t = table(("office.internal", ["*.corp.example"], ["10.0.0.0/8", "fd00::/8"]))
+        let t = table(("office", ["*.corp.example"], ["10.0.0.0/8", "fd00::/8"]))
         func route(_ address: String) -> Route? {
             URL(string: address)?.host().map { t.route(host: BrowserNavigationDecider.normalizedHost($0)) }
         }
-        XCTAssertEqual(route("https://wiki.corp.example/page"), .destination("office.internal"))
-        XCTAssertEqual(route("http://office.internal:8080/"), .destination("office.internal"))
+        XCTAssertEqual(route("https://wiki.corp.example/page"), .destination("office"))
+        XCTAssertEqual(route("http://office.localhost.flextunnel.internal:8080/"), .destination("office"))
+        XCTAssertEqual(route("http://office:8080/"), .direct)
         XCTAssertEqual(route("https://corp.example/"), .direct)
         XCTAssertEqual(route("https://www.apple.com/"), .direct)
-        XCTAssertEqual(route("http://10.1.2.3:8080/"), .destination("office.internal"))
+        XCTAssertEqual(route("http://10.1.2.3:8080/"), .destination("office"))
         XCTAssertEqual(route("http://127.0.0.1:9/"), .direct)
-        XCTAssertEqual(route("https://[fd00::5]:8006/"), .destination("office.internal"))
+        XCTAssertEqual(route("https://[fd00::5]:8006/"), .destination("office"))
         XCTAssertEqual(route("https://[2001:db8::5]/"), .direct)
-        XCTAssertEqual(route("http://flextunnel.internal/servers/office.internal/"), .status)
+        XCTAssertEqual(route("http://flextunnel.internal/servers/office/"), .status)
         XCTAssertEqual(route("http://status.flextunnel.internal/"), .reserved)
     }
 
@@ -281,12 +303,12 @@ final class RouteTableTests: XCTestCase {
 
     private func table(_ destinations: (String, [String], [String])...) -> RouteTable {
         RouteTable(entries: destinations.map {
-            RouteTable.Entry(host: $0.0, domains: $0.1, cidrs: $0.2)
+            RouteTable.Entry(name: $0.0, domains: $0.1, cidrs: $0.2)
         })
     }
 
     /// Whether `host` is tunneled by a lone destination with these rules.
     private func tunneled(_ host: String, domains: [String] = [], cidrs: [String] = []) -> Bool {
-        table(("only.internal", domains, cidrs)).destination(for: host) != nil
+        table(("only", domains, cidrs)).destination(for: host) != nil
     }
 }

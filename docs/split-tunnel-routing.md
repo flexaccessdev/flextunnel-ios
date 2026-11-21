@@ -1,9 +1,13 @@
 # Split-tunnel routing (destinations and their routes)
 
-The client holds **destinations**, each a host name for one flextunnel server.
-A destination's own name means that server's loopback (`office.internal:8080`
-is port 8080 on the server itself), and each destination may list further
-domains and IP ranges to send through its server. Those routes are this app's
+The client holds **destinations**, each a name (one DNS label, unique among
+the destinations) for one flextunnel server.
+`<name>.localhost.flextunnel.internal` means that server's loopback
+(`office.localhost.flextunnel.internal:8080` is port 8080 on the server
+itself), and the bare name is no host at all: every name the client handles by
+itself stays under `flextunnel.internal`, so none can shadow a real host. Each
+destination may list further domains and IP ranges to send through its server.
+Those routes are this app's
 configuration, entered on the setup screen: nothing about routing is learned
 from a server.
 
@@ -12,8 +16,10 @@ destination's server and everything else connects from the device.
 Server-direct port forwards always go through a destination; one whose host no
 destination routes can't be switched on.
 
-Precedence, most specific first: the reserved `flextunnel.internal` namespace
-(answered by the client itself); a destination's own host name; then the rule
+Precedence, most specific first: `flextunnel.internal` (the client's own
+status page); a destination's `<name>.localhost.flextunnel.internal`; the rest
+of the reserved `*.flextunnel.internal` namespace (answered by the client
+itself with a 404); then the rule
 that matches most specifically across all destinations — an exact domain, the
 longest `*.suffix`, `*`, and for IP targets the longest network prefix. The
 same rule on two destinations is rejected; nested rules are fine.
@@ -23,10 +29,9 @@ IPs sent in hostname form. A hostname is not reclassified by its resolved IP.
 To route every target type through one destination, give it `*` for domains
 and both `0.0.0.0/0` and `::/0` for IPs.
 
-Each server still enforces **its own** routed set, host aliases and DNS
-forwards on what arrives: a route here only chooses the server, and the
-server refuses a target off its list. A destination's own host name is the
-exception — the server's loopback is reachable whatever that server routes.
+Each server still enforces **its own** routed set and host aliases on what
+arrives: a route here only chooses the server, and the server refuses a target
+off its list. A destination's loopback name is the exception — the server's loopback is reachable whatever that server routes.
 
 Nothing keeps the two lists in step. A destination's editor can copy the
 server's: **Fetch from Server** asks the server named by the node id what it
@@ -58,8 +63,8 @@ bypass the SOCKS5 listener entirely. This keeps those requests independent of
 proxy health.
 
 `RouteTable.proxyMatchDomains` converts exact and wildcard domain rules to bare
-suffixes and always includes every destination's own host and
-`flextunnel.internal`. The list must cover everything the core would not send
+suffixes and always includes `flextunnel.internal`, which covers every
+destination's loopback name. The list must cover everything the core would not send
 directly; under-matching breaks private hosts.
 WebKit's suffix match can include more hosts than the Rust rule: for example,
 an exact `example.com` rule also sends `www.example.com` to the proxy. The
@@ -71,7 +76,8 @@ requests go through the Rust proxy for classification. An IP range cannot be
 expressed as hostname suffixes. Sending everything to the proxy does not itself
 make every target tunneled: domain and IP rules remain independent in the core.
 WebKit bypasses proxying for loopback IPs and the device's own addresses, so
-use a destination's host name to reach its server's loopback. Safari and other
+use a destination's `<name>.localhost.flextunnel.internal` to reach its
+server's loopback. Safari and other
 apps never use the browser's proxy; they reach a server only through
 [port forwards](port-forwarding.md).
 
@@ -103,7 +109,7 @@ Two status pages are served through the in-app proxy:
 
 - `http://flextunnel.internal/` — the client's own: its destinations and their
   state. Reading it connects nothing.
-- `http://flextunnel.internal/servers/<host>/` — that destination server's
+- `http://flextunnel.internal/servers/<name>/` — that destination server's
   page: its routed set and host aliases. Fetching it connects the
   destination.
 

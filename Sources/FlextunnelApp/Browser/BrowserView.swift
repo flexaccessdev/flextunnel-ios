@@ -305,8 +305,8 @@ struct BrowserView: View {
     /// Whether the destination `url` is routed through is connected right now;
     /// false for a page that isn't routed through one.
     private func destinationConnected(for url: URL) -> Bool {
-        guard case .destination(let host) = proxy.pageRoute(for: url) else { return false }
-        return proxy.destination(host: host)?.state == .connected
+        guard case .destination(let name) = proxy.pageRoute(for: url) else { return false }
+        return proxy.destination(name: name)?.state == .connected
     }
 
     /// Builds the share-popout bookmark action. Removal happens immediately;
@@ -738,11 +738,11 @@ private struct BrowserLoadFailureView: View {
 
     private var routeHint: (text: String, icon: String, color: Color)? {
         switch route {
-        case .destination(let host) where !destinationConnected:
-            return ("This site is reached through \(host), which isn't connected right now.",
+        case .destination(let name) where !destinationConnected:
+            return ("This site is reached through \(name), which isn't connected right now.",
                     "bolt.slash.circle", .orange)
-        case .destination(let host):
-            return ("Reached through \(host) — its server couldn't load it.",
+        case .destination(let name):
+            return ("Reached through \(name) — its server couldn't load it.",
                     "bolt.horizontal.circle", .secondary)
         case .direct:
             return ("Connected directly — no destination routes this host.",

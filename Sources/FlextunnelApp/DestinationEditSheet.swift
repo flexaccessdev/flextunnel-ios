@@ -6,7 +6,7 @@ struct DestinationDraft: Identifiable {
     /// The destination's id: the existing one's, or a fresh one for Add.
     let id: String
     let isNew: Bool
-    var host = ""
+    var name = ""
     var serverNodeID = ""
     var routedDomains = ""
     var routedCIDRs = ""
@@ -19,7 +19,7 @@ struct DestinationDraft: Identifiable {
     init(destination: ClientStore.Destination) {
         id = destination.id
         isNew = false
-        host = destination.host
+        name = destination.name
         serverNodeID = destination.serverNodeID
         routedDomains = destination.routedDomains.joined(separator: "\n")
         routedCIDRs = destination.routedCIDRs.joined(separator: "\n")
@@ -29,7 +29,7 @@ struct DestinationDraft: Identifiable {
     var destination: ClientStore.Destination {
         ClientStore.Destination(
             id: id,
-            host: host,
+            name: name,
             serverNodeID: serverNodeID,
             routedDomains: ClientStore.splitRules(routedDomains),
             routedCIDRs: ClientStore.splitRules(routedCIDRs))
@@ -37,7 +37,7 @@ struct DestinationDraft: Identifiable {
 
     /// Nothing typed yet, so there is nothing to complain about.
     var isPristine: Bool {
-        host.isEmpty && serverNodeID.isEmpty && routedDomains.isEmpty && routedCIDRs.isEmpty
+        name.isEmpty && serverNodeID.isEmpty && routedDomains.isEmpty && routedCIDRs.isEmpty
     }
 }
 
@@ -53,8 +53,8 @@ enum RoutesFetch: Equatable {
     case failed(String)
 }
 
-/// Add or edit one destination: the host name a server goes by on this client,
-/// the server's node id, and the further hosts routed through it.
+/// Add or edit one destination: the name a server goes by on this client, the
+/// server's node id, and the further hosts routed through it.
 struct DestinationEditSheet: View {
     @State var draft: DestinationDraft
     /// The client's key and relays, with which the draft's server can be asked
@@ -74,11 +74,11 @@ struct DestinationEditSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("Host name (e.g. office.internal)", text: $draft.host)
+                    TextField("Name (e.g. nas)", text: $draft.name)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                        .accessibilityIdentifier("destination.host")
+                        .keyboardType(.asciiCapable)
+                        .accessibilityIdentifier("destination.name")
                     // One line: wrapped, the id would be hyphenated at the break.
                     TextField("Server node id", text: serverNodeID)
                         .font(.callout.monospaced())
@@ -88,9 +88,10 @@ struct DestinationEditSheet: View {
                 } header: {
                     Text("Server")
                 } footer: {
-                    Text("The host name is yours to pick: with a port, it is that port "
-                        + "on the server itself — the server's own localhost. It can't be "
-                        + "an IP address or localhost.")
+                    Text("The name is yours to pick — one word of letters, digits and "
+                        + "hyphens, unique among the destinations. "
+                        + "\(RouteTable.loopbackHost(loopbackLabel)) with a port is that port "
+                        + "on the server itself — the server's own localhost.")
                 }
 
                 Section {
@@ -181,7 +182,7 @@ struct DestinationEditSheet: View {
                 isPresented: $confirmingDelete,
                 titleVisibility: .visible
             ) {
-                Button("Delete \(draft.host)", role: .destructive) {
+                Button("Delete \(draft.name)", role: .destructive) {
                     onDelete()
                     dismiss()
                 }
@@ -190,6 +191,12 @@ struct DestinationEditSheet: View {
                     + "another destination routes them.")
             }
         }
+    }
+
+    /// The draft's name as the loopback host shows it, or a placeholder while
+    /// it is not a valid name yet.
+    private var loopbackLabel: String {
+        (try? ClientStore.validatedName(draft.name).get()) ?? "<name>"
     }
 
     private var checked: Result<ClientStore.Destination, ClientStore.ValidationError> {

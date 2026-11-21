@@ -3,7 +3,8 @@ import Combine
 
 /// The client's saved setup: its **destinations** and the settings they share.
 ///
-/// A destination is a host name for one flextunnel server: `<host>:<port>`
+/// A destination is a name for one flextunnel server — one DNS label, unique
+/// among the destinations: `<name>.localhost.flextunnel.internal:<port>`
 /// through the client is that port on the server's own loopback, and the
 /// destination's routed domains and IP ranges are the further targets sent
 /// through that server. One session serves every destination at once, and a
@@ -25,8 +26,9 @@ final class ClientStore: ObservableObject {
     /// plaintext.
     struct Destination: Identifiable, Codable, Equatable {
         let id: String
-        /// The name the server goes by on this client, lowercased.
-        var host: String
+        /// The name the server goes by on this client: one DNS label,
+        /// lowercased.
+        var name: String
         var serverNodeID: String
         /// Exact names, `*.suffix` or `*`, sent through this server.
         var routedDomains: [String]
@@ -35,7 +37,7 @@ final class ClientStore: ObservableObject {
 
         /// The routing input the core is given for this destination.
         var routeEntry: RouteTable.Entry {
-            RouteTable.Entry(host: host, domains: routedDomains, cidrs: routedCIDRs)
+            RouteTable.Entry(name: name, domains: routedDomains, cidrs: routedCIDRs)
         }
     }
 
@@ -113,8 +115,8 @@ final class ClientStore: ObservableObject {
     /// well-formed server node id is a real key is only decided there.
     func validated(_ destination: Destination) -> Result<Destination, ValidationError> {
         var result = destination
-        switch Self.validatedHost(destination.host) {
-        case .success(let host): result.host = host
+        switch Self.validatedName(destination.name) {
+        case .success(let name): result.name = name
         case .failure(let error): return .failure(error)
         }
         result.serverNodeID = destination.serverNodeID
@@ -133,19 +135,11 @@ final class ClientStore: ObservableObject {
                     + "64 hex digits, or its 52-character base32 form."))
         }
         let others = destinations.filter { $0.id != destination.id }
-        if others.contains(where: { $0.host == result.host }) {
-            return .failure(.init(message: "Another destination is already named \(result.host)."))
-        }
-        // The same clash as a rule naming a destination, met from the other
-        // side: this name is already an exact domain rule somewhere else.
-        // (A wildcard that covers it is fine — the destination's own name wins.)
-        if let other = others.first(where: { $0.routedDomains.contains { Self.ruleKey($0) == result.host } }) {
-            return .failure(.init(
-                message: "\(other.host) routes \(result.host) as a domain, but a destination's "
-                    + "own name always means that server itself."))
+        if others.contains(where: { $0.name == result.name }) {
+            return .failure(.init(message: "Another destination is already named \(result.name)."))
         }
         if let other = others.first(where: { Self.nodeKey($0.serverNodeID) == node }) {
-            return .failure(.init(message: "\(other.host) already reaches that server."))
+            return .failure(.init(message: "\(other.name) already reaches that server."))
         }
 
         for domain in result.routedDomains {
@@ -165,12 +159,8 @@ final class ClientStore: ObservableObject {
             if name == RouteTable.statusHost || RouteTable.isReserved(name) {
                 return .failure(.init(message: "\(domain) is in the reserved flextunnel.internal namespace."))
             }
-            if rule == result.host || others.contains(where: { $0.host == rule }) {
-                return .failure(.init(
-                    message: "\(domain) is a destination's own name, which always means that server itself."))
-            }
             if let other = others.first(where: { $0.routedDomains.contains { Self.ruleKey($0) == rule } }) {
-                return .failure(.init(message: "\(domain) is already routed through \(other.host)."))
+                return .failure(.init(message: "\(domain) is already routed through \(other.name)."))
             }
         }
         for cidr in result.routedCIDRs {
@@ -185,7 +175,7 @@ final class ClientStore: ObservableObject {
             // By the network itself, not its spelling: a bare address and its
             // /32 are one rule, as are two ways of writing an IPv6 address.
             if let other = others.first(where: { $0.routedCIDRs.contains { RouteTable.networkKey($0) == network } }) {
-                return .failure(.init(message: "\(cidr) is already routed through \(other.host)."))
+                return .failure(.init(message: "\(cidr) is already routed through \(other.name)."))
             }
         }
         return .success(result)
@@ -199,27 +189,30 @@ final class ClientStore: ObservableObject {
 
     // MARK: - Rules
 
-    /// The core's `validate_destination_host`: a hostname the routing table
-    /// can own — not an IP literal, not `localhost` (which every app resolves
-    /// itself), not in the reserved namespace. Returns it lowercased.
-    private static func validatedHost(_ raw: String) -> Result<String, ValidationError> {
-        let host = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if host.isEmpty {
-            return .failure(.init(message: "Host name is required."))
+    /// The core's `validate_destination_name`: one DNS label (RFC 1123) — 1 to
+    /// 63 ASCII letters, digits and hyphens, not starting or ending with a
+    /// hyphen — as the first label of `<name>.localhost.flextunnel.internal`.
+    /// Returns it lowercased.
+    static func validatedName(_ raw: String) -> Result<String, ValidationError> {
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty {
+            return .failure(.init(message: "Name is required."))
         }
-        if RouteTable.addressBytes(unbracketed(host)) != nil {
-            return .failure(.init(message: "\(host) is an IP address; use a host name."))
+        if name.utf8.count > 63 {
+            return .failure(.init(message: "Name is longer than 63 characters."))
         }
-        if let problem = hostnameProblem(host) {
-            return .failure(.init(message: "Host name \(problem)."))
+        let allowed = name.utf8.allSatisfy { byte in
+            (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5A)
+                || (byte >= 0x61 && byte <= 0x7A) || byte == 0x2D
         }
-        if host == "localhost" || host.hasSuffix(".localhost") {
-            return .failure(.init(message: "\(host) is this device's own loopback name; pick another."))
+        if !allowed {
+            return .failure(.init(
+                message: "Name may only contain letters, digits and hyphens (one DNS label, no dots)."))
         }
-        if host == RouteTable.statusHost || RouteTable.isReserved(host) {
-            return .failure(.init(message: "\(host) is in the reserved flextunnel.internal namespace."))
+        if name.hasPrefix("-") || name.hasSuffix("-") {
+            return .failure(.init(message: "Name can't start or end with a hyphen."))
         }
-        return .success(host)
+        return .success(name.lowercased())
     }
 
     /// The core's hostname rules (`forwards::validate_remote_host`):

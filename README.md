@@ -26,14 +26,16 @@ There are two ways to use the tunnel, chosen on the setup screen:
   for other hosts; the core applies the precise routes. With `*` or an IP
   range among them, hostname scoping is disabled and the core classifies
   proxied requests. Loopback IPs and the device's own addresses bypass WebKit
-  proxying; a server's own loopback is reached by its destination's host name.
+  proxying; a server's own loopback is reached by its destination's
+  `<name>.localhost.flextunnel.internal`.
   Other apps, Safari included, cannot use this proxy.
 - **Forward ports** — run the client without a browser or SOCKS5 listener.
   Forward local `localhost` ports to private hosts so other apps on the device
   (SSH, RDP, databases…) can reach them.
 
 Either way one session reaches any number of servers — its **destinations**.
-Each is a host name you pick for one server: `<host>:<port>` is that port on
+Each is a name you pick for one server — one DNS label, unique among the
+destinations: `<name>.localhost.flextunnel.internal:<port>` is that port on
 the server itself, and the destination's routes are the other domains and IP
 ranges sent through it. A server is connected when something is first sent to
 it and disconnected after five minutes unused, so starting a session connects
@@ -107,7 +109,8 @@ no vendored copy to stage. To move to a new release, run
 
 3. **Run** on a device or the Simulator. Enter:
    - *Destinations* — the servers this device reaches. **Add Destination**
-     takes a host name of your choosing (not an IP address or `localhost`),
+     takes a name of your choosing (one DNS label: letters, digits and
+     hyphens, e.g. `office`),
      the flextunnel server's iroh endpoint id as *Server node id*, and
      optionally the domains (`name`, `*.suffix` or `*`) and IP ranges to send
      through it. The same rule can't be on two destinations; otherwise the

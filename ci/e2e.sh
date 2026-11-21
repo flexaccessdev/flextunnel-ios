@@ -21,7 +21,7 @@
 #     directly too, so a tunneled load that fell back to a direct connection
 #     would show;
 #   - a second, plain server with no routed set. A client reaches a server's
-#     own loopback by the destination's host name, whatever the server routes,
+#     own loopback by the destination's <name>.localhost.flextunnel.internal, whatever it routes,
 #     so the fixture site loads through it too;
 #   - a third server whose set is a CIDR (TEST-NET-3). A destination routing a
 #     network turns off the browser's hostname scoping (every page goes
@@ -33,7 +33,7 @@
 # Routing is the client's own configuration: the tests (Sources/FlextunnelUITests)
 # get the server ids, a fresh client secret, the site URL and the control
 # endpoint through TEST_RUNNER_FLEXTUNNEL_E2E_*, pick the destinations a test
-# runs with — each a host name for one of the servers, with the domains and
+# runs with — each a name for one of the servers, with the domains and
 # networks sent through it — and hand them to the app, whose Debug-only launch
 # hook (E2ELaunchConfig.swift) fills the setup screen from them. Needs a Rust toolchain (the first run builds the CLIs into build/e2e),
 # uv, and internet access: the simulator finds the server through iroh's n0

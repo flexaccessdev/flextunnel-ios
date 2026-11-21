@@ -25,8 +25,9 @@ exposed on the LAN.
 
 A forward is `localhost:<local port> → <remote host>:<remote port>`. The
 remote host picks the destination, by the same routes as the browser (see
-[split-tunnel-routing.md](split-tunnel-routing.md)): a destination's own host
-name is that server's loopback — `office.internal:22` is SSH on the server
+[split-tunnel-routing.md](split-tunnel-routing.md)): a destination's
+`<name>.localhost.flextunnel.internal` is that server's loopback —
+`office.localhost.flextunnel.internal:22` is SSH on the server
 itself, whatever that server routes — and any other host goes through the
 destination whose domains or IP ranges cover it.
 
@@ -39,7 +40,7 @@ routed set per connection and **rejects targets off its list**. Unlike the
 browser (which sends unrouted traffic out directly), forwards never dial from
 the device: a forward whose host no destination routes can't be switched on.
 
-Each row shows which destination it goes through — **via office.internal**
+Each row shows which destination it goes through — **via office**
 (green) — or **no route** (orange). The badge comes from this app's own routes,
 so it is known before any server is connected; the server's own list remains
 the authority per connection.
@@ -126,7 +127,7 @@ cannot — rewrite what flows through it:
 | Symptom | Cause / fix |
 | --- | --- |
 | red `port N is in use` | Another process owns the local port (in the Simulator this includes Mac processes — loopback is shared with the host). Pick another port. |
-| toggle flips back off with `no destination routes <host>` | Add the host to a destination's routes on the setup screen, or use a destination's own host name for the server itself. |
+| toggle flips back off with `no destination routes <host>` | Add the host to a destination's routes on the setup screen, or use a destination's `<name>.localhost.flextunnel.internal` for the server itself. |
 | client connects, then immediately drops | Target rejected by the server (not in its routed set) or unreachable from it. Check the server's `routed_domains`/`routed_cidrs` — its status page lists them (**Tunnel status → Server Status Page** in a browser session). |
 | a forward stalls, then drops | Its destination can't be reached — see its state under **Destinations**. A connection waits up to 45 seconds for the server, and each new connection tries again. |
 | web page shows a CDN error (e.g. 1003) | Host-header mismatch by design — see "What forwards are good for" above. |

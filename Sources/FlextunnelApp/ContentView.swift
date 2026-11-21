@@ -59,7 +59,7 @@ struct ContentView: View {
     @StateObject private var keepAlive = BackgroundKeepAlive()
 
     // The client's saved setup: its destinations (the servers it reaches, each
-    // by a host name) and the auth key and relays they share. One session
+    // by a name) and the auth key and relays they share. One session
     // serves every destination, connecting each server only when it is used.
     @StateObject private var client = ClientStore()
     // The named client auth keys (Keychain-backed; see AuthKeyStore); the
@@ -72,7 +72,7 @@ struct ContentView: View {
     @State private var browserModel: BrowserModel?
     @State private var didLoadSecrets = false
     // The relay token the running session was started with, held until a
-    // destination connects with it (see the `connectedHosts` handler) — not
+    // destination connects with it (see the `connectedNames` handler) — not
     // whatever the field holds by then. Nil once saved, and between sessions.
     @State private var unsavedRelayToken: String?
     // The destination being added or edited, in its sheet.
@@ -235,7 +235,7 @@ struct ContentView: View {
                 syncKeepAlive()
                 syncLiveActivity()
             }
-            .onChange(of: proxy.connectedHosts) { before, connected in
+            .onChange(of: proxy.connectedNames) { before, connected in
                 // Persist the relay token only once a connection has been made
                 // with it, so a typo'd credential (which starts fine but never
                 // connects) doesn't overwrite a good one. Saved from what the
@@ -252,8 +252,8 @@ struct ContentView: View {
                 let reconnected = connected.subtracting(before)
                 if !reconnected.isEmpty {
                     browserModel?.retryFailedLoads { url in
-                        guard case .destination(let host) = proxy.pageRoute(for: url) else { return false }
-                        return reconnected.contains(host)
+                        guard case .destination(let name) = proxy.pageRoute(for: url) else { return false }
+                        return reconnected.contains(name)
                     }
                 }
             }
@@ -328,7 +328,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(proxy.phase == .starting)
-                .accessibilityIdentifier("setup.destination.\(destination.host)")
+                .accessibilityIdentifier("setup.destination.\(destination.name)")
             }
             .onDelete { offsets in
                 offsets.map { client.destinations[$0].id }.forEach(client.delete)
@@ -343,9 +343,9 @@ struct ContentView: View {
         } header: {
             Text("Destinations")
         } footer: {
-            Text("Each destination is a server, reached by the host name you give it: "
-                + "that name with a port is the port on the server itself, and its routes "
-                + "are the other hosts sent through it. A server is only connected when "
+            Text("Each destination is a server, under the name you give it: "
+                + "<name>.localhost.flextunnel.internal with a port is the port on the server "
+                + "itself, and its routes are the other hosts sent through it. A server is only connected when "
                 + "something is first sent to it.")
         }
     }
@@ -504,7 +504,7 @@ struct ContentView: View {
         ProxyController.Settings(
             destinations: client.destinations.map { destination in
                 .init(
-                    host: destination.host,
+                    name: destination.name,
                     serverNodeID: destination.serverNodeID,
                     routedDomains: destination.routedDomains,
                     routedCIDRs: destination.routedCIDRs)
@@ -747,7 +747,7 @@ struct ContentView: View {
     }
 }
 
-/// One destination on the setup screen: its host name, and its server and
+/// One destination on the setup screen: its name, and its server and
 /// routes in brief.
 private struct DestinationRow: View {
     let destination: ClientStore.Destination
@@ -755,7 +755,7 @@ private struct DestinationRow: View {
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(destination.host)
+                Text(destination.name)
                     .font(.body.monospaced())
                     .foregroundStyle(.primary)
                     .lineLimit(1)

@@ -15,7 +15,7 @@ struct ProxyOnlyView: View {
 
     @State private var editingDraft: ForwardDraft?
     /// The destination whose on-demand connection-path snapshot is shown.
-    @State private var connPathHost: ConnPathTarget?
+    @State private var connPathTarget: ConnPathTarget?
 
     var body: some View {
         NavigationStack {
@@ -70,8 +70,8 @@ struct ProxyOnlyView: View {
                         }
                     })
             }
-            .sheet(item: $connPathHost) { target in
-                ConnPathSheet(host: target.host, query: { proxy.queryConnPath(host: target.host) })
+            .sheet(item: $connPathTarget) { target in
+                ConnPathSheet(name: target.name, query: { proxy.queryConnPath(name: target.name) })
             }
         }
     }
@@ -115,20 +115,20 @@ struct ProxyOnlyView: View {
         Section {
             ForEach(proxy.destinations) { destination in
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(destination.host)
+                    Text(destination.name)
                         .font(.subheadline.monospaced().weight(.medium))
                         .textSelection(.enabled)
                     DestinationStateRow(destination: destination)
                     InfoRow("Server node id", destination.serverNodeID, monospace: true)
                     InfoRow(
                         "Reaches",
-                        (["\(destination.host) (with a port: the server itself)"]
+                        (["\(RouteTable.loopbackHost(destination.name)) (with a port: the server itself)"]
                             + destination.routedDomains + destination.routedCIDRs)
                             .joined(separator: "\n"),
                         monospace: true)
                     if destination.state == .connected {
                         Button {
-                            connPathHost = ConnPathTarget(host: destination.host)
+                            connPathTarget = ConnPathTarget(name: destination.name)
                         } label: {
                             Label("Connection path", systemImage: "point.3.connected.trianglepath.dotted")
                         }
@@ -239,8 +239,8 @@ private struct ForwardRow: View {
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                // On its own line: it names a destination's host, which is
-                // too long to share one with the forward's name.
+                // On its own line: it names a destination, which may be too
+                // long to share one with the forward's name.
                 routeBadge
                 statusLine
             }
@@ -418,13 +418,14 @@ private struct ForwardEditSheet: View {
     /// destination, so one that none routes is said up front.
     private var routeNote: String {
         guard !trimmedHost.isEmpty else {
-            return "A destination's own host name is that server itself; any other "
-                + "host must be on a destination's routes."
+            return "<name>.localhost.flextunnel.internal is that destination's server itself; "
+                + "any other host must be on a destination's routes."
         }
-        if let host = destination(trimmedHost) {
-            return host.lowercased() == trimmedHost.lowercased()
-                ? "\(host) is a destination: this reaches the port on that server itself."
-                : "Goes through \(host)."
+        if let name = destination(trimmedHost) {
+            let loopback = RouteTable.loopbackName(RouteTable.routingKey(trimmedHost.lowercased())) != nil
+            return loopback
+                ? "This reaches the port on \(name)'s server itself."
+                : "Goes through \(name)."
         }
         return "No destination routes \(trimmedHost), so this forward can't be switched on "
             + "until one does."
