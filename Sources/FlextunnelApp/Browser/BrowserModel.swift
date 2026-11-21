@@ -12,9 +12,10 @@ import WebKit
 @Observable
 final class BrowserModel {
     let socksPort: UInt16
-    /// The names the session routes by exact match (`RouteTable.exactNames`):
-    /// typed into the address bar, each is an address, never a search.
-    let privateHosts: Set<String>
+    /// The session's routes: typed into the address bar, a name routed by
+    /// exact match is an address, never a search, and so is anything shaped
+    /// like a URL whose host is routed.
+    let routes: RouteTable
     let library: BrowserLibrary
     let downloads: BrowserDownloadManager
     private(set) var tabs: [BrowserTab]
@@ -25,11 +26,11 @@ final class BrowserModel {
     private let certificateTrustStore = BrowserCertificateTrustStore()
 
     init(
-        socksPort: UInt16, proxyMatchDomains: [String]?, privateHosts: Set<String>,
+        socksPort: UInt16, proxyMatchDomains: [String]?, routes: RouteTable,
         library: BrowserLibrary
     ) {
         self.socksPort = socksPort
-        self.privateHosts = privateHosts
+        self.routes = routes
         self.library = library
         websiteDataStore.proxyConfigurations = [
             .loopbackSocks5(port: socksPort, matchDomains: proxyMatchDomains)
@@ -105,7 +106,7 @@ final class BrowserModel {
     func navigate(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard let url = Self.resolve(trimmed, privateHosts: privateHosts) else {
+        guard let url = Self.resolve(trimmed, routes: routes) else {
             addressError = trimmed
             return
         }
@@ -122,24 +123,31 @@ final class BrowserModel {
         downloads.shutdown()
     }
 
-    /// `privateHosts` are the names the session routes by exact match
-    /// (lowercased). A destination may be named with a single label, which
-    /// otherwise reads as a search term — and a search would send the name,
-    /// port and path of a private address to a search engine. For the same
-    /// reason, nil when the text names a private address — one of those or a
-    /// `flextunnel.internal` host, like a destination's loopback — that is not
-    /// a valid URL.
-    static func resolve(_ text: String, privateHosts: Set<String> = []) -> URL? {
+    /// A name the session routes by exact match (`routes.exactNames`) is an
+    /// address even as a single label, which otherwise reads as a search term
+    /// — and a search would send the name, port and path of a private address
+    /// to a search engine. For the same reason, nil when the text is shaped
+    /// like a URL whose host is not on the direct path — routed through a
+    /// destination by any rule, or in `flextunnel.internal` — but is not a
+    /// valid URL.
+    static func resolve(_ text: String, routes: RouteTable = RouteTable(entries: [])) -> URL? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
+        let privateHosts = routes.exactNames
 
         if let url = webURL(from: trimmed, privateHosts: privateHosts) {
             return url
         }
 
-        if let leading = leadingHost(of: trimmed) {
-            let host = RouteTable.routingKey(leading)
-            if host == RouteTable.statusHost || RouteTable.isReserved(host) || privateHosts.contains(host) {
+        if let typed = typedHost(of: trimmed) {
+            let host = RouteTable.routingKey(typed.host)
+            // A scheme, a dot (but not a number like 3.14), an IPv6 literal or
+            // an exact private name: a single word under a `*` route is still
+            // a search.
+            let urlShaped = typed.hasScheme
+                || (host.contains(".") && Double(host) == nil)
+                || host.hasPrefix("[") || privateHosts.contains(host)
+            if urlShaped && routes.route(host: host) != .direct {
                 return nil
             }
         }
@@ -150,28 +158,38 @@ final class BrowserModel {
     }
 
     /// The host the text starts with, read without a URL parser (the text may
-    /// be one no parser takes) and lowercased: past a scheme that starts the
-    /// text and any user info, up to a port, path, query or fragment. Nil when
-    /// that authority has a space, which makes the text a search (`office
-    /// hours`) — a space further on (`http://office/a b`) does not.
-    private static func leadingHost(of text: String) -> String? {
-        var rest = Substring(text)
-        if let delimiter = rest.range(of: "://"), isScheme(rest[..<delimiter.lowerBound]) {
-            rest = rest[delimiter.upperBound...]
-        }
+    /// be one no parser takes) and lowercased — past a scheme that starts the
+    /// text and any user info, up to the first colon (a port, however
+    /// malformed) or a path, query or fragment; an IPv6 literal keeps its
+    /// brackets — and whether a scheme came first. Nil when that host has a
+    /// space, which makes the text a search (`office hours`); a space after
+    /// it (`http://office/a b`, `office: 8080`) does not.
+    private static func typedHost(of text: String) -> (host: String, hasScheme: Bool)? {
+        let scheme = leadingScheme(of: text)
+        var rest = scheme?.rest ?? Substring(text)
         rest = rest.prefix { !"/?#".contains($0) }
-        if rest.contains(where: \.isWhitespace) { return nil }
         if let at = rest.lastIndex(of: "@") { rest = rest[rest.index(after: at)...] }
-        if !rest.hasPrefix("["), let colon = rest.lastIndex(of: ":") { rest = rest[..<colon] }
-        return rest.lowercased()
+        if rest.hasPrefix("["), let close = rest.firstIndex(of: "]") {
+            rest = rest[...close]
+        } else {
+            rest = rest.prefix { $0 != ":" }
+        }
+        guard !rest.isEmpty, !rest.contains(where: \.isWhitespace) else { return nil }
+        return (rest.lowercased(), scheme != nil)
     }
 
-    /// A URL scheme (RFC 3986): a letter, then letters, digits, `+`, `-` or
-    /// `.` — so a `://` later in a path or query (`office/?next=http://x`) is
-    /// not taken for one.
-    private static func isScheme(_ text: Substring) -> Bool {
-        guard let first = text.first, first.isASCII, first.isLetter else { return false }
-        return text.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "+-.".contains($0)) }
+    /// The URL scheme that starts the text (RFC 3986: a letter, then letters,
+    /// digits, `+`, `-` or `.`, before `://`) and what follows it — so a `://`
+    /// later in a path or query (`office/?next=http://x`) is not taken for
+    /// one.
+    private static func leadingScheme(of text: String) -> (scheme: String, rest: Substring)? {
+        guard let delimiter = text.range(of: "://") else { return nil }
+        let scheme = text[..<delimiter.lowerBound]
+        guard let first = scheme.first, first.isASCII, first.isLetter,
+              scheme.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "+-.".contains($0)) }) else {
+            return nil
+        }
+        return (scheme.lowercased(), text[delimiter.upperBound...])
     }
 
     private static func webURL(from text: String, privateHosts: Set<String>) -> URL? {
@@ -179,16 +197,14 @@ final class BrowserModel {
             return localhostURL
         }
 
-        let lowercased = text.lowercased()
-        if lowercased.hasPrefix("http://") || lowercased.hasPrefix("https://") {
+        switch leadingScheme(of: text)?.scheme {
+        case "http", "https":
             return validHTTPURL(from: text, privateHosts: privateHosts)
-        }
-
-        if lowercased.contains("://") {
+        case nil:
+            return bareHostURL(from: text, privateHosts: privateHosts)
+        default:
             return nil
         }
-
-        return bareHostURL(from: text, privateHosts: privateHosts)
     }
 
     private static func localhostURL(from text: String) -> URL? {

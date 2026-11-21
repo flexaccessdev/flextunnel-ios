@@ -29,24 +29,26 @@ final class AddressResolutionTests: XCTestCase {
     /// a scheme it is an address: as a search, the name, port and path of a
     /// private address would go to the search engine.
     func testANameTheSessionRoutesIsAnAddressNotASearch() {
-        let hosts: Set<String> = ["office", "nas"]
+        let hosts = routes(domains: ["office", "nas"])
         func resolved(_ text: String) -> String? {
-            BrowserModel.resolve(text, privateHosts: hosts)?.absoluteString
+            BrowserModel.resolve(text, routes: hosts)?.absoluteString
         }
         XCTAssertEqual(resolved("http://office:8080/settings"), "http://office:8080/settings")
         XCTAssertEqual(resolved("https://Office/"), "https://Office/")
         XCTAssertEqual(resolved("office:8080/settings"), "https://office:8080/settings")
         XCTAssertEqual(resolved("nas"), "https://nas")
         // A name the session doesn't route is still a search.
-        XCTAssertEqual(BrowserModel.resolve("http://intranet:8080/x", privateHosts: hosts)?.host(), "duckduckgo.com")
-        XCTAssertEqual(BrowserModel.resolve("intranet", privateHosts: hosts)?.host(), "duckduckgo.com")
-        XCTAssertEqual(BrowserModel.resolve("office hours", privateHosts: hosts)?.host(), "duckduckgo.com")
+        XCTAssertEqual(BrowserModel.resolve("http://intranet:8080/x", routes: hosts)?.host(), "duckduckgo.com")
+        XCTAssertEqual(BrowserModel.resolve("intranet", routes: hosts)?.host(), "duckduckgo.com")
+        XCTAssertEqual(BrowserModel.resolve("office hours", routes: hosts)?.host(), "duckduckgo.com")
+        // A `://` in the query is no scheme.
+        XCTAssertEqual(resolved("office/?next=http://wiki.example"), "https://office/?next=http://wiki.example")
     }
 
     /// A private address the URL parser refuses (an invalid IDNA label, say)
     /// is an error, not a search that would leak it.
     func testAnInvalidPrivateAddressIsNeverASearch() {
-        let hosts: Set<String> = ["office"]
+        let hosts = routes(domains: ["office"])
         for text in ["http://xn--a.localhost.flextunnel.internal:8080/settings",
                      "xn--a.localhost.flextunnel.internal:8080/settings",
                      "https://user@XN--A.localhost.flextunnel.internal./x",
@@ -56,14 +58,37 @@ final class AddressResolutionTests: XCTestCase {
                      "http://office/a b",
                      "office/a b",
                      // A `://` after the host is no scheme.
-                     "office/a b?next=http://elsewhere.example"] {
-            XCTAssertNil(BrowserModel.resolve(text, privateHosts: hosts), text)
+                     "office/a b?next=http://elsewhere.example",
+                     // However malformed the port.
+                     "http://nas.localhost.flextunnel.internal: 8080/settings",
+                     "http://nas.localhost.flextunnel.internal::8080/settings",
+                     "office: 8080/x"] {
+            XCTAssertNil(BrowserModel.resolve(text, routes: hosts), text)
         }
         // A space in what would be the host makes it a search.
-        XCTAssertEqual(BrowserModel.resolve("office hours/x", privateHosts: hosts)?.host(), "duckduckgo.com")
+        XCTAssertEqual(BrowserModel.resolve("office hours/x", routes: hosts)?.host(), "duckduckgo.com")
         XCTAssertEqual(
             BrowserModel.resolve("http://nas.localhost.flextunnel.internal:8080/x")?.absoluteString,
             "http://nas.localhost.flextunnel.internal:8080/x")
+    }
+
+    /// Any rule counts, not just an exact name: a URL whose host a wildcard
+    /// or an IP range routes is an error when it doesn't parse. A single word
+    /// under `*`, or a number, is still a search.
+    func testAURLAWildcardOrRangeRoutesIsNeverASearch() {
+        let table = routes(domains: ["*.corp.example"], cidrs: ["10.0.0.0/8"])
+        for text in ["http://wiki.corp.example/a b", "wiki.corp.example/a b",
+                     "http://10.1.2.3/a b", "10.1.2.3: 80/x"] {
+            XCTAssertNil(BrowserModel.resolve(text, routes: table), text)
+        }
+        for text in ["http://wiki.other.example/a b", "http://8.8.8.8/a b"] {
+            XCTAssertEqual(BrowserModel.resolve(text, routes: table)?.host(), "duckduckgo.com", text)
+        }
+        let everything = routes(domains: ["*"])
+        for text in ["intranet", "office hours", "3.14", "intranet/a b"] {
+            XCTAssertEqual(BrowserModel.resolve(text, routes: everything)?.host(), "duckduckgo.com", text)
+        }
+        XCTAssertNil(BrowserModel.resolve("http://intranet/a b", routes: everything))
     }
 
     func testAnythingElseIsASearch() throws {
@@ -82,5 +107,10 @@ final class AddressResolutionTests: XCTestCase {
 
     private func resolved(_ text: String) -> String? {
         BrowserModel.resolve(text)?.absoluteString
+    }
+
+    /// One destination routing `domains` and `cidrs`.
+    private func routes(domains: [String], cidrs: [String] = []) -> RouteTable {
+        RouteTable(entries: [.init(name: "lab", domains: domains, cidrs: cidrs)])
     }
 }
