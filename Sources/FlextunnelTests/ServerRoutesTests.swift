@@ -60,6 +60,18 @@ final class ServerRoutesTests: XCTestCase {
         XCTAssertEqual(ServerRoutes(domains: [""], cidrs: []).entryThatIsNotOneRule, "")
     }
 
+    /// Padding around an entry is not part of the rule — the server trims it
+    /// away too — so a padded entry is the one rule it is, not one the fields
+    /// cannot hold.
+    func testPaddingAroundAnEntryIsDropped() {
+        let routes = ServerRoutes.parse(
+            #"{"routed_domains":[" padded.example ","nas.example"],"routed_cidrs":[" 10.0.0.0/8\t"]}"#)
+        XCTAssertEqual(
+            routes,
+            ServerRoutes(domains: ["padded.example", "nas.example"], cidrs: ["10.0.0.0/8"]))
+        XCTAssertNil(routes?.entryThatIsNotOneRule)
+    }
+
     /// Anything else is no answer, never an empty one to fill the editor with.
     func testAnswerMissingAListIsNotRead() {
         for answer in [

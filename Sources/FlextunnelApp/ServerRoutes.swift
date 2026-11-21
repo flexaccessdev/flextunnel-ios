@@ -73,7 +73,9 @@ struct ServerRoutes: Equatable, Sendable {
     }
 
     /// The FFI's answer, `{"routed_domains":[…],"routed_cidrs":[…]}`; nil when
-    /// it is anything else.
+    /// it is anything else. A server reports its entries as configured and
+    /// trims them itself, so padding around one is dropped here: it is not
+    /// part of the rule.
     static func parse(_ json: String) -> ServerRoutes? {
         struct Answer: Decodable {
             let routed_domains: [String]
@@ -82,7 +84,11 @@ struct ServerRoutes: Equatable, Sendable {
         guard let answer = try? JSONDecoder().decode(Answer.self, from: Data(json.utf8)) else {
             return nil
         }
-        return ServerRoutes(domains: answer.routed_domains, cidrs: answer.routed_cidrs)
+        let trimmed = { (rules: [String]) in
+            rules.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        }
+        return ServerRoutes(
+            domains: trimmed(answer.routed_domains), cidrs: trimmed(answer.routed_cidrs))
     }
 
     /// The first entry the editor's fields would not hold as the one rule it
