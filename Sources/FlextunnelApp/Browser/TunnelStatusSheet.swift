@@ -16,7 +16,7 @@ extension Route {
     /// How a page on this route is described: where its requests go.
     var label: String {
         switch self {
-        case .destination(let host): return "Through \(host)"
+        case .destination(let name): return "Through \(name)"
         case .direct: return "Direct (no destination routes it)"
         case .status, .reserved: return "Answered by flextunnel in this app"
         }
@@ -94,7 +94,7 @@ struct TunnelStatusSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     /// The destination whose connection path is being shown.
-    @State private var connPathHost: ConnPathTarget?
+    @State private var connPathTarget: ConnPathTarget?
 
     var body: some View {
         NavigationStack {
@@ -130,8 +130,8 @@ struct TunnelStatusSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .sheet(item: $connPathHost) { target in
-                ConnPathSheet(host: target.host, query: { proxy.queryConnPath(host: target.host) })
+            .sheet(item: $connPathTarget) { target in
+                ConnPathSheet(name: target.name, query: { proxy.queryConnPath(name: target.name) })
             }
         }
         .presentationDetents([.medium, .large])
@@ -207,7 +207,7 @@ struct TunnelStatusSheet: View {
         case .connecting:
             return "Connecting to a server for the first request to it. " + split
         case .trouble:
-            let hosts = proxy.troubledHosts.joined(separator: ", ")
+            let hosts = proxy.troubledNames.joined(separator: ", ")
             return "Can't reach \(hosts). Sites through it wait for a retry, then fail; "
                 + "it is tried again whenever it is used."
         case .restarting:
@@ -235,7 +235,7 @@ struct TunnelStatusSheet: View {
         ForEach(proxy.destinations) { destination in
             Section {
                 DestinationStateRow(destination: destination)
-                RouteRow(systemImage: "server.rack", text: destination.host, note: "with a port: the server itself")
+                RouteRow(systemImage: "server.rack", text: RouteTable.loopbackHost(destination.name), note: "with a port: the server itself")
                 ForEach(destination.routedDomains, id: \.self) { domain in
                     RouteRow(systemImage: "globe", text: domain)
                 }
@@ -247,22 +247,22 @@ struct TunnelStatusSheet: View {
                 // otherwise), mirroring the desktop CTA.
                 if destination.state == .connected {
                     Button {
-                        connPathHost = ConnPathTarget(host: destination.host)
+                        connPathTarget = ConnPathTarget(name: destination.name)
                     } label: {
                         Label("Connection Path", systemImage: "point.3.connected.trianglepath.dotted")
                     }
-                    .accessibilityIdentifier("tunnelStatus.connectionPath.\(destination.host)")
+                    .accessibilityIdentifier("tunnelStatus.connectionPath.\(destination.name)")
                 }
-                // The server's own view — its routed set, host aliases and DNS
-                // forwards. Fetching it connects the destination.
+                // The server's own view — its routed set and host aliases.
+                // Fetching it connects the destination.
                 Button {
-                    onOpenStatusPage(URL(string: "http://flextunnel.internal/servers/\(destination.host)/")!)
+                    onOpenStatusPage(URL(string: "http://flextunnel.internal/servers/\(destination.name)/")!)
                 } label: {
                     Label("Server Status Page", systemImage: "doc.text.magnifyingglass")
                 }
-                .accessibilityIdentifier("tunnelStatus.serverStatusPage.\(destination.host)")
+                .accessibilityIdentifier("tunnelStatus.serverStatusPage.\(destination.name)")
             } header: {
-                Text(destination.host)
+                Text(destination.name)
                     .textCase(nil)
                     .font(.footnote.monospaced())
             } footer: {
@@ -322,8 +322,8 @@ struct TunnelStatusSheet: View {
 
 /// The destination a connection-path sheet is about.
 struct ConnPathTarget: Identifiable {
-    let host: String
-    var id: String { host }
+    let name: String
+    var id: String { name }
 }
 
 /// A destination's state: a colored word, and under it what the last failed
@@ -340,7 +340,7 @@ struct DestinationStateRow: View {
                 Text(destination.stateText)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(destination.stateColor)
-                    .accessibilityIdentifier("tunnelStatus.state.\(destination.host)")
+                    .accessibilityIdentifier("tunnelStatus.state.\(destination.name)")
             }
             if let error = destination.lastError {
                 Text(error)

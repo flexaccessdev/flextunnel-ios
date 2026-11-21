@@ -9,7 +9,7 @@ enum Route: Equatable {
     /// Another `*.flextunnel.internal` name: reserved, answered with a 404 by
     /// the in-app proxy.
     case reserved
-    /// Tunneled through the destination with this host name.
+    /// Tunneled through the destination with this name.
     case destination(String)
     /// On no destination's list: the browser connects directly from the
     /// device, and a port forward is refused.
@@ -24,18 +24,20 @@ enum Route: Equatable {
 /// rules here follow the core exactly so a label never reports the opposite
 /// route.
 ///
-/// A client holds several *destinations*, each a host name for one server.
-/// Precedence, most specific first: the reserved `flextunnel.internal`
-/// namespace; a destination's own host (that server's loopback); then the rule
-/// that matches most specifically across all destinations — an exact domain,
-/// the longest `*.suffix`, `*`, or for an IP target the longest network
-/// prefix. A hostname is matched only against domain rules and an IP literal
+/// A client holds several *destinations*, each a name (one DNS label) for one
+/// server. Precedence, most specific first: the status host
+/// `flextunnel.internal`; a destination's loopback name,
+/// `<name>.localhost.flextunnel.internal` (that server's loopback); the rest
+/// of the reserved `flextunnel.internal` namespace; then the rule that
+/// matches most specifically across all destinations — an exact domain, the
+/// longest `*.suffix`, `*`, or for an IP target the longest network prefix. A hostname is matched only against domain rules and an IP literal
 /// only against the networks: `*` never covers an IP, and a default route
-/// never covers a hostname.
+/// never covers a hostname. The bare name is not a host: it is routed like any
+/// other name.
 struct RouteTable: Equatable {
     /// One destination's routing input, as configured.
     struct Entry: Equatable {
-        var host: String
+        var name: String
         var domains: [String]
         var cidrs: [String]
     }
@@ -65,28 +67,29 @@ struct RouteTable: Equatable {
 
         let name = Self.routingKey(lowered)
         if name == Self.statusHost { return .status }
-        if Self.isReserved(name) { return .reserved }
-        if let own = entries.first(where: { Self.routingKey($0.host.lowercased()) == name }) {
-            return .destination(own.host)
+        if let label = Self.loopbackName(name),
+           let own = entries.first(where: { $0.name.lowercased() == label }) {
+            return .destination(own.name)
         }
+        if Self.isReserved(name) { return .reserved }
         return best(entries.map { Self.specificity(of: name, in: $0.domains) })
     }
 
-    /// The host of the destination `host` is tunneled through, or nil when it
+    /// The name of the destination `host` is tunneled through, or nil when it
     /// is not tunneled (direct, or answered by the client itself).
     func destination(for host: String) -> String? {
         if case .destination(let name) = route(host: host) { return name }
         return nil
     }
 
-    /// The names the table routes by exact match: each destination's own host
-    /// and its exact domain rules, lowercased and without the root dot. These
-    /// are private names by configuration, whatever they look like — a single
-    /// label such as `office` included.
+    /// The names the table routes by exact match: each destination's loopback
+    /// name and its exact domain rules, lowercased and without the root dot.
+    /// These are private names by configuration, whatever they look like — a
+    /// single label such as `office` included.
     var exactNames: Set<String> {
         var names = Set<String>()
         for entry in entries {
-            names.insert(Self.routingKey(entry.host.lowercased()))
+            names.insert(Self.loopbackHost(entry.name.lowercased()))
             for domain in entry.domains {
                 let rule = Self.rule(domain)
                 if !rule.contains("*") { names.insert(rule) }
@@ -98,7 +101,7 @@ struct RouteTable: Equatable {
     /// The destination whose `*` rule takes every hostname no other rule
     /// claims, so nothing by name is left to connect directly.
     var catchAllDestination: String? {
-        entries.first { $0.domains.contains { Self.rule($0) == "*" } }?.host
+        entries.first { $0.domains.contains { Self.rule($0) == "*" } }?.name
     }
 
     /// Whether any destination routes IP networks.
@@ -120,13 +123,13 @@ struct RouteTable: Equatable {
     /// Over-matching is safe: the in-app proxy makes the exact tunnel-vs-direct
     /// call for whatever reaches it. Under-matching would break private hosts,
     /// so the list must cover everything the core would not send directly —
-    /// every destination's own host, and the `flextunnel.internal` namespace
-    /// the proxy answers itself.
+    /// the `flextunnel.internal` namespace, which holds every destination's
+    /// loopback name as well as what the proxy answers itself, and the routed
+    /// domains.
     var proxyMatchDomains: [String]? {
         guard catchAllDestination == nil, !routesNetworks else { return nil }
         var bases: Set<String> = [Self.statusHost]
         for entry in entries {
-            bases.insert(Self.routingKey(entry.host.lowercased()))
             for domain in entry.domains {
                 let rule = Self.rule(domain)
                 bases.insert(rule.hasPrefix("*.") ? String(rule.dropFirst(2)) : rule)
@@ -159,7 +162,7 @@ struct RouteTable: Equatable {
             if let current = winner, match < current.specificity { continue }
             winner = (match, index)
         }
-        return winner.map { .destination(entries[$0.index].host) } ?? .direct
+        return winner.map { .destination(entries[$0.index].name) } ?? .direct
     }
 
     private static func specificity(of name: String, in domains: [String]) -> Specificity? {
@@ -193,6 +196,25 @@ struct RouteTable: Equatable {
     }
 
     static let statusHost = "flextunnel.internal"
+
+    /// The suffix of the destinations' loopback names.
+    static let loopbackSuffix = ".localhost." + statusHost
+
+    /// The host that reaches the loopback of the server behind the destination
+    /// called `name`, like the core's `reserved::loopback_host`.
+    static func loopbackHost(_ name: String) -> String {
+        name + loopbackSuffix
+    }
+
+    /// The destination name in a loopback host — `nas` in
+    /// `nas.localhost.flextunnel.internal` — or nil for any other host, like
+    /// the core's `reserved::loopback_name` (`host` already lowercased and
+    /// without the root dot). The name is a single label.
+    static func loopbackName(_ host: String) -> String? {
+        guard host.hasSuffix(loopbackSuffix) else { return nil }
+        let name = host.dropLast(loopbackSuffix.count)
+        return name.isEmpty || name.contains(".") ? nil : String(name)
+    }
 
     /// A subdomain of `flextunnel.internal`, like the core's
     /// `reserved::is_reserved_host` (`name` already lowercased and without the

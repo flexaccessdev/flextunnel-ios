@@ -12,13 +12,13 @@ enum E2ELaunchConfig {
 
     /// One destination as the test passes it, in the FFI's own spelling.
     struct Destination: Decodable {
-        var host: String
+        var name: String
         var serverNodeID: String
         var routedDomains: [String]
         var routedCIDRs: [String]
 
         private enum CodingKeys: String, CodingKey {
-            case host
+            case name
             case serverNodeID = "server_node_id"
             case routedDomains = "routed_domains"
             case routedCIDRs = "routed_cidrs"
@@ -32,7 +32,7 @@ enum E2ELaunchConfig {
     }
 
     /// `FLEXTUNNEL_E2E_DESTINATIONS` is a JSON array of
-    /// `{host, server_node_id, routed_domains, routed_cidrs}`.
+    /// `{name, server_node_id, routed_domains, routed_cidrs}`.
     static var current: Values? {
         let env = ProcessInfo.processInfo.environment
         guard let json = env["FLEXTUNNEL_E2E_DESTINATIONS"], !json.isEmpty,
@@ -86,12 +86,12 @@ enum E2ELaunchConfig {
         for destination in values.destinations {
             let saved = client.save(ClientStore.Destination(
                 id: UUID().uuidString,
-                host: destination.host,
+                name: destination.name,
                 serverNodeID: destination.serverNodeID,
                 routedDomains: destination.routedDomains,
                 routedCIDRs: destination.routedCIDRs))
             if let error = saved {
-                fatalError("E2E destination \(destination.host) rejected: \(error.message)")
+                fatalError("E2E destination \(destination.name) rejected: \(error.message)")
             }
         }
     }

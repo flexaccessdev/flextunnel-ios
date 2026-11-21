@@ -12,9 +12,9 @@ import SwiftUI
 /// desktop modal it is a point-in-time check, not a live field.
 struct ConnPathSheet: View {
     /// The destination whose connection this reads.
-    let host: String
+    let name: String
     /// Snapshots its live paths + custom-relay health right now
-    /// (`ProxyController.queryConnPath(host:)`).
+    /// (`ProxyController.queryConnPath(name:)`).
     let query: () -> ProxyController.ConnectionSnapshot
 
     @Environment(\.dismiss) private var dismiss
@@ -25,7 +25,7 @@ struct ConnPathSheet: View {
             List {
                 Section {
                     if snapshot.paths.isEmpty {
-                        Text("No path — \(host) isn't connected right now. It connects when something is sent to it.")
+                        Text("No path — \(name) isn't connected right now. It connects when something is sent to it.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     } else {
@@ -34,7 +34,7 @@ struct ConnPathSheet: View {
                         }
                     }
                 } header: {
-                    Text(host)
+                    Text(name)
                         .textCase(nil)
                         .font(.footnote.monospaced())
                 } footer: {

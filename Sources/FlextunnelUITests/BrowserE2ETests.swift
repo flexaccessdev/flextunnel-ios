@@ -15,8 +15,8 @@ final class BrowserE2ETests: XCTestCase {
     private enum Server {
         /// Routes the fixture site's host alias, and `localhost`.
         case routed
-        /// Routes nothing. Its own loopback is still reachable, by the host
-        /// name of the destination that points at it.
+        /// Routes nothing. Its own loopback is still reachable, by the
+        /// loopback name of the destination that points at it.
         case plain
         /// Routes a CIDR (TEST-NET-3).
         case cidr
@@ -33,20 +33,21 @@ final class BrowserE2ETests: XCTestCase {
 
     /// The destinations a session is started with.
     private enum Destinations {
-        /// `siteHost` for the routed server, with the names it routes, and
-        /// `plainHost` for the plain one: hostname rules only, so the browser
+        /// `siteName` for the routed server, with the names it routes, and
+        /// `plainName` for the plain one: hostname rules only, so the browser
         /// scopes its proxy to them.
         case names
-        /// `cidrHost` for the CIDR server, with its network: the browser sends
+        /// `cidrName` for the CIDR server, with its network: the browser sends
         /// every page to the in-app proxy.
         case network
     }
 
-    private static let siteHost = "site.e2e.internal"
-    /// A single label, as a destination may be named: in the address bar it
-    /// has to load as an address rather than go out as a search.
-    private static let plainHost = "plain"
-    private static let cidrHost = "cidr.e2e.internal"
+    private static let siteName = "site"
+    private static let plainName = "plain"
+    /// The plain server's own loopback: in the address bar it has to load as
+    /// an address rather than go out as a search.
+    private static let plainLoopback = "plain.localhost.flextunnel.internal"
+    private static let cidrName = "cidr"
 
     private var app: XCUIApplication!
     private var nodes: [Server: String] = [:]
@@ -115,7 +116,7 @@ final class BrowserE2ETests: XCTestCase {
         app.buttons["browser.siteSecurity"].tap()
         let route = app.staticTexts.matching(identifier: "browser.siteRoute").firstMatch
         XCTAssertTrue(route.waitForExistence(timeout: 5))
-        XCTAssertEqual(route.label, "Through \(Self.siteHost)")
+        XCTAssertEqual(route.label, "Through \(Self.siteName)")
     }
 
     func testHideToolbarsGivesThePageTheScreenUntilTheStripIsTapped() {
@@ -169,15 +170,15 @@ final class BrowserE2ETests: XCTestCase {
         XCTAssertTrue(title.waitForExistence(timeout: 5))
         XCTAssertEqual(title.label, "Connected")
         XCTAssertTrue(app.staticTexts["e2e.flextunnel.test"].exists)
-        XCTAssertTrue(app.staticTexts["Through \(Self.siteHost)"].exists)
+        XCTAssertTrue(app.staticTexts["Through \(Self.siteName)"].exists)
         snapshot("tunnel-status")
 
         // Only the destination the page went through is connected.
-        XCTAssertEqual(destinationState(Self.siteHost), "Connected")
-        XCTAssertEqual(destinationState(Self.plainHost), "Idle")
+        XCTAssertEqual(destinationState(Self.siteName), "Connected")
+        XCTAssertEqual(destinationState(Self.plainName), "Idle")
         snapshot("tunnel-status-destinations")
 
-        let path = app.buttons["tunnelStatus.connectionPath.\(Self.siteHost)"]
+        let path = app.buttons["tunnelStatus.connectionPath.\(Self.siteName)"]
         reveal(path)
         path.tap()
         XCTAssertTrue(app.navigationBars["Connection path"].waitForExistence(timeout: 5))
@@ -187,31 +188,32 @@ final class BrowserE2ETests: XCTestCase {
     }
 
     /// Starting a session connects nothing; a destination's server is
-    /// connected by the first request to it — here to the destination's own
-    /// host name, which is the server's loopback whatever that server routes.
-    func testDestinationConnectsWhenFirstUsedAndItsHostIsTheServersLoopback() {
+    /// connected by the first request to it — here to the destination's
+    /// loopback name, which is the server's loopback whatever that server
+    /// routes.
+    func testDestinationConnectsWhenFirstUsedAndItsLoopbackNameIsTheServersLoopback() {
         connect()
         XCTAssertEqual(app.buttons["browser.tunnelStatus"].value as? String, "Ready")
         app.buttons["browser.tunnelStatus"].tap()
         let title = app.staticTexts["tunnelStatus.title"]
         XCTAssertTrue(title.waitForExistence(timeout: 5))
         XCTAssertEqual(title.label, "Ready")
-        XCTAssertEqual(destinationState(Self.siteHost), "Idle")
-        XCTAssertEqual(destinationState(Self.plainHost), "Idle")
+        XCTAssertEqual(destinationState(Self.siteName), "Idle")
+        XCTAssertEqual(destinationState(Self.plainName), "Idle")
         snapshot("tunnel-status-ready")
         app.navigationBars["Tunnel"].buttons["Done"].tap()
 
         // The fixture site listens only on the Mac's loopback, which is the
         // plain server's own — a server that routes nothing at all.
-        open("http://\(Self.plainHost):\(sitePort)/")
+        open("http://\(Self.plainLoopback):\(sitePort)/")
         waitForPageText("flextunnel e2e home")
         waitForTunnelStatus("Connected")
 
         app.buttons["browser.tunnelStatus"].tap()
         XCTAssertTrue(title.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Through \(Self.plainHost)"].exists, "this page's route")
-        XCTAssertEqual(destinationState(Self.plainHost), "Connected")
-        XCTAssertEqual(destinationState(Self.siteHost), "Idle", "a destination nothing used was connected")
+        XCTAssertTrue(app.staticTexts["Through \(Self.plainName)"].exists, "this page's route")
+        XCTAssertEqual(destinationState(Self.plainName), "Connected")
+        XCTAssertEqual(destinationState(Self.siteName), "Idle", "a destination nothing used was connected")
         app.navigationBars["Tunnel"].buttons["Done"].tap()
 
         // Using the other destination connects it alongside the first: one
@@ -220,13 +222,13 @@ final class BrowserE2ETests: XCTestCase {
         waitForPageText("flextunnel e2e page two")
         app.buttons["browser.tunnelStatus"].tap()
         XCTAssertTrue(title.waitForExistence(timeout: 5))
-        waitForDestinationState(Self.siteHost, "Connected")
-        waitForDestinationState(Self.plainHost, "Connected")
+        waitForDestinationState(Self.siteName, "Connected")
+        waitForDestinationState(Self.plainName, "Connected")
         snapshot("tunnel-status-both-connected")
         app.navigationBars["Tunnel"].buttons["Done"].tap()
 
         // And the first is still usable, on the connection it already has.
-        open("http://\(Self.plainHost):\(sitePort)/")
+        open("http://\(Self.plainLoopback):\(sitePort)/")
         waitForPageText("flextunnel e2e home")
     }
 
@@ -237,7 +239,7 @@ final class BrowserE2ETests: XCTestCase {
         connect()
         open("http://flextunnel.internal/")
         waitForPageText("flextunnel client status")
-        for host in [Self.siteHost, Self.plainHost] {
+        for host in [Self.siteName, Self.plainName] {
             let listed = app.webViews.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", host)).firstMatch
             XCTAssertTrue(listed.waitForExistence(timeout: 5), "\(host) is not on the client status page")
         }
@@ -246,7 +248,7 @@ final class BrowserE2ETests: XCTestCase {
                        "reading the client's status connected a destination")
 
         app.buttons["browser.tunnelStatus"].tap()
-        let serverPage = app.buttons["tunnelStatus.serverStatusPage.\(Self.plainHost)"]
+        let serverPage = app.buttons["tunnelStatus.serverStatusPage.\(Self.plainName)"]
         XCTAssertTrue(app.staticTexts["tunnelStatus.title"].waitForExistence(timeout: 5))
         reveal(serverPage)
         serverPage.tap()
@@ -307,7 +309,7 @@ final class BrowserE2ETests: XCTestCase {
         // The page can fail within a moment of its destination connecting,
         // before the app's next status poll shows it connected: the hint
         // settles then.
-        let reached = NSPredicate(format: "label CONTAINS %@", "Reached through \(Self.siteHost)")
+        let reached = NSPredicate(format: "label CONTAINS %@", "Reached through \(Self.siteName)")
         expectation(for: reached, evaluatedWith: hint)
         waitForExpectations(timeout: Self.loadTimeout)
         snapshot("failure-tunneled")
@@ -341,7 +343,7 @@ final class BrowserE2ETests: XCTestCase {
         open(tunneled + "/?during-outage")
         let hint = app.staticTexts.matching(identifier: "browser.failureRoute").firstMatch
         XCTAssertTrue(hint.waitForExistence(timeout: Self.outageFailureTimeout), "the routed page never failed")
-        XCTAssertTrue(hint.label.contains("\(Self.siteHost), which isn't connected right now"), hint.label)
+        XCTAssertTrue(hint.label.contains("\(Self.siteName), which isn't connected right now"), hint.label)
         XCTAssertFalse(app.webViews.staticTexts["flextunnel e2e home"].exists, "the routed page loaded directly")
         snapshot("failure-outage")
 
@@ -405,7 +407,7 @@ final class BrowserE2ETests: XCTestCase {
         bringBack(.cidr)
         XCTAssertTrue(
             waitForServerLog(.cidr, toContain: tunneledAddress, timeout: Self.outageFailureTimeout),
-            "\(tunneledAddress) never came through \(Self.cidrHost)")
+            "\(tunneledAddress) never came through \(Self.cidrName)")
     }
 
     /// The setup screen lists the destinations, and its editor checks a new
@@ -413,12 +415,12 @@ final class BrowserE2ETests: XCTestCase {
     func testAddingADestinationValidatesItAgainstTheOthers() {
         launch(with: .names)
         XCTAssertTrue(app.navigationBars["flextunnel"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["setup.destination.\(Self.siteHost)"].exists)
-        XCTAssertTrue(app.buttons["setup.destination.\(Self.plainHost)"].exists)
+        XCTAssertTrue(app.buttons["setup.destination.\(Self.siteName)"].exists)
+        XCTAssertTrue(app.buttons["setup.destination.\(Self.plainName)"].exists)
 
         app.buttons["setup.addDestination"].tap()
-        let host = app.textFields["destination.host"]
-        XCTAssertTrue(host.waitForExistence(timeout: 5))
+        let name = app.textFields["destination.name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
         let save = app.buttons["destination.save"]
         XCTAssertFalse(save.isEnabled, "an empty destination can be saved")
 
@@ -427,8 +429,8 @@ final class BrowserE2ETests: XCTestCase {
         node.typeText(nodes[.cidr]!)
 
         // A name another destination already has.
-        host.tap()
-        host.typeText(Self.siteHost)
+        name.tap()
+        name.typeText(Self.siteName)
         let error = app.staticTexts["destination.error"]
         XCTAssertTrue(error.waitForExistence(timeout: 5))
         XCTAssertTrue(error.label.contains("already named"), error.label)
@@ -436,7 +438,7 @@ final class BrowserE2ETests: XCTestCase {
         snapshot("destination-editor-error")
 
         // Typing on makes it a name of its own.
-        host.typeText(".lab")
+        name.typeText("-lab")
         // A multi-line field isn't a plain text field to the test runner.
         let ranges = app.descendants(matching: .any)["destination.routedCIDRs"]
         ranges.tap()
@@ -445,7 +447,7 @@ final class BrowserE2ETests: XCTestCase {
         XCTAssertTrue(save.isEnabled)
         save.tap()
 
-        let added = app.buttons["setup.destination.\(Self.siteHost).lab"]
+        let added = app.buttons["setup.destination.\(Self.siteName)-lab"]
         XCTAssertTrue(added.waitForExistence(timeout: 5))
         snapshot("setup-destinations")
     }
@@ -475,15 +477,15 @@ final class BrowserE2ETests: XCTestCase {
         XCTAssertTrue(note.label.contains("0 domain(s) and 1 IP range(s)"), note.label)
         snapshot("destination-editor-fetched")
 
-        let host = app.textFields["destination.host"]
-        host.tap()
-        host.typeText(Self.cidrHost)
+        let name = app.textFields["destination.name"]
+        name.tap()
+        name.typeText(Self.cidrName)
         app.buttons["destination.save"].tap()
-        XCTAssertTrue(app.buttons["setup.destination.\(Self.cidrHost)"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["setup.destination.\(Self.cidrName)"].waitForExistence(timeout: 5))
     }
 
     /// A port forward goes through the destination that routes its host — here
-    /// a destination's own name, which is the server's loopback — and one to a
+    /// a destination's loopback name, which is the server's loopback — and one to a
     /// host no destination routes is switched back off, saying so.
     func testPortForwardGoesThroughTheDestinationThatRoutesItsHost() {
         launch(with: .names)
@@ -514,8 +516,8 @@ final class BrowserE2ETests: XCTestCase {
         snapshot("forward-no-route")
 
         // The fixture site listens on the Mac's loopback: the plain server's own.
-        addForward(localPort: forwardPort, host: Self.plainHost, port: "\(sitePort)")
-        scrollTo(app.staticTexts["via \(Self.plainHost)"])
+        addForward(localPort: forwardPort, host: Self.plainLoopback, port: "\(sitePort)")
+        scrollTo(app.staticTexts["via \(Self.plainName)"])
         XCTAssertTrue(
             waitForBody(of: "http://127.0.0.1:\(forwardPort!)/", toContain: "flextunnel e2e home"),
             "the forward never served the site")
@@ -727,13 +729,13 @@ final class BrowserE2ETests: XCTestCase {
         case .names:
             list = [
                 [
-                    "host": Self.siteHost,
+                    "name": Self.siteName,
                     "server_node_id": nodes[.routed]!,
                     "routed_domains": ["e2e.flextunnel.test", "*.e2e.flextunnel.test", "localhost"],
                     "routed_cidrs": [String](),
                 ],
                 [
-                    "host": Self.plainHost,
+                    "name": Self.plainName,
                     "server_node_id": nodes[.plain]!,
                     "routed_domains": [String](),
                     "routed_cidrs": [String](),
@@ -742,7 +744,7 @@ final class BrowserE2ETests: XCTestCase {
         case .network:
             list = [
                 [
-                    "host": Self.cidrHost,
+                    "name": Self.cidrName,
                     "server_node_id": nodes[.cidr]!,
                     "routed_domains": [String](),
                     "routed_cidrs": ["203.0.113.0/24"],
