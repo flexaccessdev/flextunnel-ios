@@ -28,6 +28,14 @@ forwards on what arrives: a route here only chooses the server, and the
 server refuses a target off its list. A destination's own host name is the
 exception — the server's loopback is reachable whatever that server routes.
 
+Nothing keeps the two lists in step. A destination's editor can copy the
+server's: **Fetch from Server** asks the server named by the node id what it
+routes — one connection made for the question, with this device's key and
+relays, so the server must authorize the key already — and replaces the two
+rule fields with its answer. It works before the destination is saved and with
+no session running. Review the result and save; a later change on the server
+is not followed.
+
 ## Connecting on demand
 
 Starting a session connects nothing. A destination's server is connected when

@@ -41,10 +41,25 @@ struct DestinationDraft: Identifiable {
     }
 }
 
+/// Where the editor's "Fetch from Server" stands.
+enum RoutesFetch: Equatable {
+    case idle
+    /// The server was asked; the id tells this request's answer from one to an
+    /// earlier request, or for a server the draft has since been pointed away
+    /// from.
+    case fetching(UUID)
+    /// The rule fields were filled from the server's answer; what to say.
+    case filled(String)
+    case failed(String)
+}
+
 /// Add or edit one destination: the host name a server goes by on this client,
 /// the server's node id, and the further hosts routed through it.
 struct DestinationEditSheet: View {
     @State var draft: DestinationDraft
+    /// The client's key and relays, with which the draft's server can be asked
+    /// what it routes; nil while no auth key is picked.
+    let routesAccess: ServerRoutes.Access?
     /// The store's check of the draft against its rules and the other
     /// destinations.
     let validate: (ClientStore.Destination) -> Result<ClientStore.Destination, ClientStore.ValidationError>
@@ -53,6 +68,7 @@ struct DestinationEditSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var confirmingDelete = false
+    @State private var routesFetch = RoutesFetch.idle
 
     var body: some View {
         NavigationStack {
@@ -90,13 +106,31 @@ struct DestinationEditSheet: View {
                         .textInputAutocapitalization(.never)
                         .lineLimit(1...6)
                         .accessibilityIdentifier("destination.routedCIDRs")
+                    Button {
+                        fetchRoutes()
+                    } label: {
+                        HStack {
+                            Label("Fetch from Server", systemImage: "arrow.down.circle")
+                            Spacer()
+                            if isFetchingRoutes { ProgressView() }
+                        }
+                    }
+                    .disabled(routesBlocker != nil || isFetchingRoutes)
+                    .accessibilityIdentifier("destination.fetchRoutes")
+                    if let note = routesNote {
+                        Text(note.text)
+                            .font(.footnote)
+                            .foregroundStyle(note.isProblem ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                            .accessibilityIdentifier("destination.fetchRoutesNote")
+                    }
                 } header: {
                     Text("Also send through it")
                 } footer: {
                     Text("Optional. One rule per line. A domain is an exact name, "
                         + "*.suffix for its subdomains, or * for every name; an IP range "
                         + "covers IP-address targets only, never names. The server must "
-                        + "route them too — its own list is what it allows. Anything on "
+                        + "route them too — its own list is what it allows, and Fetch "
+                        + "from Server replaces both fields with it. Anything on "
                         + "no destination's list connects directly from this device.")
                 }
 
@@ -142,6 +176,8 @@ struct DestinationEditSheet: View {
                         .accessibilityIdentifier("destination.error")
                 }
             }
+            // An answer on its way is for the server the id named.
+            .onChange(of: draft.serverNodeID) { routesFetch = .idle }
             .confirmationDialog(
                 "Delete this destination?",
                 isPresented: $confirmingDelete,
@@ -170,5 +206,62 @@ struct DestinationEditSheet: View {
 
     private var validationMessage: String? {
         draft.isPristine ? nil : problem
+    }
+
+    // MARK: - Fetch from Server
+
+    private var isFetchingRoutes: Bool {
+        if case .fetching = routesFetch { return true }
+        return false
+    }
+
+    /// What is still missing before the server can be asked, or nil.
+    private var routesBlocker: String? {
+        if ClientStore.nodeKey(draft.serverNodeID) == nil {
+            return "Enter the server node id to fetch the server's own list."
+        }
+        if routesAccess == nil {
+            return "Pick an auth key on the setup screen to fetch the server's own list."
+        }
+        return nil
+    }
+
+    /// The line under the button: the outcome of the last fetch, or what it
+    /// is waiting for.
+    private var routesNote: (text: String, isProblem: Bool)? {
+        switch routesFetch {
+        case .fetching: return (text: "Asking the server…", isProblem: false)
+        case .filled(let note): return (text: note, isProblem: false)
+        case .failed(let reason): return (text: reason, isProblem: true)
+        case .idle: return routesBlocker.map { (text: $0, isProblem: false) }
+        }
+    }
+
+    /// Ask the draft's server what it routes and put its lists in the two rule
+    /// fields, replacing what they held; a failure leaves them alone. Nothing
+    /// is saved — that stays with Save. The editor stays usable meanwhile, and
+    /// an answer that is no longer waited for is dropped.
+    private func fetchRoutes() {
+        guard let access = routesAccess, routesBlocker == nil, !isFetchingRoutes else { return }
+        let request = UUID()
+        let node = draft.serverNodeID
+        routesFetch = .fetching(request)
+        Task {
+            let result = await ServerRoutes.fetch(serverNodeID: node, access: access)
+            guard routesFetch == .fetching(request) else { return }
+            switch result {
+            case .success(let routes):
+                draft.routedDomains = routes.domains.joined(separator: "\n")
+                draft.routedCIDRs = routes.cidrs.joined(separator: "\n")
+                routesFetch = .filled(routes.filledNote)
+            case .failure(let failure):
+                // The core's word for a key the server does not know.
+                let refused = failure.message.hasPrefix("Authentication failed")
+                routesFetch = .failed(refused
+                    ? "The server refused this device's key. Put its public key on the "
+                        + "server's authorized-keys file first."
+                    : failure.message)
+            }
+        }
     }
 }
