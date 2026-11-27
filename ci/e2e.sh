@@ -51,6 +51,8 @@ WORK=build/e2e
 RUN=$WORK/run
 DERIVED=build/ci/DerivedData-e2e
 TOOLS_ROOT=$PWD/$WORK/tools
+# Release binaries, apart from local builds: only a checked download lands here.
+RELEASES_ROOT=$PWD/$WORK/releases
 
 info() { echo "[e2e] $*"; }
 die() { echo "[e2e] error: $*" >&2; exit 1; }
@@ -61,11 +63,12 @@ done
 
 # --- tools -------------------------------------------------------------------
 
-# The flextunnel and flexaccess-keys CLIs live in build/e2e/tools, one per
-# tag. At the pinned tag both are the releases' own macOS binaries, downloaded
-# once and checked against the sha256 digest GitHub reports for each asset.
-# With FLEXTUNNEL_LOCAL_XCFRAMEWORK=1 the server is built from the sibling
-# working tree instead, which needs cargo; the keys tool is still downloaded.
+# At the pinned tag the flextunnel and flexaccess-keys CLIs are the releases'
+# own macOS binaries, downloaded once per tag into build/e2e/releases and
+# checked against the sha256 digest GitHub reports for each asset. With
+# FLEXTUNNEL_LOCAL_XCFRAMEWORK=1 the server is built from the sibling working
+# tree into build/e2e/tools instead, which needs cargo; the keys tool is still
+# downloaded.
 
 # Downloads release asset $3 of GitHub repo $1 at tag $2 to $4, once.
 download_release_binary() {
@@ -79,8 +82,8 @@ assets = [a for a in json.load(sys.stdin)["assets"] if a["name"] == sys.argv[1]]
 print(assets[0].get("digest") or "" if assets else "")' "$asset") \
         || die "could not read the $repo $tag release"
     [[ $digest == sha256:* ]] || die "$repo $tag has no sha256 digest for $asset"
-    mkdir -p "$TOOLS_ROOT" "$(dirname "$dest")"
-    tmp=$(mktemp "$TOOLS_ROOT/.download.XXXXXX")
+    mkdir -p "$RELEASES_ROOT" "$(dirname "$dest")"
+    tmp=$(mktemp "$RELEASES_ROOT/.download.XXXXXX")
     curl -fsSL -o "$tmp" "https://github.com/$repo/releases/download/$tag/$asset" \
         || { rm -f "$tmp"; die "could not download $asset from $repo $tag"; }
     actual=$(shasum -a 256 "$tmp" | cut -d' ' -f1)
@@ -105,13 +108,13 @@ else
     tag=$(sed -n 's#.*/releases/download/\(v[^/]*\)/.*#\1#p' Packages/Flextunnel/Package.swift)
     [ -n "$tag" ] || die 'no pinned release tag in Packages/Flextunnel/Package.swift'
     server_src=$tag
-    flextunnel=$TOOLS_ROOT/flextunnel-$tag/bin/flextunnel
+    flextunnel=$RELEASES_ROOT/flextunnel-$tag/flextunnel
     download_release_binary flexaccessdev/flextunnel "$tag" flextunnel-macos-arm64 "$flextunnel"
     keys_tag=$(curl -fsSL "https://raw.githubusercontent.com/flexaccessdev/flextunnel/$tag/Cargo.toml" \
         | keys_tag_of) || die "could not read Cargo.toml at flextunnel $tag"
 fi
 [ -n "$keys_tag" ] || die 'could not find the flexaccess-keys tag in the flextunnel Cargo.toml'
-keys=$TOOLS_ROOT/flexaccess-keys-$keys_tag/bin/flexaccess-keys
+keys=$RELEASES_ROOT/flexaccess-keys-$keys_tag/flexaccess-keys
 download_release_binary flexaccessdev/flexaccess-keys "$keys_tag" flexaccess-keys-macos-arm64 "$keys"
 
 # --- server and site ---------------------------------------------------------

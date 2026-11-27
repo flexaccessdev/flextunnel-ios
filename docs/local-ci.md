@@ -118,8 +118,9 @@ pinned to (`flextunnel-macos-arm64`), checked against the sha256 digest GitHub
 reports for it. With `FLEXTUNNEL_LOCAL_XCFRAMEWORK=1`, it builds the server from
 the sibling working tree instead and links the app to the existing local
 xcframework; rebuild that artifact first. `flexaccess-keys` is the release
-binary of the tag the selected server source depends on. The tools are cached
-in `build/e2e/tools`, one per tag.
+binary of the tag the selected server source depends on. Downloads are cached
+in `build/e2e/releases`, one per tag, apart from the local server build in
+`build/e2e/tools`.
 
 The script starts a fixture HTTP site, three servers (one routing the site's
 names, a plain one that routes nothing, one routing a CIDR) and a control
