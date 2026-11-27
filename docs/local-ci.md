@@ -12,8 +12,9 @@ ci/e2e.sh               # browser UI tests through a real tunnel
 ```
 
 Build jobs need Xcode and `xcodegen`. Simulator jobs default to `iPhone 17`;
-set `FLEXTUNNEL_CI_SIM` to another installed simulator name. FFI and e2e jobs
-also need Rust; e2e needs `uv` and internet access.
+set `FLEXTUNNEL_CI_SIM` to another installed simulator name. FFI jobs also
+need Rust; e2e needs `uv` and internet access, and Rust only with
+`FLEXTUNNEL_LOCAL_XCFRAMEWORK=1`.
 
 ## Jobs and coverage
 
@@ -112,11 +113,14 @@ ci/e2e.sh -only-testing:FlextunnelUITests/BrowserE2ETests/testDisconnectFromTunn
 FLEXTUNNEL_LOCAL_XCFRAMEWORK=1 ci/e2e.sh
 ```
 
-`ci/e2e.sh` builds a server matching the app's pinned core tag from the sibling
-repo's Git history. With `FLEXTUNNEL_LOCAL_XCFRAMEWORK=1`, it builds the server
-from the sibling working tree and links the app to the existing local
-xcframework; rebuild that artifact first. `flexaccess-keys` uses the dependency
-tag from the selected server source. Tool builds are cached in `build/e2e/tools`.
+`ci/e2e.sh` downloads the server from the flextunnel release the app's core is
+pinned to (`flextunnel-macos-arm64`), checked against the sha256 digest GitHub
+reports for it. With `FLEXTUNNEL_LOCAL_XCFRAMEWORK=1`, it builds the server from
+the sibling working tree instead and links the app to the existing local
+xcframework; rebuild that artifact first. `flexaccess-keys` is the release
+binary of the tag the selected server source depends on. Downloads are cached
+in `build/e2e/releases`, one per tag, apart from the local server build in
+`build/e2e/tools`.
 
 The script starts a fixture HTTP site, three servers (one routing the site's
 names, a plain one that routes nothing, one routing a CIDR) and a control

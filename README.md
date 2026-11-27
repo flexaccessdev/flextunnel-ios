@@ -121,7 +121,12 @@ no vendored copy to stage. To move to a new release, run
      `authorized_keys_file`. One key identifies this device to every
      destination.
    - *Relay URLs* — optional, for every destination; leave blank for iroh
-     defaults.
+     defaults. With relay URLs entered, *Relays serve QUIC address discovery*
+     is on unless turned off; turn it off for relays behind a Cloudflare
+     Tunnel or another HTTP-only front, where it can otherwise add a few
+     seconds to each destination's connection — felt on the first page or
+     forwarded connection through it, and again after it was closed for
+     idleness.
 
    Pick **Browse the web** or **Forward ports**, then tap the start button.
    Each destination's state and routes, and the bound port, are shown under

@@ -9,11 +9,12 @@
 # UI tests run (the unit tests are `ci/ci.sh unit`).
 #
 # What it stands up, all on loopback and all torn down on exit:
-#   - the flextunnel servers, built at the tag the app's pinned libflextunnel
-#     comes from (Packages/Flextunnel/Package.swift), since client and server
-#     speak one protocol version and keep no backward compatibility. With
-#     FLEXTUNNEL_LOCAL_XCFRAMEWORK=1 the app links the sibling's local build,
-#     so the servers are built from the sibling working tree instead;
+#   - the flextunnel servers, the release binary of the tag the app's pinned
+#     libflextunnel comes from (Packages/Flextunnel/Package.swift), since
+#     client and server speak one protocol version and keep no backward
+#     compatibility. With FLEXTUNNEL_LOCAL_XCFRAMEWORK=1 the app links the
+#     sibling's local build, so the servers are built from the sibling working
+#     tree instead;
 #   - a fixture site (ci/e2e/fixtures) behind the routed server's host alias
 #     `e2e.flextunnel.test`. Only that server resolves the name, so a page that
 #     loads came through it.
@@ -35,8 +36,9 @@
 # endpoint through TEST_RUNNER_FLEXTUNNEL_E2E_*, pick the destinations a test
 # runs with — each a name for one of the servers, with the domains and
 # networks sent through it — and hand them to the app, whose Debug-only launch
-# hook (E2ELaunchConfig.swift) fills the setup screen from them. Needs a Rust toolchain (the first run builds the CLIs into build/e2e),
-# uv, and internet access: the simulator finds the server through iroh's n0
+# hook (E2ELaunchConfig.swift) fills the setup screen from them. Needs uv and
+# internet access (the first run of a tag downloads the CLIs into build/e2e;
+# a local server build needs a Rust toolchain too): the simulator finds the server through iroh's n0
 # discovery and default relays, as a real client would.
 set -euo pipefail
 
@@ -49,49 +51,71 @@ WORK=build/e2e
 RUN=$WORK/run
 DERIVED=build/ci/DerivedData-e2e
 TOOLS_ROOT=$PWD/$WORK/tools
+# Release binaries, apart from local builds: only a checked download lands here.
+RELEASES_ROOT=$PWD/$WORK/releases
 
 info() { echo "[e2e] $*"; }
 die() { echo "[e2e] error: $*" >&2; exit 1; }
 
-for tool in xcodebuild xcodegen cargo uv; do
+for tool in xcodebuild xcodegen uv curl shasum; do
     command -v "$tool" >/dev/null || die "$tool not found"
 done
 
 # --- tools -------------------------------------------------------------------
 
-# Builds the flextunnel and flexaccess-keys CLIs into build/e2e/tools, once per
-# tag. `cargo install --git file://` clones from the sibling's history into
-# cargo's cache, so the sibling checkout itself is never touched.
+# At the pinned tag the flextunnel and flexaccess-keys CLIs are the releases'
+# own macOS binaries, downloaded once per tag into build/e2e/releases and
+# checked against the sha256 digest GitHub reports for each asset. With
+# FLEXTUNNEL_LOCAL_XCFRAMEWORK=1 the server is built from the sibling working
+# tree into build/e2e/tools instead, which needs cargo; the keys tool is still
+# downloaded.
+
+# Downloads release asset $3 of GitHub repo $1 at tag $2 to $4, once.
+download_release_binary() {
+    local repo=$1 tag=$2 asset=$3 dest=$4 digest tmp actual
+    [ -x "$dest" ] && return
+    info "downloading $repo $tag $asset"
+    digest=$(curl -fsSL "https://api.github.com/repos/$repo/releases/tags/$tag" \
+        | uv run --no-project python -c '
+import json, sys
+assets = [a for a in json.load(sys.stdin)["assets"] if a["name"] == sys.argv[1]]
+print(assets[0].get("digest") or "" if assets else "")' "$asset") \
+        || die "could not read the $repo $tag release"
+    [[ $digest == sha256:* ]] || die "$repo $tag has no sha256 digest for $asset"
+    mkdir -p "$RELEASES_ROOT" "$(dirname "$dest")"
+    tmp=$(mktemp "$RELEASES_ROOT/.download.XXXXXX")
+    curl -fsSL -o "$tmp" "https://github.com/$repo/releases/download/$tag/$asset" \
+        || { rm -f "$tmp"; die "could not download $asset from $repo $tag"; }
+    actual=$(shasum -a 256 "$tmp" | cut -d' ' -f1)
+    [ "$actual" = "${digest#sha256:}" ] \
+        || { rm -f "$tmp"; die "$asset from $repo $tag: sha256 $actual, release says ${digest#sha256:}"; }
+    chmod +x "$tmp"
+    mv "$tmp" "$dest"
+}
+
+# The flexaccess-keys tag a flextunnel Cargo.toml (on stdin) depends on.
+keys_tag_of() { sed -n 's/^flexaccess-keys = .*tag = "\([^"]*\)".*/\1/p'; }
+
 if [ -n "${FLEXTUNNEL_LOCAL_XCFRAMEWORK:-}" ]; then
+    command -v cargo >/dev/null || die 'cargo not found (needed to build the local server)'
     server_src=local
     info "building flextunnel from the $SIBLING working tree"
     CARGO_TARGET_DIR=$PWD/$WORK/cargo-target cargo install --locked --quiet \
         --path "$SIBLING/crates/flextunnel-cli" --root "$TOOLS_ROOT" --force
     flextunnel=$TOOLS_ROOT/bin/flextunnel
-    keys_tag=$(sed -n 's/^flexaccess-keys = .*tag = "\([^"]*\)".*/\1/p' "$SIBLING/Cargo.toml")
+    keys_tag=$(keys_tag_of < "$SIBLING/Cargo.toml")
 else
     tag=$(sed -n 's#.*/releases/download/\(v[^/]*\)/.*#\1#p' Packages/Flextunnel/Package.swift)
     [ -n "$tag" ] || die 'no pinned release tag in Packages/Flextunnel/Package.swift'
     server_src=$tag
-    flextunnel=$TOOLS_ROOT/flextunnel-$tag/bin/flextunnel
-    if [ ! -x "$flextunnel" ]; then
-        info "building flextunnel $tag"
-        git -C "$SIBLING" rev-parse -q --verify "refs/tags/$tag" >/dev/null \
-            || die "$SIBLING has no tag $tag — fetch its tags"
-        cargo install --locked --quiet --git "file://$(cd "$SIBLING" && pwd)" --tag "$tag" \
-            flextunnel-cli --root "$TOOLS_ROOT/flextunnel-$tag"
-    fi
-    keys_tag=$(git -C "$SIBLING" show "$tag:Cargo.toml" \
-        | sed -n 's/^flexaccess-keys = .*tag = "\([^"]*\)".*/\1/p') \
-        || die "could not read Cargo.toml at $tag in $SIBLING"
+    flextunnel=$RELEASES_ROOT/flextunnel-$tag/flextunnel
+    download_release_binary flexaccessdev/flextunnel "$tag" flextunnel-macos-arm64 "$flextunnel"
+    keys_tag=$(curl -fsSL "https://raw.githubusercontent.com/flexaccessdev/flextunnel/$tag/Cargo.toml" \
+        | keys_tag_of) || die "could not read Cargo.toml at flextunnel $tag"
 fi
-[ -n "$keys_tag" ] || die 'could not find the flexaccess-keys tag in the sibling Cargo.toml'
-keys=$TOOLS_ROOT/flexaccess-keys-$keys_tag/bin/flexaccess-keys
-if [ ! -x "$keys" ]; then
-    info "building flexaccess-keys $keys_tag"
-    cargo install --locked --quiet --git https://github.com/flexaccessdev/flexaccess-keys \
-        --tag "$keys_tag" --features cli flexaccess-keys --root "$TOOLS_ROOT/flexaccess-keys-$keys_tag"
-fi
+[ -n "$keys_tag" ] || die 'could not find the flexaccess-keys tag in the flextunnel Cargo.toml'
+keys=$RELEASES_ROOT/flexaccess-keys-$keys_tag/flexaccess-keys
+download_release_binary flexaccessdev/flexaccess-keys "$keys_tag" flexaccess-keys-macos-arm64 "$keys"
 
 # --- server and site ---------------------------------------------------------
 

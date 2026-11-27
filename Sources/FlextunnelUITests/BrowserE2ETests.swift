@@ -529,6 +529,28 @@ final class BrowserE2ETests: XCTestCase {
         XCTAssertTrue(app.navigationBars["flextunnel"].waitForExistence(timeout: 10))
     }
 
+    /// With custom relays the setup screen offers to turn their QUIC address
+    /// discovery off, and the session started then says so of its relays.
+    /// Nothing is loaded: the session starts without contacting a relay or a
+    /// server.
+    func testQuicAddrDiscoveryTurnedOffForCustomRelaysReachesTheSession() {
+        launch(with: .names, relayURLs: "https://relay.e2e.flextunnel.test")
+        XCTAssertTrue(app.navigationBars["flextunnel"].waitForExistence(timeout: 10))
+        let discovery = app.switches["setup.relayQuicAddrDiscovery"]
+        scrollTo(discovery)
+        XCTAssertEqual(discovery.value as? String, "1", "on unless turned off")
+        discovery.switches.firstMatch.tap()
+        XCTAssertEqual(discovery.value as? String, "0")
+        snapshot("setup-relay-quic-addr-discovery-off")
+
+        startSession()
+        app.buttons["browser.tunnelStatus"].tap()
+        let relays = app.staticTexts["tunnelStatus.relays"]
+        reveal(relays)
+        XCTAssertTrue(relays.label.contains("https://relay.e2e.flextunnel.test"), relays.label)
+        XCTAssertTrue(relays.label.contains("(no QUIC address discovery)"), relays.label)
+    }
+
     func testDisconnectFromTunnelStatusReturnsToSetup() {
         connect()
         disconnect()
@@ -722,8 +744,9 @@ final class BrowserE2ETests: XCTestCase {
         startSession()
     }
 
-    /// Launches the app with `destinations` on its setup screen.
-    private func launch(with destinations: Destinations) {
+    /// Launches the app with `destinations` on its setup screen, and
+    /// `relayURLs` (comma-separated) in its relay field.
+    private func launch(with destinations: Destinations, relayURLs: String = "") {
         let list: [[String: Any]]
         switch destinations {
         case .names:
@@ -753,6 +776,7 @@ final class BrowserE2ETests: XCTestCase {
         }
         let json = try! JSONSerialization.data(withJSONObject: list)
         app.launchEnvironment["FLEXTUNNEL_E2E_DESTINATIONS"] = String(decoding: json, as: UTF8.self)
+        app.launchEnvironment["FLEXTUNNEL_E2E_RELAY_URLS"] = relayURLs
         app.launch()
     }
 

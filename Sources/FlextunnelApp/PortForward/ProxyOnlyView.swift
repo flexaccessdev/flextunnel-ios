@@ -96,9 +96,7 @@ struct ProxyOnlyView: View {
             InfoRow("Forward engine", proxy.sessionAlive ? "running" : "stopped",
                     valueColor: proxy.sessionAlive ? .green : .red)
             if proxy.routeTable != nil {
-                InfoRow("Relay URLs", proxy.relayURLs.isEmpty
-                    ? "iroh defaults"
-                    : proxy.relayURLs.joined(separator: "\n"))
+                InfoRow("Relay URLs", proxy.relaysDescription)
                 InfoRow("iroh peer discovery", "enabled (n0 discovery)")
             }
 

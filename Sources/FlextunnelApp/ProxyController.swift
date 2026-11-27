@@ -119,6 +119,17 @@ final class ProxyController: ObservableObject {
     @Published private(set) var routeTable: RouteTable?
     /// The relay URLs the running session uses; empty means iroh's defaults.
     @Published private(set) var relayURLs: [String] = []
+    /// The running session's `Settings.relayQuicAddrDiscovery`, shown beside
+    /// its custom relays.
+    @Published private(set) var relayQuicAddrDiscovery = true
+
+    /// The running session's relays for the status screens: the custom URLs,
+    /// one per line, noting when QUIC address discovery is off for them.
+    var relaysDescription: String {
+        if relayURLs.isEmpty { return "iroh defaults" }
+        let urls = relayURLs.joined(separator: "\n")
+        return relayQuicAddrDiscovery ? urls : urls + "\n(no QUIC address discovery)"
+    }
 
     /// Called (on the main actor) from the poll loop when the Live-Activity-
     /// relevant state changes while a forwarding session is backgrounded with
@@ -214,6 +225,9 @@ final class ProxyController: ObservableObject {
         /// Shared bearer token sent to every custom relay's WebSocket upgrade.
         /// Empty means none; only valid with custom `relayURLs`.
         var relayAuthToken: String
+        /// Whether the custom relays serve QUIC address discovery; ignored
+        /// with the default relays (see `ClientStore.relayQuicAddrDiscovery`).
+        var relayQuicAddrDiscovery: Bool
 
         var routeTable: RouteTable {
             RouteTable(entries: destinations.map {
@@ -397,25 +411,12 @@ final class ProxyController: ObservableObject {
             isRelaunching = false
             routeTable = nil
             relayURLs = []
+            relayQuicAddrDiscovery = true
             phase = .starting
             status = "starting…"
         }
 
-        let relayAuthToken = s.relayAuthToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        let configDict: [String: Any] = [
-            "auth_key": s.authKey,
-            "socks_port": s.socksPort.map { Int($0) } ?? NSNull(),
-            "relay_urls": s.relayURLs,
-            "relay_auth_token": relayAuthToken.isEmpty ? NSNull() : relayAuthToken,
-            "destinations": s.destinations.map { destination in
-                [
-                    "name": destination.name,
-                    "server_node_id": destination.serverNodeID,
-                    "routed_domains": destination.routedDomains,
-                    "routed_cidrs": destination.routedCIDRs,
-                ] as [String: Any]
-            },
-        ]
+        let configDict = Self.configDict(s)
         guard
             let data = try? JSONSerialization.data(withJSONObject: configDict),
             let configStr = String(data: data, encoding: .utf8)
@@ -427,6 +428,27 @@ final class ProxyController: ObservableObject {
         native.launch(config: configStr) { result in
             Task { @MainActor in self.finishStart(result, settings: s, epoch: epoch) }
         }
+    }
+
+    /// `flextunnel_start`'s config for `s`.
+    nonisolated static func configDict(_ s: Settings) -> [String: Any] {
+        let relayAuthToken = s.relayAuthToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        return [
+            "auth_key": s.authKey,
+            "socks_port": s.socksPort.map { Int($0) } ?? NSNull(),
+            "relay_urls": s.relayURLs,
+            "relay_auth_token": relayAuthToken.isEmpty ? NSNull() : relayAuthToken,
+            "relay_quic_addr_discovery": ClientStore.quicAddrDiscoverySetting(
+                relayURLs: s.relayURLs, enabled: s.relayQuicAddrDiscovery),
+            "destinations": s.destinations.map { destination in
+                [
+                    "name": destination.name,
+                    "server_node_id": destination.serverNodeID,
+                    "routed_domains": destination.routedDomains,
+                    "routed_cidrs": destination.routedCIDRs,
+                ] as [String: Any]
+            },
+        ]
     }
 
     /// Publishes the outcome of a launch back on the main actor.
@@ -466,6 +488,7 @@ final class ProxyController: ObservableObject {
         _ = flextunnel_set_network_available(handle, pathAvailable ? 1 : 0)
         routeTable = s.routeTable
         relayURLs = s.relayURLs
+        relayQuicAddrDiscovery = s.relayQuicAddrDiscovery
         socksPort = port
         // Pin the OS-assigned SOCKS port so relaunches of this session (manual
         // restart, suspend recovery) bind the same port and the browser's
@@ -484,6 +507,7 @@ final class ProxyController: ObservableObject {
         teardownHandle()
         routeTable = nil
         relayURLs = []
+        relayQuicAddrDiscovery = true
         phase = .idle
         status = "idle"
     }
