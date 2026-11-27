@@ -28,8 +28,8 @@
 #
 # `ffi` is not in the default set: it compiles the Rust core for iOS, which is
 # minutes rather than seconds, and it is only meaningful when you are changing
-# ../flextunnel. Ask for it by name. Neither is `e2e`: it needs a Rust toolchain
-# and internet access (iroh discovery), and takes a few minutes. Nor is
+# ../flextunnel. Ask for it by name. Neither is `e2e`: it needs internet access
+# (release downloads, iroh discovery), and takes a few minutes. Nor is
 # `device`: it signs, so it only works on a host holding the team's signing
 # key, and the default set has to run anywhere.
 #
