@@ -21,6 +21,7 @@ struct ServerRoutes: Equatable, Sendable {
         var authKey: String
         var relayURLs: [String]
         var relayAuthToken: String
+        var relayQuicAddrDiscovery: Bool
     }
 
     /// Why a server gave no routes, as the core put it.
@@ -74,6 +75,8 @@ struct ServerRoutes: Equatable, Sendable {
             "server_node_id": serverNodeID.trimmingCharacters(in: .whitespacesAndNewlines),
             "relay_urls": access.relayURLs,
             "relay_auth_token": token.isEmpty ? NSNull() : token,
+            "relay_quic_addr_discovery": ClientStore.quicAddrDiscoverySetting(
+                relayURLs: access.relayURLs, enabled: access.relayQuicAddrDiscovery),
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: request) else { return nil }
         return String(data: data, encoding: .utf8)

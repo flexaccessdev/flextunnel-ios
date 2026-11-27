@@ -50,7 +50,27 @@ final class ClientStore: ObservableObject {
     private struct Document: Codable {
         var authKeyID: String
         var relayURLs: String
+        var relayQuicAddrDiscovery: Bool
         var destinations: [Destination]
+
+        init(authKeyID: String, relayURLs: String, relayQuicAddrDiscovery: Bool,
+             destinations: [Destination]) {
+            self.authKeyID = authKeyID
+            self.relayURLs = relayURLs
+            self.relayQuicAddrDiscovery = relayQuicAddrDiscovery
+            self.destinations = destinations
+        }
+
+        /// A file without `relayQuicAddrDiscovery` has it on: that is the
+        /// setting's default, as it is the core's.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            authKeyID = try c.decode(String.self, forKey: .authKeyID)
+            relayURLs = try c.decode(String.self, forKey: .relayURLs)
+            relayQuicAddrDiscovery =
+                try c.decodeIfPresent(Bool.self, forKey: .relayQuicAddrDiscovery) ?? true
+            destinations = try c.decode([Destination].self, forKey: .destinations)
+        }
     }
 
     @Published private(set) var destinations: [Destination]
@@ -66,6 +86,15 @@ final class ClientStore: ObservableObject {
         didSet { if relayURLs != oldValue { persist() } }
     }
 
+    /// Whether the custom relays serve QUIC address discovery, all of them or
+    /// none. On by default; off is for relays behind a Cloudflare Tunnel or
+    /// another HTTP-only front, where probing for it delays each start by up
+    /// to 3 s. Means nothing with the default relays, and is not sent then
+    /// (see `quicAddrDiscoverySetting`).
+    @Published var relayQuicAddrDiscovery: Bool {
+        didSet { if relayQuicAddrDiscovery != oldValue { persist() } }
+    }
+
     private let fileURL: URL
 
     init(directory: URL? = nil) {
@@ -75,6 +104,16 @@ final class ClientStore: ObservableObject {
         destinations = document?.destinations ?? []
         authKeyID = document?.authKeyID ?? ""
         relayURLs = document?.relayURLs ?? ""
+        relayQuicAddrDiscovery = document?.relayQuicAddrDiscovery ?? true
+    }
+
+    /// `relay_quic_addr_discovery` as the FFI takes it: `false` only when it
+    /// is turned off for custom relays, and null otherwise — on is the core's
+    /// default, and the core refuses the setting with the default relays, as
+    /// it does a relay auth token.
+    nonisolated static func quicAddrDiscoverySetting(relayURLs: [String], enabled: Bool) -> Any {
+        if relayURLs.isEmpty || enabled { return NSNull() }
+        return false
     }
 
     /// The routing table these destinations make, for labels before a session
@@ -297,7 +336,9 @@ final class ClientStore: ObservableObject {
 
     private func persist() {
         JSONStore.save(
-            Document(authKeyID: authKeyID, relayURLs: relayURLs, destinations: destinations),
+            Document(
+                authKeyID: authKeyID, relayURLs: relayURLs,
+                relayQuicAddrDiscovery: relayQuicAddrDiscovery, destinations: destinations),
             to: fileURL)
     }
 }

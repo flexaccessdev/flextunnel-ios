@@ -122,6 +122,18 @@ struct ContentView: View {
                         SecureField("", text: $relayAuthToken)
                             .autocorrectionDisabled().textInputAutocapitalization(.never)
                     }
+                    // Only custom relays can lack it; the default ones serve it.
+                    if !relayURLList.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Toggle("Relays serve QUIC address discovery",
+                                   isOn: $client.relayQuicAddrDiscovery)
+                                .accessibilityIdentifier("setup.relayQuicAddrDiscovery")
+                            Text("Turn off for relays behind a Cloudflare Tunnel or another "
+                                + "HTTP-only front, where it delays each start by up to 3 s.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 } header: {
                     Text("This device")
                 } footer: {
@@ -515,7 +527,8 @@ struct ContentView: View {
             // port into its replayed settings so relaunches keep it.
             socksPort: sessionMode == .browser ? 0 : nil,
             relayURLs: relayURLList,
-            relayAuthToken: relayAuthToken
+            relayAuthToken: relayAuthToken,
+            relayQuicAddrDiscovery: client.relayQuicAddrDiscovery
         )
     }
 
@@ -533,7 +546,8 @@ struct ContentView: View {
     private var routesAccess: ServerRoutes.Access? {
         guard let key = selectedKey else { return nil }
         return ServerRoutes.Access(
-            authKey: key.secret, relayURLs: relayURLList, relayAuthToken: relayAuthToken)
+            authKey: key.secret, relayURLs: relayURLList, relayAuthToken: relayAuthToken,
+            relayQuicAddrDiscovery: client.relayQuicAddrDiscovery)
     }
 
     /// Prefill the Keychain-backed relay token on first appearance (the auth

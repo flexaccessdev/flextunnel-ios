@@ -20,6 +20,40 @@ final class ClientStoreTests: XCTestCase {
         XCTAssertTrue(store.destinations.isEmpty)
         XCTAssertEqual(store.authKeyID, "")
         XCTAssertEqual(store.relayURLs, "")
+        XCTAssertTrue(store.relayQuicAddrDiscovery)
+    }
+
+    func testRelayQuicAddrDiscoveryPersists() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClientStoreTests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("client.json")
+
+        let first = ClientStore(directory: directory)
+        first.relayURLs = "https://relay.example"
+        first.relayQuicAddrDiscovery = false
+        // Writes go through a serial queue; wait for the file to say it.
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if let data = try? Data(contentsOf: file),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               json["relayQuicAddrDiscovery"] as? Bool == false { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertFalse(ClientStore(directory: directory).relayQuicAddrDiscovery)
+    }
+
+    func testAFileWithoutRelayQuicAddrDiscoveryHasItOn() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClientStoreTests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(#"{"authKeyID":"k","relayURLs":"https://relay.example","destinations":[]}"#.utf8)
+            .write(to: directory.appendingPathComponent("client.json"))
+
+        let loaded = ClientStore(directory: directory)
+        XCTAssertEqual(loaded.authKeyID, "k", "the rest of the file still loads")
+        XCTAssertTrue(loaded.relayQuicAddrDiscovery)
     }
 
     func testSaveNormalizesTheFields() {

@@ -297,7 +297,7 @@ struct TunnelStatusSheet: View {
         Section("Details") {
             if proxy.routeTable != nil {
                 LabeledContent("Relays") {
-                    Text(proxy.relayURLs.isEmpty ? "iroh defaults" : proxy.relayURLs.joined(separator: "\n"))
+                    Text(proxy.relaysDescription)
                         .multilineTextAlignment(.trailing)
                 }
                 LabeledContent("Peer discovery", value: "n0 discovery")

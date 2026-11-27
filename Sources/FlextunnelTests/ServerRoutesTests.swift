@@ -15,17 +15,34 @@ final class ServerRoutesTests: XCTestCase {
             ServerRoutes.Access(
                 authKey: "ed25519-sec:abc",
                 relayURLs: ["https://a.example", "https://b.example"],
-                relayAuthToken: " token\n"),
+                relayAuthToken: " token\n", relayQuicAddrDiscovery: true),
             node: " abcdef\n")
         XCTAssertEqual(sent["auth_key"] as? String, "ed25519-sec:abc")
         XCTAssertEqual(sent["server_node_id"] as? String, "abcdef")
         XCTAssertEqual(sent["relay_urls"] as? [String], ["https://a.example", "https://b.example"])
         XCTAssertEqual(sent["relay_auth_token"] as? String, "token")
+        XCTAssertTrue(sent["relay_quic_addr_discovery"] is NSNull, "on is the core's default")
+    }
+
+    func testRequestTurnsOffQuicAddrDiscoveryOnlyForCustomRelays() throws {
+        let custom = try request(ServerRoutes.Access(
+            authKey: "ed25519-sec:abc", relayURLs: ["https://a.example"],
+            relayAuthToken: "", relayQuicAddrDiscovery: false))
+        XCTAssertEqual(custom["relay_quic_addr_discovery"] as? Bool, false)
+
+        let defaults = try request(ServerRoutes.Access(
+            authKey: "ed25519-sec:abc", relayURLs: [],
+            relayAuthToken: "", relayQuicAddrDiscovery: false))
+        XCTAssertTrue(
+            defaults["relay_quic_addr_discovery"] is NSNull,
+            "the core refuses the setting with the default relays")
     }
 
     func testRequestLeavesOutAnEmptyRelayToken() throws {
         let sent = try request(
-            ServerRoutes.Access(authKey: "ed25519-sec:abc", relayURLs: [], relayAuthToken: "  "))
+            ServerRoutes.Access(
+                authKey: "ed25519-sec:abc", relayURLs: [], relayAuthToken: "  ",
+                relayQuicAddrDiscovery: true))
         XCTAssertTrue(sent["relay_auth_token"] is NSNull, "the core refuses a token without relays")
         XCTAssertEqual(sent["relay_urls"] as? [String], [])
     }
