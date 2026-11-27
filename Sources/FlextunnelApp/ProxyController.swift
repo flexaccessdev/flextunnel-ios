@@ -416,8 +416,24 @@ final class ProxyController: ObservableObject {
             status = "starting…"
         }
 
+        let configDict = Self.configDict(s)
+        guard
+            let data = try? JSONSerialization.data(withJSONObject: configDict),
+            let configStr = String(data: data, encoding: .utf8)
+        else {
+            launchFailed("failed to encode config JSON")
+            return
+        }
+
+        native.launch(config: configStr) { result in
+            Task { @MainActor in self.finishStart(result, settings: s, epoch: epoch) }
+        }
+    }
+
+    /// `flextunnel_start`'s config for `s`.
+    nonisolated static func configDict(_ s: Settings) -> [String: Any] {
         let relayAuthToken = s.relayAuthToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        let configDict: [String: Any] = [
+        return [
             "auth_key": s.authKey,
             "socks_port": s.socksPort.map { Int($0) } ?? NSNull(),
             "relay_urls": s.relayURLs,
@@ -433,17 +449,6 @@ final class ProxyController: ObservableObject {
                 ] as [String: Any]
             },
         ]
-        guard
-            let data = try? JSONSerialization.data(withJSONObject: configDict),
-            let configStr = String(data: data, encoding: .utf8)
-        else {
-            launchFailed("failed to encode config JSON")
-            return
-        }
-
-        native.launch(config: configStr) { result in
-            Task { @MainActor in self.finishStart(result, settings: s, epoch: epoch) }
-        }
     }
 
     /// Publishes the outcome of a launch back on the main actor.

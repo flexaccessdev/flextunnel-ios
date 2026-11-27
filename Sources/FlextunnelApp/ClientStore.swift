@@ -88,8 +88,8 @@ final class ClientStore: ObservableObject {
 
     /// Whether the custom relays serve QUIC address discovery, all of them or
     /// none. On by default; off is for relays behind a Cloudflare Tunnel or
-    /// another HTTP-only front, where probing for it delays each start by up
-    /// to 3 s. Means nothing with the default relays, and is not sent then
+    /// another HTTP-only front, where probing for it can add a few seconds
+    /// to each destination's connection (made on first use). Means nothing with the default relays, and is not sent then
     /// (see `quicAddrDiscoverySetting`).
     @Published var relayQuicAddrDiscovery: Bool {
         didSet { if relayQuicAddrDiscovery != oldValue { persist() } }

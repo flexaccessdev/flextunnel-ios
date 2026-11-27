@@ -299,6 +299,7 @@ struct TunnelStatusSheet: View {
                 LabeledContent("Relays") {
                     Text(proxy.relaysDescription)
                         .multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier("tunnelStatus.relays")
                 }
                 LabeledContent("Peer discovery", value: "n0 discovery")
             }

@@ -129,7 +129,9 @@ struct ContentView: View {
                                    isOn: $client.relayQuicAddrDiscovery)
                                 .accessibilityIdentifier("setup.relayQuicAddrDiscovery")
                             Text("Turn off for relays behind a Cloudflare Tunnel or another "
-                                + "HTTP-only front, where it delays each start by up to 3 s.")
+                                + "HTTP-only front, where it can add a few seconds to "
+                                + "each destination's connection: the first page or "
+                                + "forwarded connection through it.")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }

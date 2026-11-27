@@ -82,6 +82,8 @@ enum E2ELaunchConfig {
 
         client.authKeyID = key.id
         client.relayURLs = values.relayURLs
+        // Back to its default, so a test that turns it off leaves no trace.
+        client.relayQuicAddrDiscovery = true
         client.destinations.map(\.id).forEach(client.delete)
         for destination in values.destinations {
             let saved = client.save(ClientStore.Destination(
